@@ -77,7 +77,7 @@ func NewClient(config ClientConfig) (*Client, error) {
 
 	// Configure TLS
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: !config.VerifyTLS, //nolint:gosec
+		InsecureSkipVerify: !config.VerifyTLS, // #nosec G402 -- user-controlled provider config //nolint:gosec
 	}
 
 	transport := &http.Transport{

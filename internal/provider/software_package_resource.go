@@ -186,7 +186,7 @@ func (r *softwarePackageResource) Create(ctx context.Context, req resource.Creat
 
 	// Read package file from disk
 	packagePath := plan.PackagePath.ValueString()
-	packageContent, err := os.ReadFile(packagePath)
+	packageContent, err := os.ReadFile(packagePath) // #nosec G304 -- path comes from Terraform config
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error reading package file",
@@ -405,7 +405,7 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 		return
 	}
 
-	titleID, err := strconv.ParseInt(parts[0], 10, 64)
+	titleID, err := strconv.Atoi(parts[0])
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Invalid title ID",
@@ -416,7 +416,7 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 
 	var teamID *int
 	if len(parts) == 2 {
-		tid, err := strconv.ParseInt(parts[1], 10, 64)
+		tid, err := strconv.Atoi(parts[1])
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Invalid team ID",
@@ -424,13 +424,12 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 			)
 			return
 		}
-		t := int(tid)
-		teamID = &t
+		teamID = &tid
 	}
 
 	// Fetch the installer metadata so we can set the real filename in state,
 	// avoiding a spurious RequiresReplace on the next plan.
-	installer, err := r.client.GetSoftwareInstaller(ctx, int(titleID), teamID)
+	installer, err := r.client.GetSoftwareInstaller(ctx, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error reading software package during import",

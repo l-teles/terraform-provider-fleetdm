@@ -1,19 +1,45 @@
 version: 2
 updates:
-    - package-ecosystem: "github-actions"
-      directory: "/"
+    - package-ecosystem: gomod
+      directory: /
       schedule:
-          interval: "weekly"
-      groups:
-          actions:
-              patterns:
-                  - "*"
-
-    - package-ecosystem: "gomod"
-      directory: "/"
-      schedule:
-          interval: "weekly"
+          interval: weekly
+      target-branch: main
+      commit-message:
+          prefix: "deps:"
+      open-pull-requests-limit: 10
+      labels:
+          - dependencies
       groups:
           go-dependencies:
               patterns:
                   - "*"
+      cooldown:
+          default-days: 7
+
+    - package-ecosystem: gomod
+      directory: /.github/security-tools
+      schedule:
+          interval: weekly
+      target-branch: main
+      commit-message:
+          prefix: "ci:"
+      open-pull-requests-limit: 5
+      labels:
+          - chore
+          - dependencies
+      cooldown:
+          default-days: 7
+
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+          interval: weekly
+      target-branch: main
+      commit-message:
+          prefix: "ci:"
+      open-pull-requests-limit: 5
+      labels:
+          - chore
+      cooldown:
+          default-days: 7
