@@ -1,0 +1,84 @@
+name: Security
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+    schedule:
+        # Run weekly on Monday at 08:00 UTC to catch newly disclosed vulnerabilities
+        - cron: "0 8 * * 1"
+
+permissions:
+    contents: read
+
+jobs:
+    govulncheck:
+        name: govulncheck (dependency vulnerabilities)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+            - name: Install govulncheck
+              run: cd .github/security-tools && go install golang.org/x/vuln/cmd/govulncheck
+            - name: Run govulncheck
+              run: govulncheck ./...
+
+    gosec:
+        name: gosec (SAST)
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+              with:
+                  persist-credentials: false
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+            - name: Install gosec
+              run: cd .github/security-tools && go install github.com/securego/gosec/v2/cmd/gosec
+            - name: Run gosec
+              run: gosec ./...
+
+    zizmor:
+        name: zizmor (GitHub Actions security)
+        runs-on: ubuntu-latest
+        permissions:
+            security-events: write
+            contents: read
+            actions: read
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+              with:
+                  persist-credentials: false
+            - uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8 # v0.5.2
+
+    scorecard:
+        name: OpenSSF Scorecard
+        runs-on: ubuntu-latest
+        # Scorecard only supports push and schedule on the default branch
+        if: github.event_name != 'pull_request'
+        permissions:
+            security-events: write
+            id-token: write
+            contents: read
+            actions: read
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+              with:
+                  persist-credentials: false
+            - name: Run OpenSSF Scorecard
+              uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+              with:
+                  results_file: results.sarif
+                  results_format: sarif
+                  publish_results: true
+            - name: Upload Scorecard SARIF
+              uses: github/codeql-action/upload-sarif@b20883b0cd1f46c72ae0ba6d1090936928f9fa30 # v4.32.0
+              with:
+                  sarif_file: results.sarif

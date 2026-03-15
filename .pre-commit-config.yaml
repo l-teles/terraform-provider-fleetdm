@@ -1,0 +1,51 @@
+repos:
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+      hooks:
+          - id: check-merge-conflict
+          - id: check-yaml
+            args: ["--unsafe"]
+          - id: end-of-file-fixer
+          - id: trailing-whitespace
+          - id: no-commit-to-branch
+            args: ["--branch", "main"]
+
+    - repo: https://github.com/sirosen/check-jsonschema
+      rev: 8db279a37c552206d2df62269ff6f9d31125815a  # frozen: 0.37.0
+      hooks:
+          - id: check-github-actions
+          - id: check-github-workflows
+
+    - repo: local
+      hooks:
+          - id: gofmt
+            name: gofmt
+            description: "Format Go code"
+            entry: gofmt -s -w .
+            language: system
+            files: '.*\.go'
+            pass_filenames: false
+
+          - id: go-vet
+            name: go vet
+            description: "Run go vet"
+            entry: go vet ./...
+            language: system
+            files: '.*\.go'
+            pass_filenames: false
+
+          - id: golangci-lint
+            name: golangci-lint
+            description: "Run golangci-lint"
+            entry: golangci-lint run ./...
+            language: system
+            files: '.*\.go'
+            pass_filenames: false
+
+          - id: govulncheck
+            name: govulncheck
+            description: "Check dependencies for known security vulnerabilities"
+            entry: govulncheck ./...
+            language: system
+            files: '(.*\.go|go\.mod|go\.sum)'
+            pass_filenames: false

@@ -186,7 +186,7 @@ func (r *softwarePackageResource) Create(ctx context.Context, req resource.Creat
 
 	// Read package file from disk
 	packagePath := plan.PackagePath.ValueString()
-	packageContent, err := os.ReadFile(packagePath)
+	packageContent, err := os.ReadFile(packagePath) // #nosec G304 -- path comes from Terraform config
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error reading package file",
