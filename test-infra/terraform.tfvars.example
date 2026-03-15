@@ -1,0 +1,11 @@
+# FleetDM Connection Settings
+# Copy this file to terraform.tfvars and fill in your values
+
+# Your FleetDM server URL (no trailing slash)
+fleetdm_url = "https://localhost:8080"
+
+# Your FleetDM API token
+fleetdm_token = "your-api-token-here"
+
+# Set to false for self-signed certificates
+verify_tls = false

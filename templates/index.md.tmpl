@@ -1,0 +1,53 @@
+---
+page_title: "FleetDM Provider"
+description: |-
+  Terraform provider for managing FleetDM resources — teams, queries, policies, labels, scripts, users, software packages, MDM profiles, and more.
+---
+
+# FleetDM Provider
+
+Terraform provider for [FleetDM](https://fleetdm.com) — manage your Fleet instance as infrastructure-as-code.
+
+Supports both **FleetDM Free** and **Premium** editions. Not affiliated with Fleet Device Management Inc.
+
+## Resources
+
+| Resource | Description |
+|----------|-------------|
+| `fleetdm_team` | Teams with host expiry and disk encryption settings |
+| `fleetdm_query` | Saved queries with scheduling options |
+| `fleetdm_policy` | Compliance policies (global and team-scoped) |
+| `fleetdm_label` | Dynamic labels with query-based membership |
+| `fleetdm_script` | Shell/PowerShell scripts |
+| `fleetdm_user` | Users and permissions |
+| `fleetdm_enroll_secret` | Enrollment secrets (global and team) |
+| `fleetdm_configuration` | Global Fleet server configuration |
+| `fleetdm_software_package` | Software packages (Premium) |
+| `fleetdm_bootstrap_package` | Bootstrap packages for DEP enrollment (Premium) |
+| `fleetdm_configuration_profile` | MDM configuration profiles (Premium) |
+| `fleetdm_setup_experience` | macOS setup experience settings (Premium) |
+
+## Data Sources
+
+Singular and plural data sources for: teams, queries, policies, labels, scripts, users, hosts, software titles, software versions, configuration, configuration profiles, enroll secrets, activities, ABM tokens, VPP tokens, MDM summary, and server version.
+
+## Authentication
+
+The provider authenticates via API key. You can obtain one from the FleetDM UI under **Settings > Integrations > API**.
+
+```hcl
+provider "fleetdm" {
+  server_address = "https://fleet.example.com"
+  api_key        = var.fleetdm_api_key
+}
+```
+
+Or use environment variables:
+
+| Environment Variable | Provider Attribute |
+|---------------------|--------------------|
+| `FLEETDM_URL` | `server_address` |
+| `FLEETDM_API_TOKEN` | `api_key` |
+| `FLEETDM_VERIFY_TLS` | `verify_tls` |
+
+{{ .SchemaMarkdown | trimspace }}

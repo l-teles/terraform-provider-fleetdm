@@ -1,0 +1,10 @@
+version: "2"
+
+linters:
+    exclusions:
+        rules:
+            # Test HTTP server handlers commonly omit error checks on json encode/decode
+            # and http.ResponseWriter.Write — this is an accepted Go testing pattern.
+            - path: _test\.go
+              linters:
+                  - errcheck

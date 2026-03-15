@@ -1,0 +1,41 @@
+# Binaries
+terraform-provider-fleetdm
+terraform-provider-fleetdm_*
+test_software_package
+
+# Test infrastructure sensitive/generated files
+test-infra/terraform.tfvars
+test-infra/.terraform/
+test-infra/.terraform.lock.hcl
+
+# Software packages (large binary files)
+*.pkg
+*.dmg
+*.exe
+*.msi
+*.deb
+*.rpm
+
+# Build artifacts
+dist/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Go
+*.test
+*.out
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

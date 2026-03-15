@@ -1,0 +1,236 @@
+# Terraform Provider testing workflow.
+name: Tests
+
+on:
+    pull_request:
+        paths-ignore:
+            - "README.md"
+            - "docs/**"
+            - "examples/**"
+    push:
+        # branches:
+        #     - main
+        # paths-ignore:
+        #     - "README.md"
+        #     - "docs/**"
+        #     - "examples/**"
+
+permissions:
+    contents: read
+
+jobs:
+    # -------------------------------------------------------------------------
+    # Ensure the project builds before running tests
+    # -------------------------------------------------------------------------
+    build:
+        name: Build
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+            - run: go mod download
+            - run: go build -v .
+            - name: Run linters
+              uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+
+    # -------------------------------------------------------------------------
+    # Check that go generate produces no unexpected diff
+    # -------------------------------------------------------------------------
+    generate:
+        name: Generate
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+            - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+              with:
+                  terraform_version: "1.7.*"
+                  terraform_wrapper: false
+            - run: go mod download
+            - run: go generate ./...
+            - name: git diff
+              run: |
+                  git diff --compact-summary --exit-code || \
+                    (echo; echo "Unexpected difference in directories after code generation. Run 'go generate ./...' command and commit."; exit 1)
+
+    # -------------------------------------------------------------------------
+    # Unit tests (no live instance required)
+    # -------------------------------------------------------------------------
+    test:
+        name: Unit Tests
+        needs: build
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+            - run: go mod download
+            - run: go test -v -cover -timeout=10m ./internal/...
+              env:
+                  TF_ACC: ""
+
+    # -------------------------------------------------------------------------
+    # Acceptance tests against a live Fleet instance (Docker Compose)
+    # -------------------------------------------------------------------------
+    acceptance:
+        name: Acceptance Tests (Terraform ${{ matrix.terraform }})
+        needs: build
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                terraform:
+                    - "1.5.*"
+                    - "1.6.*"
+                    - "1.7.*"
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+
+            - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+              with:
+                  terraform_version: ${{ matrix.terraform }}
+                  terraform_wrapper: false
+
+            - run: go mod download
+
+            # -----------------------------------------------------------------
+            # Start Fleet + MySQL + Redis via Docker Compose
+            # -----------------------------------------------------------------
+            - name: Start Fleet services
+              run: |
+                  docker compose \
+                    -f .github/fleet-test/docker-compose.yml \
+                    up -d
+              # depends_on conditions sequence startup correctly; setup-fleet.sh
+              # polls /healthz from the runner (where curl is available) instead.
+
+            # -----------------------------------------------------------------
+            # First-time Fleet setup: create admin user and get API token
+            # -----------------------------------------------------------------
+            - name: Set up Fleet and obtain API token
+              id: fleet-setup
+              run: |
+                  # Run the setup script and capture output to a file.
+                  # Redirecting to a file (not $()) correctly propagates a
+                  # non-zero exit code, failing the step if setup fails.
+                  .github/fleet-test/setup-fleet.sh > /tmp/fleet-env
+                  # Source the KEY=VALUE pairs into the current shell …
+                  source /tmp/fleet-env
+                  # … then persist them for subsequent steps …
+                  cat /tmp/fleet-env >> "$GITHUB_ENV"
+                  # … and mask the token so it doesn't appear in logs.
+                  echo "::add-mask::${FLEETDM_API_TOKEN}"
+              env:
+                  FLEET_URL: http://localhost:8080
+
+            # -----------------------------------------------------------------
+            # Import Fleet's standard query library into the test instance
+            # -----------------------------------------------------------------
+            - name: Import standard query library
+              run: |
+                  chmod +x .github/fleet-test/import-standard-queries.sh
+                  .github/fleet-test/import-standard-queries.sh
+              env:
+                  FLEETDM_URL: ${{ env.FLEETDM_URL }}
+                  FLEETDM_API_TOKEN: ${{ env.FLEETDM_API_TOKEN }}
+
+            - name: Show Fleet container logs on failure
+              if: failure()
+              run: |
+                  docker compose -f .github/fleet-test/docker-compose.yml logs
+
+            # -----------------------------------------------------------------
+            # Run acceptance tests
+            # -----------------------------------------------------------------
+            - name: Run acceptance tests
+              timeout-minutes: 30
+              run: go test -v -cover -timeout=25m ./internal/provider/...
+              env:
+                  TF_ACC: "1"
+                  FLEETDM_URL: ${{ env.FLEETDM_URL }}
+                  FLEETDM_API_TOKEN: ${{ env.FLEETDM_API_TOKEN }}
+
+            # -----------------------------------------------------------------
+            # Cleanup (always runs)
+            # -----------------------------------------------------------------
+            - name: Stop Fleet services
+              if: always()
+              run: |
+                  docker compose \
+                    -f .github/fleet-test/docker-compose.yml \
+                    down -v --remove-orphans
+
+    # -------------------------------------------------------------------------
+    # (Optional) Gate job: checks whether external Fleet secrets are configured.
+    # Secrets context is not available in job-level `if:`, so this lightweight
+    # job exposes the result as an output for downstream jobs.
+    # -------------------------------------------------------------------------
+    check-external-secrets:
+        name: Check External Secrets
+        needs: build
+        runs-on: ubuntu-latest
+        outputs:
+            available: ${{ steps.check.outputs.available }}
+        steps:
+            - name: Check for required secrets
+              id: check
+              run: |
+                  if [ -n "$FLEETDM_URL" ] && [ -n "$FLEETDM_API_TOKEN" ]; then
+                    echo "available=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "available=false" >> "$GITHUB_OUTPUT"
+                    echo "::notice::External acceptance tests skipped — FLEETDM_URL and/or FLEETDM_API_TOKEN secrets not configured."
+                  fi
+              env:
+                  FLEETDM_URL: ${{ secrets.FLEETDM_URL }}
+                  FLEETDM_API_TOKEN: ${{ secrets.FLEETDM_API_TOKEN }}
+
+    # -------------------------------------------------------------------------
+    # (Optional) Acceptance tests against an external instance, when secrets
+    # are configured (e.g. for staging/production validation)
+    # -------------------------------------------------------------------------
+    acceptance-external:
+        name: Acceptance Tests (External Instance, Terraform ${{ matrix.terraform }})
+        needs: check-external-secrets
+        if: needs.check-external-secrets.outputs.available == 'true'
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        strategy:
+            fail-fast: false
+            matrix:
+                terraform:
+                    - "1.7.*"
+        steps:
+            - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+            - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+              with:
+                  go-version-file: "go.mod"
+                  cache: true
+            - uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+              with:
+                  terraform_version: ${{ matrix.terraform }}
+                  terraform_wrapper: false
+            - run: go mod download
+            - name: Run acceptance tests
+              run: go test -v -cover -timeout=20m ./internal/provider/...
+              timeout-minutes: 25
+              env:
+                  TF_ACC: "1"
+                  FLEETDM_URL: ${{ secrets.FLEETDM_URL }}
+                  FLEETDM_API_TOKEN: ${{ secrets.FLEETDM_API_TOKEN }}

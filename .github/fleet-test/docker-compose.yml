@@ -1,0 +1,97 @@
+# Docker Compose for spinning up a Fleet test instance.
+# Used by the CI acceptance-test workflow and for local development testing.
+#
+# All services use network_mode: "host" so that Fleet's --dev flag can reach
+# MinIO via localhost:9000 (as it expects) rather than a Docker bridge hostname.
+#
+# Usage:
+#   docker compose -f .github/fleet-test/docker-compose.yml up -d --wait
+#   eval "$(.github/fleet-test/setup-fleet.sh)"
+#   TF_ACC=1 go test -v -cover ./internal/provider/...
+
+services:
+  mysql:
+    image: mysql:8.0
+    network_mode: "host"
+    environment:
+      MYSQL_ROOT_PASSWORD: toor
+      MYSQL_DATABASE: fleet
+      MYSQL_USER: fleet
+      MYSQL_PASSWORD: insecure
+    command: --max_allowed_packet=536870912
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "fleet", "-pinsecure"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7
+    network_mode: "host"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+
+  # MinIO provides the S3-compatible storage that Fleet --dev expects at localhost:9000.
+  minio:
+    image: minio/minio
+    network_mode: "host"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 5s
+
+  fleet-migrate:
+    image: fleetdm/fleet:latest
+    network_mode: "host"
+    command: fleet prepare db
+    environment:
+      # host networking → all services reachable at 127.0.0.1
+      FLEET_MYSQL_ADDRESS: 127.0.0.1:3306
+      FLEET_MYSQL_USERNAME: fleet
+      FLEET_MYSQL_PASSWORD: insecure
+      FLEET_MYSQL_DATABASE: fleet
+      FLEET_REDIS_ADDRESS: 127.0.0.1:6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Exits 0 on success; compose treats it as a one-shot service.
+
+  fleet:
+    image: fleetdm/fleet:latest
+    network_mode: "host"
+    # --dev    : sets Fleet development defaults (logging, TLS cert, etc.)
+    # --dev_license: enables Fleet Premium via the built-in development license
+    command: fleet serve --dev --dev_license
+    environment:
+      FLEET_MYSQL_ADDRESS: 127.0.0.1:3306
+      FLEET_MYSQL_USERNAME: fleet
+      FLEET_MYSQL_PASSWORD: insecure
+      FLEET_MYSQL_DATABASE: fleet
+      FLEET_REDIS_ADDRESS: 127.0.0.1:6379
+      FLEET_SERVER_ADDRESS: 0.0.0.0:8080
+      # Override --dev's forced TLS so tests can connect over plain HTTP.
+      FLEET_SERVER_TLS: "false"
+      FLEET_LOGGING_JSON: "true"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      fleet-migrate:
+        condition: service_completed_successfully
+    # No healthcheck here: the Fleet image is a minimal binary that does not
+    # ship curl/wget.  setup-fleet.sh polls /healthz from the runner instead.
