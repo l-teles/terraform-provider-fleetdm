@@ -38,7 +38,7 @@ type QueryResourceModel struct {
 	Name               types.String `tfsdk:"name"`
 	Description        types.String `tfsdk:"description"`
 	Query              types.String `tfsdk:"query"`
-	Platform           types.String `tfsdk:"platform"`
+	Platform           types.List   `tfsdk:"platform"`
 	MinOsqueryVersion  types.String `tfsdk:"min_osquery_version"`
 	Interval           types.Int64  `tfsdk:"interval"`
 	ObserverCanRun     types.Bool   `tfsdk:"observer_can_run"`
@@ -81,11 +81,11 @@ func (r *QueryResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Required:            true,
 				MarkdownDescription: "The SQL query to run against hosts.",
 			},
-			"platform": schema.StringAttribute{
+			"platform": schema.ListAttribute{
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "Comma-separated platforms this query is compatible with (darwin, linux, windows, chrome). Empty means all platforms.",
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
 			},
 			"min_osquery_version": schema.StringAttribute{
 				Optional:            true,
@@ -159,7 +159,7 @@ func (r *QueryResource) Create(ctx context.Context, req resource.CreateRequest, 
 		Name:               data.Name.ValueString(),
 		Description:        data.Description.ValueString(),
 		Query:              data.Query.ValueString(),
-		Platform:           data.Platform.ValueString(),
+		Platform:           platformListToString(ctx, data.Platform),
 		MinOsqueryVersion:  data.MinOsqueryVersion.ValueString(),
 		Interval:           int(data.Interval.ValueInt64()),
 		ObserverCanRun:     data.ObserverCanRun.ValueBool(),
@@ -218,7 +218,7 @@ func (r *QueryResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		Name:               data.Name.ValueString(),
 		Description:        data.Description.ValueString(),
 		Query:              data.Query.ValueString(),
-		Platform:           data.Platform.ValueString(),
+		Platform:           platformListToString(ctx, data.Platform),
 		MinOsqueryVersion:  data.MinOsqueryVersion.ValueString(),
 		Interval:           int(data.Interval.ValueInt64()),
 		ObserverCanRun:     data.ObserverCanRun.ValueBool(),
@@ -270,7 +270,7 @@ func (r *QueryResource) mapQueryToModel(query *fleetdm.Query, data *QueryResourc
 	data.Name = types.StringValue(query.Name)
 	data.Description = types.StringValue(query.Description)
 	data.Query = types.StringValue(query.Query)
-	data.Platform = types.StringValue(query.Platform)
+	data.Platform = platformStringToList(query.Platform)
 	data.MinOsqueryVersion = types.StringValue(query.MinOsqueryVersion)
 	data.Interval = types.Int64Value(int64(query.Interval))
 	data.ObserverCanRun = types.BoolValue(query.ObserverCanRun)

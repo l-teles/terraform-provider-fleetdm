@@ -38,7 +38,7 @@ type PolicyModel struct {
 	Query                 types.String `tfsdk:"query"`
 	Critical              types.Bool   `tfsdk:"critical"`
 	Resolution            types.String `tfsdk:"resolution"`
-	Platform              types.String `tfsdk:"platform"`
+	Platform              types.List   `tfsdk:"platform"`
 	TeamID                types.Int64  `tfsdk:"team_id"`
 	AuthorID              types.Int64  `tfsdk:"author_id"`
 	AuthorName            types.String `tfsdk:"author_name"`
@@ -92,9 +92,10 @@ func (d *PoliciesDataSource) Schema(ctx context.Context, req datasource.SchemaRe
 							Computed:            true,
 							MarkdownDescription: "Instructions for resolving a failing policy.",
 						},
-						"platform": schema.StringAttribute{
+						"platform": schema.ListAttribute{
 							Computed:            true,
-							MarkdownDescription: "Comma-separated platforms this policy applies to.",
+							ElementType:         types.StringType,
+							MarkdownDescription: "List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.",
 						},
 						"team_id": schema.Int64Attribute{
 							Computed:            true,
@@ -169,7 +170,7 @@ func (d *PoliciesDataSource) Read(ctx context.Context, req datasource.ReadReques
 			Query:                 types.StringValue(policy.Query),
 			Critical:              types.BoolValue(policy.Critical),
 			Resolution:            types.StringValue(policy.Resolution),
-			Platform:              types.StringValue(policy.Platform),
+			Platform:              platformStringToList(policy.Platform),
 			AuthorID:              types.Int64Value(int64(policy.AuthorID)),
 			AuthorName:            types.StringValue(policy.AuthorName),
 			AuthorEmail:           types.StringValue(policy.AuthorEmail),

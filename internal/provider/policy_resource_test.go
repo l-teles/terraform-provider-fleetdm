@@ -46,7 +46,8 @@ func TestAccPolicyResource_basic(t *testing.T) {
 				Config: testAccPolicyResourceConfigFull(policyName, "Updated description", true, "darwin", "Restart the service."),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "critical", "true"),
-					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform", "darwin"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform.0", "darwin"),
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "resolution", "Restart the service."),
 				),
 			},
@@ -56,7 +57,8 @@ func TestAccPolicyResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "description", "Final description"),
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "critical", "false"),
-					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform", "linux"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform.0", "linux"),
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "resolution", "Check system logs."),
 				),
 			},
@@ -76,7 +78,8 @@ func TestAccPolicyResource_critical(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "name", policyName),
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "critical", "true"),
-					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform", "darwin"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "platform.0", "darwin"),
 					resource.TestCheckResourceAttr("fleetdm_policy.test", "resolution", "Check disk encryption settings."),
 				),
 			},
@@ -101,7 +104,7 @@ resource "fleetdm_policy" "test" {
   description = %[2]q
   query       = "SELECT 1 WHERE 1=1;"
   critical    = %[3]t
-  platform    = %[4]q
+  platform    = [%[4]q]
   resolution  = %[5]q
 }
 `, name, description, critical, platform, resolution)
@@ -114,7 +117,7 @@ resource "fleetdm_policy" "test" {
   description = "Critical policy"
   query       = "SELECT 1 FROM disk_encryption WHERE encrypted = 1;"
   critical    = true
-  platform    = "darwin"
+  platform    = ["darwin"]
   resolution  = "Check disk encryption settings."
 }
 `, name)

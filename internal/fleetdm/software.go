@@ -40,13 +40,67 @@ type SoftwarePackageInfo struct {
 	Platform           string `json:"platform,omitempty"`
 	SelfService        bool   `json:"self_service,omitempty"`
 	InstallDuringSetup *bool  `json:"install_during_setup,omitempty"`
+	InstallScript      string `json:"install_script,omitempty"`
+	UninstallScript    string `json:"uninstall_script,omitempty"`
+	PreInstallQuery    string `json:"pre_install_query,omitempty"`
+	PostInstallScript  string `json:"post_install_script,omitempty"`
+	HashSHA256         string `json:"hash_sha256,omitempty"`
 }
 
 // AppStoreAppInfo represents App Store app info.
 type AppStoreAppInfo struct {
-	AdamID             string `json:"adam_id,omitempty"`
-	SelfService        bool   `json:"self_service,omitempty"`
-	InstallDuringSetup *bool  `json:"install_during_setup,omitempty"`
+	AdamID             string          `json:"app_store_id,omitempty"`
+	Platform           string          `json:"platform,omitempty"`
+	Name               string          `json:"name,omitempty"`
+	LatestVersion      string          `json:"latest_version,omitempty"`
+	SelfService        bool            `json:"self_service,omitempty"`
+	InstallDuringSetup *bool           `json:"install_during_setup,omitempty"`
+	LabelsIncludeAny   []SoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny   []SoftwareLabel `json:"labels_exclude_any,omitempty"`
+}
+
+// AddAppStoreAppRequest represents the request body for adding a VPP app.
+type AddAppStoreAppRequest struct {
+	AppStoreID  string `json:"app_store_id"`
+	TeamID      int    `json:"team_id"`
+	Platform    string `json:"platform,omitempty"`
+	SelfService bool   `json:"self_service,omitempty"`
+}
+
+// UpdateAppStoreAppRequest represents the request body for updating a VPP app.
+type UpdateAppStoreAppRequest struct {
+	TeamID           int      `json:"team_id"`
+	SelfService      bool     `json:"self_service"`
+	DisplayName      string   `json:"display_name,omitempty"`
+	LabelsIncludeAny []string `json:"labels_include_any"`
+	LabelsExcludeAny []string `json:"labels_exclude_any"`
+}
+
+// FleetMaintainedApp represents a Fleet Maintained App.
+type FleetMaintainedApp struct {
+	ID              int    `json:"id"`
+	Name            string `json:"name"`
+	Slug            string `json:"slug"`
+	Platform        string `json:"platform"`
+	Version         string `json:"version,omitempty"`
+	SoftwareTitleID *int   `json:"software_title_id,omitempty"`
+	Filename        string `json:"filename,omitempty"`
+	URL             string `json:"url,omitempty"`
+	InstallScript   string `json:"install_script,omitempty"`
+	UninstallScript string `json:"uninstall_script,omitempty"`
+}
+
+// AddFleetMaintainedAppRequest represents the request body for adding a Fleet Maintained App.
+type AddFleetMaintainedAppRequest struct {
+	FleetMaintainedAppID int      `json:"fleet_maintained_app_id"`
+	TeamID               int      `json:"team_id"`
+	InstallScript        string   `json:"install_script,omitempty"`
+	PreInstallQuery      string   `json:"pre_install_query,omitempty"`
+	PostInstallScript    string   `json:"post_install_script,omitempty"`
+	SelfService          bool     `json:"self_service,omitempty"`
+	AutomaticInstall     bool     `json:"automatic_install,omitempty"`
+	LabelsIncludeAny     []string `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny     []string `json:"labels_exclude_any,omitempty"`
 }
 
 // SoftwareVersion represents a software version in FleetDM.
@@ -392,4 +446,105 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *req.TeamID)
 	}
 	return c.Patch(ctx, endpoint, req, nil)
+}
+
+// addAppStoreAppResponse is the API response when adding a VPP app.
+type addAppStoreAppResponse struct {
+	SoftwareTitleID int `json:"software_title_id"`
+}
+
+// AddAppStoreApp adds a VPP (App Store) app to a team.
+func (c *Client) AddAppStoreApp(ctx context.Context, req *AddAppStoreAppRequest) (*SoftwareTitle, error) {
+	var resp addAppStoreAppResponse
+	if err := c.Post(ctx, "/software/app_store_apps", req, &resp); err != nil {
+		return nil, fmt.Errorf("failed to add App Store app: %w", err)
+	}
+	if resp.SoftwareTitleID == 0 {
+		return nil, fmt.Errorf("add App Store app succeeded but software_title_id is 0")
+	}
+	teamID := &req.TeamID
+	return c.GetSoftwareTitle(ctx, resp.SoftwareTitleID, teamID)
+}
+
+// UpdateAppStoreApp updates a VPP (App Store) app's metadata.
+func (c *Client) UpdateAppStoreApp(ctx context.Context, titleID int, req *UpdateAppStoreAppRequest) error {
+	endpoint := fmt.Sprintf("/software/titles/%d/app_store_app", titleID)
+	return c.Patch(ctx, endpoint, req, nil)
+}
+
+// listFleetMaintainedAppsResponse is the API response for listing Fleet Maintained Apps.
+type listFleetMaintainedAppsResponse struct {
+	FleetMaintainedApps []FleetMaintainedApp `json:"fleet_maintained_apps"`
+}
+
+// ListFleetMaintainedApps retrieves all Fleet Maintained Apps.
+func (c *Client) ListFleetMaintainedApps(ctx context.Context, teamID *int) ([]FleetMaintainedApp, error) {
+	params := make(map[string]string)
+	if teamID != nil {
+		params["team_id"] = strconv.Itoa(*teamID)
+	}
+	var resp listFleetMaintainedAppsResponse
+	if err := c.Get(ctx, "/software/fleet_maintained_apps", params, &resp); err != nil {
+		return nil, fmt.Errorf("failed to list Fleet Maintained Apps: %w", err)
+	}
+	return resp.FleetMaintainedApps, nil
+}
+
+// getFleetMaintainedAppResponse is the API response for getting a single Fleet Maintained App.
+type getFleetMaintainedAppResponse struct {
+	FleetMaintainedApp *FleetMaintainedApp `json:"fleet_maintained_app"`
+}
+
+// GetFleetMaintainedApp retrieves a Fleet Maintained App by ID.
+func (c *Client) GetFleetMaintainedApp(ctx context.Context, id int) (*FleetMaintainedApp, error) {
+	var resp getFleetMaintainedAppResponse
+	if err := c.Get(ctx, fmt.Sprintf("/software/fleet_maintained_apps/%d", id), nil, &resp); err != nil {
+		return nil, fmt.Errorf("failed to get Fleet Maintained App %d: %w", id, err)
+	}
+	return resp.FleetMaintainedApp, nil
+}
+
+// ListAppStoreAppsResponse is the API response for listing App Store apps.
+type ListAppStoreAppsResponse struct {
+	AppStoreApps []AppStoreAppListItem `json:"app_store_apps"`
+}
+
+// AppStoreAppListItem represents a single App Store app in a list response.
+type AppStoreAppListItem struct {
+	AppStoreID    string `json:"app_store_id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name,omitempty"`
+	Platform      string `json:"platform"`
+	IconURL       string `json:"icon_url,omitempty"`
+	LatestVersion string `json:"latest_version,omitempty"`
+}
+
+// ListAppStoreApps lists available App Store (VPP) apps for a team.
+func (c *Client) ListAppStoreApps(ctx context.Context, teamID int) ([]AppStoreAppListItem, error) {
+	params := map[string]string{
+		"team_id": strconv.Itoa(teamID),
+	}
+	var resp ListAppStoreAppsResponse
+	if err := c.Get(ctx, "/software/app_store_apps", params, &resp); err != nil {
+		return nil, fmt.Errorf("failed to list App Store apps: %w", err)
+	}
+	return resp.AppStoreApps, nil
+}
+
+// addFleetMaintainedAppResponse is the API response when adding a Fleet Maintained App.
+type addFleetMaintainedAppResponse struct {
+	SoftwareTitleID int `json:"software_title_id"`
+}
+
+// AddFleetMaintainedApp adds a Fleet Maintained App to a team.
+func (c *Client) AddFleetMaintainedApp(ctx context.Context, req *AddFleetMaintainedAppRequest) (*SoftwareTitle, error) {
+	var resp addFleetMaintainedAppResponse
+	if err := c.Post(ctx, "/software/fleet_maintained_apps", req, &resp); err != nil {
+		return nil, fmt.Errorf("failed to add Fleet Maintained App: %w", err)
+	}
+	if resp.SoftwareTitleID == 0 {
+		return nil, fmt.Errorf("add Fleet Maintained App succeeded but software_title_id is 0")
+	}
+	teamID := &req.TeamID
+	return c.GetSoftwareTitle(ctx, resp.SoftwareTitleID, teamID)
 }

@@ -29,7 +29,7 @@ type QueryDataSourceModel struct {
 	Name               types.String `tfsdk:"name"`
 	Description        types.String `tfsdk:"description"`
 	Query              types.String `tfsdk:"query"`
-	Platform           types.String `tfsdk:"platform"`
+	Platform           types.List   `tfsdk:"platform"`
 	MinOsqueryVersion  types.String `tfsdk:"min_osquery_version"`
 	Interval           types.Int64  `tfsdk:"interval"`
 	ObserverCanRun     types.Bool   `tfsdk:"observer_can_run"`
@@ -67,9 +67,10 @@ func (d *QueryDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 				Computed:            true,
 				MarkdownDescription: "The SQL query.",
 			},
-			"platform": schema.StringAttribute{
+			"platform": schema.ListAttribute{
 				Computed:            true,
-				MarkdownDescription: "Comma-separated platforms this query is compatible with.",
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
 			},
 			"min_osquery_version": schema.StringAttribute{
 				Computed:            true,
@@ -138,7 +139,7 @@ func (d *QueryDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	data.Name = types.StringValue(query.Name)
 	data.Description = types.StringValue(query.Description)
 	data.Query = types.StringValue(query.Query)
-	data.Platform = types.StringValue(query.Platform)
+	data.Platform = platformStringToList(query.Platform)
 	data.MinOsqueryVersion = types.StringValue(query.MinOsqueryVersion)
 	data.Interval = types.Int64Value(int64(query.Interval))
 	data.ObserverCanRun = types.BoolValue(query.ObserverCanRun)

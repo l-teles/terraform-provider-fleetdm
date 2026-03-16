@@ -39,7 +39,7 @@ type PolicyResourceModel struct {
 	Query            types.String `tfsdk:"query"`
 	Critical         types.Bool   `tfsdk:"critical"`
 	Resolution       types.String `tfsdk:"resolution"`
-	Platform         types.String `tfsdk:"platform"`
+	Platform         types.List   `tfsdk:"platform"`
 	TeamID           types.Int64  `tfsdk:"team_id"`
 	AuthorID         types.Int64  `tfsdk:"author_id"`
 	AuthorName       types.String `tfsdk:"author_name"`
@@ -90,11 +90,11 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Default:             stringdefault.StaticString(""),
 				MarkdownDescription: "Instructions for resolving a failing policy check.",
 			},
-			"platform": schema.StringAttribute{
+			"platform": schema.ListAttribute{
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "Comma-separated platforms this policy applies to (darwin, linux, windows, chrome). Empty means all platforms.",
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.",
 			},
 			"team_id": schema.Int64Attribute{
 				Optional:            true,
@@ -142,7 +142,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		Query:       data.Query.ValueString(),
 		Critical:    data.Critical.ValueBool(),
 		Resolution:  data.Resolution.ValueString(),
-		Platform:    data.Platform.ValueString(),
+		Platform:    platformListToString(ctx, data.Platform),
 	}
 
 	policy, err := r.client.CreatePolicy(ctx, optionalIntPtr(data.TeamID), createReq)
@@ -195,7 +195,7 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		Query:       data.Query.ValueString(),
 		Critical:    data.Critical.ValueBool(),
 		Resolution:  data.Resolution.ValueString(),
-		Platform:    data.Platform.ValueString(),
+		Platform:    platformListToString(ctx, data.Platform),
 	}
 
 	policy, err := r.client.UpdatePolicy(ctx, int(data.ID.ValueInt64()), optionalIntPtr(data.TeamID), updateReq)
@@ -243,7 +243,7 @@ func (r *PolicyResource) mapPolicyToModel(policy *fleetdm.Policy, data *PolicyRe
 	data.Query = types.StringValue(policy.Query)
 	data.Critical = types.BoolValue(policy.Critical)
 	data.Resolution = types.StringValue(policy.Resolution)
-	data.Platform = types.StringValue(policy.Platform)
+	data.Platform = platformStringToList(policy.Platform)
 	data.AuthorID = types.Int64Value(int64(policy.AuthorID))
 	data.AuthorName = types.StringValue(policy.AuthorName)
 	data.AuthorEmail = types.StringValue(policy.AuthorEmail)

@@ -381,3 +381,51 @@ func TestClient_UpdateSetupExperience(t *testing.T) {
 		t.Fatalf("UpdateSetupExperience failed: %v", err)
 	}
 }
+
+func TestClient_GetConfigProfileContent(t *testing.T) {
+	const wantContent = `<?xml version="1.0"?><plist version="1.0"><dict><key>PayloadType</key><string>Configuration</string></dict></plist>`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET request, got: %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/configuration_profiles/p-abc123" {
+			t.Errorf("expected path /api/v1/fleet/configuration_profiles/p-abc123, got: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("alt") != "media" {
+			t.Errorf("expected alt=media query param, got: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/x-apple-aspen-config")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(wantContent))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	content, err := client.GetConfigProfileContent(context.Background(), "p-abc123")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if content != wantContent {
+		t.Errorf("expected content %q, got: %q", wantContent, content)
+	}
+}
+
+func TestClient_GetConfigProfileContent_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("profile not found"))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+
+	_, err := client.GetConfigProfileContent(context.Background(), "p-does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for 404 response, got nil")
+	}
+}

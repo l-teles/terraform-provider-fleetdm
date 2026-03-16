@@ -252,5 +252,8 @@ func (p *FleetDMProvider) DataSources(ctx context.Context) []func() datasource.D
 		NewActivitiesDataSource,
 		NewABMTokensDataSource,
 		NewVPPTokensDataSource,
+		NewFleetMaintainedAppDataSource,
+		NewFleetMaintainedAppsDataSource,
+		NewAppStoreAppsDataSource,
 	}
 }

@@ -47,7 +47,8 @@ func TestAccQueryResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_query.test", "observer_can_run", "true"),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "logging", "snapshot"),
-					resource.TestCheckResourceAttr("fleetdm_query.test", "platform", "darwin"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.0", "darwin"),
 				),
 			},
 			// Update platform and logging to different values
@@ -56,7 +57,8 @@ func TestAccQueryResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_query.test", "description", "Final description"),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "logging", "differential"),
-					resource.TestCheckResourceAttr("fleetdm_query.test", "platform", "linux"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.0", "linux"),
 				),
 			},
 		},
@@ -76,7 +78,8 @@ func TestAccQueryResource_withOptions(t *testing.T) {
 					resource.TestCheckResourceAttr("fleetdm_query.test", "name", queryName),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "observer_can_run", "true"),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "logging", "snapshot"),
-					resource.TestCheckResourceAttr("fleetdm_query.test", "platform", "darwin"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.0", "darwin"),
 				),
 			},
 		},
@@ -101,7 +104,7 @@ resource "fleetdm_query" "test" {
   query            = %[2]q
   observer_can_run = %[4]t
   logging          = %[5]q
-  platform         = %[6]q
+  platform         = [%[6]q]
 }
 `, name, query, description, observerCanRun, logging, platform)
 }
@@ -112,7 +115,7 @@ resource "fleetdm_query" "test" {
   name            = %[1]q
   description     = "Query with options"
   query           = "SELECT * FROM system_info;"
-  platform        = "darwin"
+  platform        = ["darwin"]
   observer_can_run = true
   logging         = "snapshot"
 }
