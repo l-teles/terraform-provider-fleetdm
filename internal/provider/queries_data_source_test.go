@@ -63,7 +63,8 @@ func TestAccQueriesDataSource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.#", "2"),
 					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.name", "Get OS Version"),
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.platform", "darwin"),
+					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.platform.#", "1"),
+				resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.platform.0", "darwin"),
 					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.1.name", "System Info"),
 					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.1.observer_can_run", "true"),
 				),

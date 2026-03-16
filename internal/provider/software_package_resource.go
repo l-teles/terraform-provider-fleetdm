@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -513,9 +514,8 @@ func (r *softwarePackageResource) readVPP(_ context.Context, title *fleetdm.Soft
 	}
 	if app.Platform != "" {
 		state.Platform = types.StringValue(app.Platform)
-	} else {
-		state.Platform = types.StringValue(title.Source)
 	}
+	// If app.Platform is empty, leave state.Platform unchanged (UseStateForUnknown handles this).
 	state.AppStoreID = types.StringValue(app.AdamID)
 	state.SelfService = types.BoolValue(app.SelfService)
 }
@@ -526,9 +526,14 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	if len(title.Versions) > 0 {
 		state.Version = types.StringValue(title.Versions[0].Version)
 	}
-	state.Platform = types.StringValue(title.Source)
 
 	pkg := title.SoftwarePackage
+	// Prefer the platform from the package metadata; fall back to source only when absent.
+	if pkg.Platform != "" {
+		state.Platform = types.StringValue(pkg.Platform)
+	} else {
+		state.Platform = types.StringValue(title.Source)
+	}
 	if pkg.InstallScript != "" {
 		state.InstallScript = types.StringValue(pkg.InstallScript)
 	}
@@ -646,7 +651,8 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 
 			filename := plan.Filename.ValueString()
 			if filename == "" {
-				filename = plan.PackagePath.ValueString()
+				// Use only the base name so Fleet receives a filename, not a full local path.
+				filename = filepath.Base(plan.PackagePath.ValueString())
 			}
 
 			uploadReq := &fleetdm.UploadSoftwarePackageRequest{
@@ -720,7 +726,7 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 
 // computeLocalPackageSHA reads a file and returns its SHA256 hex digest and content.
 func computeLocalPackageSHA(filePath string) (string, []byte, error) {
-	content, err := os.ReadFile(filePath)
+	content, err := os.ReadFile(filePath) // #nosec G304 -- path comes from Terraform config
 	if err != nil {
 		return "", nil, err
 	}

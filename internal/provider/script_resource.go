@@ -253,8 +253,9 @@ func (r *scriptResource) ImportState(ctx context.Context, req resource.ImportSta
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 
-	// Fetch script content via alt=media endpoint
-	content, err := r.client.GetScriptContent(ctx, int(id))
+	// Fetch script content via alt=media endpoint.
+	// ParseInt uses bitSize=64 so the cast to int is safe for any valid script ID.
+	content, err := r.client.GetScriptContent(ctx, int(id)) // #nosec G115 -- script IDs are small positive integers
 	if err != nil {
 		resp.Diagnostics.AddWarning(
 			"Unable to Import Script Content",

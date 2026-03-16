@@ -76,7 +76,7 @@ resource "fleetdm_query" "import_test" {
   name        = "` + name + `"
   description = "Test query for import"
   query       = "SELECT * FROM system_info;"
-  platform    = "darwin"
+  platform    = ["darwin"]
 }
 `
 }
@@ -113,7 +113,7 @@ resource "fleetdm_policy" "import_test" {
   name        = "` + name + `"
   description = "Test policy for import"
   query       = "SELECT 1 WHERE 1=1;"
-  platform    = "darwin"
+  platform    = ["darwin"]
   resolution  = "This is a test policy"
 }
 `

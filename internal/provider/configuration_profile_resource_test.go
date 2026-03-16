@@ -34,6 +34,10 @@ func TestAccConfigurationProfileResource_basic(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"profile_uuid": profileUUID,
 			})
+		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+profileUUID && r.URL.Query().Get("alt") == "media" && r.Method == "GET":
+			w.Header().Set("Content-Type", "application/x-apple-aspen-config")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(testMobileConfig))
 		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+profileUUID && r.Method == "GET":
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"profile_uuid":       profileUUID,
