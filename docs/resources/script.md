@@ -66,7 +66,7 @@ resource "fleetdm_script" "windows_script" {
 
 ### Required
 
-- `content` (String, Sensitive) The content of the script.
+- `content` (String) The content of the script.
 - `name` (String) The name of the script file (e.g., 'install-app.sh' or 'configure.ps1').
 
 ### Optional

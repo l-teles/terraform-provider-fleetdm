@@ -13,19 +13,17 @@ Use this data source to retrieve available App Store (VPP) apps for a team.
 ## Example Usage
 
 ```terraform
-# Get available App Store apps for a team
-data "fleetdm_app_store_apps" "team_apps" {
-  team_id = 5
+# List available App Store (VPP) apps for a team
+data "fleetdm_app_store_apps" "available" {
+  team_id = fleetdm_team.workstations.id
 }
 
-# Output all available app names
-output "available_apps" {
-  value = [for app in data.fleetdm_app_store_apps.team_apps.app_store_apps : app.name]
+output "available_vpp_app_count" {
+  value = length(data.fleetdm_app_store_apps.available.app_store_apps)
 }
 
-# Find a specific app by name
-output "testflight_id" {
-  value = [for app in data.fleetdm_app_store_apps.team_apps.app_store_apps : app.app_store_id if app.name == "TestFlight"][0]
+output "vpp_app_names" {
+  value = [for app in data.fleetdm_app_store_apps.available.app_store_apps : app.name]
 }
 ```
 

@@ -1,6 +1,7 @@
-# Example: FleetDM Software Package
+# --- type = "package" (default) ---
+# Upload a software installer from a local file.
+# The package is re-uploaded only when the file content (SHA256) changes.
 
-# Upload a software package for a team
 resource "fleetdm_software_package" "example_app" {
   team_id = fleetdm_team.workstations.id
 
@@ -15,33 +16,62 @@ resource "fleetdm_software_package" "example_app" {
   automatic_install = false
 }
 
-# Software package with pre-install query
-resource "fleetdm_software_package" "conditional_app" {
-  team_id = fleetdm_team.workstations.id
-
-  filename     = "conditional-app.pkg"
-  package_path = "${path.module}/packages/conditional-app.pkg"
-
-  # Only install if the app is not already installed
-  pre_install_query = "SELECT 1 FROM apps WHERE name != 'ConditionalApp';"
-
-  install_script = "installer -pkg /tmp/conditional-app.pkg -target /"
-}
-
-# Software package with label targeting
+# Package with a pre-install query and label targeting
 resource "fleetdm_software_package" "developer_tools" {
   team_id = fleetdm_team.engineering.id
 
   filename     = "dev-tools.pkg"
   package_path = "${path.module}/packages/dev-tools.pkg"
 
+  # Only install if the tool is not already present
+  pre_install_query = "SELECT 1 FROM apps WHERE name != 'DevTools';"
+
   install_script = "installer -pkg /tmp/dev-tools.pkg -target /"
 
-  # Only available for hosts with these labels
   labels_include_any = ["Developers", "Engineers"]
-
-  # Exclude hosts with this label
   labels_exclude_any = ["Contractors"]
 
   self_service = true
+}
+
+# --- type = "vpp" ---
+# Add an App Store (VPP) app to a team.
+# Requires VPP to be configured in Fleet.
+
+data "fleetdm_app_store_apps" "available" {
+  team_id = fleetdm_team.workstations.id
+}
+
+resource "fleetdm_software_package" "xcode" {
+  type         = "vpp"
+  app_store_id = "497799835" # Xcode
+  team_id      = fleetdm_team.workstations.id
+  platform     = "darwin"
+  self_service = false
+}
+
+# --- type = "fleet_maintained" ---
+# Add a Fleet Maintained App (pre-packaged by Fleet) to a team.
+
+data "fleetdm_fleet_maintained_app" "chrome" {
+  name = "Google Chrome"
+}
+
+resource "fleetdm_software_package" "chrome" {
+  type                    = "fleet_maintained"
+  fleet_maintained_app_id = data.fleetdm_fleet_maintained_app.chrome.id
+  team_id                 = fleetdm_team.workstations.id
+  self_service            = true
+}
+
+# Fleet Maintained App with a custom install script override
+resource "fleetdm_software_package" "chrome_custom" {
+  type                    = "fleet_maintained"
+  fleet_maintained_app_id = data.fleetdm_fleet_maintained_app.chrome.id
+  team_id                 = fleetdm_team.workstations.id
+
+  install_script = data.fleetdm_fleet_maintained_app.chrome.install_script
+
+  self_service      = true
+  automatic_install = true
 }

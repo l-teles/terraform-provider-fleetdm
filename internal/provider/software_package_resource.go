@@ -95,7 +95,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 			"type": schema.StringAttribute{
-				Description: "The type of software: 'package' (default), 'vpp' (App Store/VPP), or 'fleet_maintained'.",
+				Description: "The type of software to manage. One of: `package` (default) — upload a local installer file (.pkg, .msi, .deb, .rpm, .exe); `vpp` — add an App Store app via Apple Volume Purchase Program, requires `app_store_id`; `fleet_maintained` — add a Fleet-curated app, requires `fleet_maintained_app_id`. Changing this value forces a new resource.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("package"),

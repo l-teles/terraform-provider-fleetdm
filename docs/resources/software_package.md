@@ -10,18 +10,13 @@ description: |-
 
 Manages a FleetDM software package, VPP (App Store) app, or Fleet Maintained App. This is a Premium feature.
 
-The `type` attribute controls which kind of software is managed:
-
-- **`package`** (default) — Upload a local installer file (.pkg, .msi, .deb, .rpm, .exe).
-- **`vpp`** — Add an App Store app via Apple Volume Purchase Program (VPP). Requires `app_store_id`.
-- **`fleet_maintained`** — Add a Fleet Maintained App (curated by Fleet). Requires `fleet_maintained_app_id`.
-
 ## Example Usage
 
-### Software Package (type = "package")
-
 ```terraform
-# Upload a software package for a team
+# --- type = "package" (default) ---
+# Upload a software installer from a local file.
+# The package is re-uploaded only when the file content (SHA256) changes.
+
 resource "fleetdm_software_package" "example_app" {
   team_id = fleetdm_team.workstations.id
 
@@ -36,84 +31,64 @@ resource "fleetdm_software_package" "example_app" {
   automatic_install = false
 }
 
-# Software package with pre-install query
-resource "fleetdm_software_package" "conditional_app" {
-  team_id = fleetdm_team.workstations.id
-
-  filename     = "conditional-app.pkg"
-  package_path = "${path.module}/packages/conditional-app.pkg"
-
-  # Only install if the app is not already installed
-  pre_install_query = "SELECT 1 FROM apps WHERE name != 'ConditionalApp';"
-
-  install_script = "installer -pkg /tmp/conditional-app.pkg -target /"
-}
-
-# Software package with label targeting
+# Package with a pre-install query and label targeting
 resource "fleetdm_software_package" "developer_tools" {
   team_id = fleetdm_team.engineering.id
 
   filename     = "dev-tools.pkg"
   package_path = "${path.module}/packages/dev-tools.pkg"
 
+  # Only install if the tool is not already present
+  pre_install_query = "SELECT 1 FROM apps WHERE name != 'DevTools';"
+
   install_script = "installer -pkg /tmp/dev-tools.pkg -target /"
 
-  # Only available for hosts with these labels
   labels_include_any = ["Developers", "Engineers"]
-
-  # Exclude hosts with this label
   labels_exclude_any = ["Contractors"]
 
   self_service = true
 }
-```
 
-### VPP / App Store App (type = "vpp")
+# --- type = "vpp" ---
+# Add an App Store (VPP) app to a team.
+# Requires VPP to be configured in Fleet.
 
-```terraform
-# Add a VPP (App Store) app
-resource "fleetdm_software_package" "testflight" {
+data "fleetdm_app_store_apps" "available" {
+  team_id = fleetdm_team.workstations.id
+}
+
+resource "fleetdm_software_package" "xcode" {
   type         = "vpp"
+  app_store_id = "497799835" # Xcode
   team_id      = fleetdm_team.workstations.id
-  app_store_id = "899247664"
   platform     = "darwin"
-  self_service = true
-}
-
-# VPP app for iOS/iPadOS
-resource "fleetdm_software_package" "slack_ios" {
-  type         = "vpp"
-  team_id      = fleetdm_team.mobile.id
-  app_store_id = "618783545"
-  platform     = "ios"
   self_service = false
-
-  labels_include_any = ["iOS Devices"]
-}
-```
-
-### Fleet Maintained App (type = "fleet_maintained")
-
-```terraform
-# Add a Fleet Maintained App
-resource "fleetdm_software_package" "firefox" {
-  type                    = "fleet_maintained"
-  team_id                 = fleetdm_team.workstations.id
-  fleet_maintained_app_id = 1
-  self_service            = true
 }
 
-# Fleet Maintained App with custom scripts
+# --- type = "fleet_maintained" ---
+# Add a Fleet Maintained App (pre-packaged by Fleet) to a team.
+
+data "fleetdm_fleet_maintained_app" "chrome" {
+  name = "Google Chrome"
+}
+
 resource "fleetdm_software_package" "chrome" {
   type                    = "fleet_maintained"
-  team_id                 = fleetdm_team.engineering.id
-  fleet_maintained_app_id = 3
+  fleet_maintained_app_id = data.fleetdm_fleet_maintained_app.chrome.id
+  team_id                 = fleetdm_team.workstations.id
   self_service            = true
+}
 
-  pre_install_query     = "SELECT 1 FROM apps WHERE name != 'Google Chrome';"
-  post_install_script   = "echo 'Chrome installed successfully'"
+# Fleet Maintained App with a custom install script override
+resource "fleetdm_software_package" "chrome_custom" {
+  type                    = "fleet_maintained"
+  fleet_maintained_app_id = data.fleetdm_fleet_maintained_app.chrome.id
+  team_id                 = fleetdm_team.workstations.id
 
-  labels_include_any = ["Developers"]
+  install_script = data.fleetdm_fleet_maintained_app.chrome.install_script
+
+  self_service      = true
+  automatic_install = true
 }
 ```
 
@@ -125,37 +100,23 @@ resource "fleetdm_software_package" "chrome" {
 - `app_store_id` (String) The App Store ID (Adam ID) for VPP apps. Required when type is 'vpp'.
 - `automatic_install` (Boolean) Whether to automatically install the software during device setup (install during setup). Defaults to false.
 - `filename` (String) The filename of the package (e.g., 'myapp-1.0.0.pkg'). Required for type 'package'.
-- `fleet_maintained_app_id` (Number) The Fleet Maintained App ID. Required when type is 'fleet_maintained'. Use the Fleet API or the `fleetdm_fleet_maintained_apps` data source to find the ID.
+- `fleet_maintained_app_id` (Number) The Fleet Maintained App ID. Required when type is 'fleet_maintained'.
 - `install_script` (String) The script to run during installation. Optional. Used by type 'package' and 'fleet_maintained'.
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels.
-- `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package in Fleet. Supports .pkg, .msi, .deb, .rpm, and .exe files.
+- `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files.
+- `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed from the local file on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.
 - `platform` (String) The platform (darwin, windows, linux, ipados, ios). Computed for packages, optional for VPP apps.
 - `post_install_script` (String) The script to run after installation. Optional.
 - `pre_install_query` (String) An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.
 - `self_service` (Boolean) Whether the software is available for self-service installation by end users. Defaults to false.
 - `team_id` (Number) The ID of the team this software package belongs to. Required for Fleet Premium.
-- `type` (String) The type of software: 'package' (default), 'vpp' (App Store/VPP), or 'fleet_maintained'. Changing this forces a new resource to be created.
+- `type` (String) The type of software to manage. One of: `package` (default) — upload a local installer file (.pkg, .msi, .deb, .rpm, .exe); `vpp` — add an App Store app via Apple Volume Purchase Program, requires `app_store_id`; `fleet_maintained` — add a Fleet-curated app, requires `fleet_maintained_app_id`. Changing this value forces a new resource.
 - `uninstall_script` (String) The script to run during uninstallation. Optional. Used by type 'package'.
 
 ### Read-Only
 
 - `id` (Number) The unique identifier (internal, same as title_id).
 - `name` (String) The name of the software (extracted from the package or App Store).
-- `package_sha256` (String) The SHA256 hash of the package in Fleet. On create/update, computed from the local file at `package_path`. On read, fetched from the Fleet API. The package is only re-uploaded when the local file's SHA256 differs from what Fleet has.
 - `title_id` (Number) The software title ID.
 - `version` (String) The version of the software.
-
-## Import
-
-Import is supported using the following format. The type is automatically detected from the API response (VPP apps are detected by the presence of `app_store_app` data).
-
-```shell
-# Import by title_id
-terraform import fleetdm_software_package.example 42
-
-# Import by title_id:team_id
-terraform import fleetdm_software_package.example 42:5
-```
-
-~> **Note:** For `fleet_maintained` type, the API response looks like a regular package. After import, you may need to set `type = "fleet_maintained"` and `fleet_maintained_app_id` in your configuration manually to match the actual type. For `package` type, set `package_path` to the local file path after import. The `package_sha256` is automatically populated from the Fleet API during import, so if your local file matches the one in Fleet, no re-upload will occur on the next apply.

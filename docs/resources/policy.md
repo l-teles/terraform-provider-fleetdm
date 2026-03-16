@@ -64,7 +64,7 @@ resource "fleetdm_policy" "password_policy" {
 
 - `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI.
 - `description` (String) A description of the policy.
-- `platform` (String) Comma-separated platforms this policy applies to (darwin, linux, windows, chrome). Empty means all platforms.
+- `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
 - `resolution` (String) Instructions for resolving a failing policy check.
 - `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global.
 

@@ -72,7 +72,7 @@ resource "fleetdm_query" "comprehensive" {
 - `logging` (String) The logging type for this query (snapshot, differential, differential_ignore_removals).
 - `min_osquery_version` (String) The minimum osquery version required to run this query.
 - `observer_can_run` (Boolean) Whether observers can run this query.
-- `platform` (String) Comma-separated platforms this query is compatible with (darwin, linux, windows, chrome). Empty means all platforms.
+- `platform` (List of String) List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.
 - `team_id` (Number) The ID of the team this query belongs to. If not specified, the query is global.
 
 ### Read-Only

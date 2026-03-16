@@ -69,7 +69,7 @@ Read-Only:
 - `id` (String) The unique identifier of the policy.
 - `name` (String) The name of the policy.
 - `passing_host_count` (Number) The number of hosts passing this policy.
-- `platform` (String) Comma-separated platforms this policy applies to.
+- `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
 - `query` (String) The SQL query that defines the policy.
 - `resolution` (String) Instructions for resolving a failing policy.
 - `team_id` (Number) The ID of the team this policy belongs to.

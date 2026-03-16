@@ -191,9 +191,7 @@ func TestComputeLocalPackageSHA(t *testing.T) {
 		if string(got) != string(content) {
 			t.Errorf("content mismatch: expected %q, got %q", content, got)
 		}
-		// SHA256 of "fake pkg content for testing"
-		const wantSHA = "7a1d2a8c5d1e08a9af73adc0e60b3f2e0da7c4a2d6b8f1c3e5a9d2b4f7e0c16"
-		// We don't hard-code the exact hash; instead verify it's a 64-char hex string
+		// Verify it's a 64-char hex string (SHA256 output)
 		if len(sha) != 64 {
 			t.Errorf("expected 64-char hex SHA256, got %d chars: %s", len(sha), sha)
 		}

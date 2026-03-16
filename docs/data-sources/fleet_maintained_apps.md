@@ -13,22 +13,21 @@ Use this data source to retrieve information about all Fleet Maintained Apps.
 ## Example Usage
 
 ```terraform
-# Get all Fleet Maintained Apps
+# List all Fleet Maintained Apps
 data "fleetdm_fleet_maintained_apps" "all" {}
 
-# Get Fleet Maintained Apps with team context
-data "fleetdm_fleet_maintained_apps" "for_team" {
-  team_id = 5
+# List Fleet Maintained Apps, annotated for a specific team
+# (software_title_id is populated for apps already added to that team)
+data "fleetdm_fleet_maintained_apps" "team" {
+  team_id = fleetdm_team.workstations.id
 }
 
-# Output all app names
-output "all_app_names" {
+output "available_app_count" {
+  value = length(data.fleetdm_fleet_maintained_apps.all.fleet_maintained_apps)
+}
+
+output "app_names" {
   value = [for app in data.fleetdm_fleet_maintained_apps.all.fleet_maintained_apps : app.name]
-}
-
-# Find apps already added to the team
-output "apps_added_to_team" {
-  value = [for app in data.fleetdm_fleet_maintained_apps.for_team.fleet_maintained_apps : app.name if app.software_title_id != null]
 }
 ```
 
