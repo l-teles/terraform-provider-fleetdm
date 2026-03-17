@@ -348,7 +348,7 @@ resource "fleetdm_query" "ssh_keys" {
   name             = %[2]q
   description      = "Updated: auditing SSH keys across all users."
   query            = "SELECT username, authorized_keys.* FROM users CROSS JOIN authorized_keys USING (uid);"
-  platform         = "darwin,linux"
+  platform         = ["darwin", "linux"]
   observer_can_run = true
   team_id          = tonumber(fleetdm_team.test.id)
 }
