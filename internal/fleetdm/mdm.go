@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -172,6 +173,37 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 	}
 
 	return c.GetMDMConfigProfile(ctx, response.ProfileUUID)
+}
+
+// GetConfigProfileContent retrieves the raw content of a configuration profile by UUID using the alt=media query parameter.
+func (c *Client) GetConfigProfileContent(ctx context.Context, profileUUID string) (string, error) {
+	endpoint := fmt.Sprintf("/configuration_profiles/%s?alt=media", profileUUID)
+	reqURL := c.BaseURL + endpoint
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("User-Agent", c.UserAgent)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("failed to get config profile content %s: HTTP %d: %s", profileUUID, resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
 }
 
 // DeleteConfigProfile deletes an MDM configuration profile by UUID.

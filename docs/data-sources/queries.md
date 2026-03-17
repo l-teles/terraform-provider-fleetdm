@@ -60,6 +60,6 @@ Read-Only:
 - `min_osquery_version` (String) The minimum osquery version required.
 - `name` (String) The name of the query.
 - `observer_can_run` (Boolean) Whether observers can run this query.
-- `platform` (String) Comma-separated platforms this query is compatible with.
+- `platform` (List of String) List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.
 - `query` (String) The SQL query.
 - `team_id` (Number) The ID of the team this query belongs to.

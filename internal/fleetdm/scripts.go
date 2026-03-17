@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 )
@@ -99,6 +100,37 @@ func (c *Client) UpdateScript(ctx context.Context, id int, name string, content 
 	}
 
 	return c.GetScript(ctx, updateResp.ScriptID)
+}
+
+// GetScriptContent retrieves the content of a script by ID using the alt=media query parameter.
+func (c *Client) GetScriptContent(ctx context.Context, id int64) (string, error) {
+	endpoint := fmt.Sprintf("/scripts/%d?alt=media", id)
+	reqURL := c.BaseURL + endpoint
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("User-Agent", c.UserAgent)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("failed to get script content %d: HTTP %d: %s", id, resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
 }
 
 // DeleteScript deletes a script by ID.

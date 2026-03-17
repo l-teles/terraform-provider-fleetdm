@@ -455,6 +455,316 @@ func TestClient_UploadSoftwarePackage(t *testing.T) {
 	}
 }
 
+func TestClient_AddAppStoreApp(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/fleet/software/app_store_apps" {
+			var req AddAppStoreAppRequest
+			json.NewDecoder(r.Body).Decode(&req)
+
+			if req.AppStoreID != "361309726" {
+				t.Errorf("expected app_store_id '361309726', got: %s", req.AppStoreID)
+			}
+			if req.TeamID != 5 {
+				t.Errorf("expected team_id 5, got: %d", req.TeamID)
+			}
+			if req.Platform != "darwin" {
+				t.Errorf("expected platform 'darwin', got: %s", req.Platform)
+			}
+			if !req.SelfService {
+				t.Error("expected self_service to be true")
+			}
+
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_title_id": 100,
+			})
+			return
+		}
+
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/software/titles/100" {
+			json.NewEncoder(w).Encode(getSoftwareTitleResponse{
+				SoftwareTitle: &SoftwareTitle{
+					ID:     100,
+					Name:   "TestFlight",
+					Source: "apps",
+					AppStoreApp: &AppStoreAppInfo{
+						AdamID:        "361309726",
+						Platform:      "darwin",
+						Name:          "TestFlight",
+						LatestVersion: "3.2.0",
+						SelfService:   true,
+					},
+				},
+			})
+			return
+		}
+
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	title, err := client.AddAppStoreApp(context.Background(), &AddAppStoreAppRequest{
+		AppStoreID:  "361309726",
+		TeamID:      5,
+		Platform:    "darwin",
+		SelfService: true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if title.ID != 100 {
+		t.Errorf("expected title ID 100, got: %d", title.ID)
+	}
+	if title.Name != "TestFlight" {
+		t.Errorf("expected name 'TestFlight', got: %s", title.Name)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (post + get title), got: %d", callCount)
+	}
+}
+
+func TestClient_UpdateAppStoreApp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("expected PATCH request, got: %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/software/titles/100/app_store_app" {
+			t.Errorf("expected path /api/v1/fleet/software/titles/100/app_store_app, got: %s", r.URL.Path)
+		}
+
+		var req UpdateAppStoreAppRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		if req.TeamID != 5 {
+			t.Errorf("expected team_id 5, got: %d", req.TeamID)
+		}
+		if !req.SelfService {
+			t.Error("expected self_service to be true")
+		}
+		if len(req.LabelsIncludeAny) != 2 || req.LabelsIncludeAny[0] != "MacOS" || req.LabelsIncludeAny[1] != "Developers" {
+			t.Errorf("unexpected labels_include_any: %v", req.LabelsIncludeAny)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	err := client.UpdateAppStoreApp(context.Background(), 100, &UpdateAppStoreAppRequest{
+		TeamID:           5,
+		SelfService:      true,
+		LabelsIncludeAny: []string{"MacOS", "Developers"},
+		LabelsExcludeAny: []string{},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestClient_ListFleetMaintainedApps(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/software/fleet_maintained_apps" {
+			t.Errorf("expected path '/api/v1/fleet/software/fleet_maintained_apps', got: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("expected method GET, got: %s", r.Method)
+		}
+		if r.URL.Query().Get("team_id") != "5" {
+			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listFleetMaintainedAppsResponse{
+			FleetMaintainedApps: []FleetMaintainedApp{
+				{ID: 1, Name: "Firefox", Slug: "firefox", Platform: "darwin", Version: "125.0"},
+				{ID: 2, Name: "Slack", Slug: "slack", Platform: "darwin", Version: "4.38.0"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 5
+	apps, err := client.ListFleetMaintainedApps(context.Background(), &teamID)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(apps) != 2 {
+		t.Fatalf("expected 2 apps, got: %d", len(apps))
+	}
+	if apps[0].Name != "Firefox" {
+		t.Errorf("expected first app 'Firefox', got: %s", apps[0].Name)
+	}
+	if apps[1].Name != "Slack" {
+		t.Errorf("expected second app 'Slack', got: %s", apps[1].Name)
+	}
+}
+
+func TestClient_GetFleetMaintainedApp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/software/fleet_maintained_apps/1" {
+			t.Errorf("expected path '/api/v1/fleet/software/fleet_maintained_apps/1', got: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("expected method GET, got: %s", r.Method)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(getFleetMaintainedAppResponse{
+			FleetMaintainedApp: &FleetMaintainedApp{
+				ID:              1,
+				Name:            "Firefox",
+				Slug:            "firefox",
+				Platform:        "darwin",
+				Version:         "125.0",
+				Filename:        "firefox-125.0.dmg",
+				URL:             "https://download.mozilla.org/firefox-125.0.dmg",
+				InstallScript:   "installer -pkg /tmp/firefox.pkg -target /",
+				UninstallScript: "rm -rf /Applications/Firefox.app",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	app, err := client.GetFleetMaintainedApp(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if app.ID != 1 {
+		t.Errorf("expected ID 1, got: %d", app.ID)
+	}
+	if app.Name != "Firefox" {
+		t.Errorf("expected name 'Firefox', got: %s", app.Name)
+	}
+	if app.Slug != "firefox" {
+		t.Errorf("expected slug 'firefox', got: %s", app.Slug)
+	}
+	if app.Platform != "darwin" {
+		t.Errorf("expected platform 'darwin', got: %s", app.Platform)
+	}
+	if app.Filename != "firefox-125.0.dmg" {
+		t.Errorf("expected filename 'firefox-125.0.dmg', got: %s", app.Filename)
+	}
+	if app.InstallScript != "installer -pkg /tmp/firefox.pkg -target /" {
+		t.Errorf("unexpected install_script: %s", app.InstallScript)
+	}
+}
+
+func TestClient_AddFleetMaintainedApp(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/fleet/software/fleet_maintained_apps" {
+			var req AddFleetMaintainedAppRequest
+			json.NewDecoder(r.Body).Decode(&req)
+
+			if req.FleetMaintainedAppID != 1 {
+				t.Errorf("expected fleet_maintained_app_id 1, got: %d", req.FleetMaintainedAppID)
+			}
+			if req.TeamID != 5 {
+				t.Errorf("expected team_id 5, got: %d", req.TeamID)
+			}
+			if !req.SelfService {
+				t.Error("expected self_service to be true")
+			}
+
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_title_id": 200,
+			})
+			return
+		}
+
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/software/titles/200" {
+			json.NewEncoder(w).Encode(getSoftwareTitleResponse{
+				SoftwareTitle: &SoftwareTitle{
+					ID:     200,
+					Name:   "Firefox",
+					Source: "pkg_packages",
+					Versions: []SoftwareTitleVersion{
+						{ID: 1, Version: "125.0"},
+					},
+					SoftwarePackage: &SoftwarePackageInfo{
+						Name:     "Firefox",
+						Version:  "125.0",
+						Platform: "darwin",
+					},
+				},
+			})
+			return
+		}
+
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	title, err := client.AddFleetMaintainedApp(context.Background(), &AddFleetMaintainedAppRequest{
+		FleetMaintainedAppID: 1,
+		TeamID:               5,
+		SelfService:          true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if title.ID != 200 {
+		t.Errorf("expected title ID 200, got: %d", title.ID)
+	}
+	if title.Name != "Firefox" {
+		t.Errorf("expected name 'Firefox', got: %s", title.Name)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (post + get title), got: %d", callCount)
+	}
+}
+
+func TestClient_ListAppStoreApps(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/software/app_store_apps" {
+			t.Errorf("expected path '/api/v1/fleet/software/app_store_apps', got: %s", r.URL.Path)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("expected method GET, got: %s", r.Method)
+		}
+		if r.URL.Query().Get("team_id") != "5" {
+			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ListAppStoreAppsResponse{
+			AppStoreApps: []AppStoreAppListItem{
+				{AppStoreID: "361309726", Name: "TestFlight", Platform: "darwin", IconURL: "https://example.com/testflight.png", LatestVersion: "3.2.0"},
+				{AppStoreID: "497799835", Name: "Xcode", Platform: "darwin", IconURL: "https://example.com/xcode.png", LatestVersion: "15.2"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	apps, err := client.ListAppStoreApps(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(apps) != 2 {
+		t.Fatalf("expected 2 apps, got: %d", len(apps))
+	}
+	if apps[0].AppStoreID != "361309726" {
+		t.Errorf("expected first app store ID '361309726', got: %s", apps[0].AppStoreID)
+	}
+	if apps[0].Name != "TestFlight" {
+		t.Errorf("expected first app name 'TestFlight', got: %s", apps[0].Name)
+	}
+	if apps[1].Name != "Xcode" {
+		t.Errorf("expected second app name 'Xcode', got: %s", apps[1].Name)
+	}
+}
+
 func TestClient_ListSoftwareVersionsWithFilters(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()

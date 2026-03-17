@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -74,6 +75,35 @@ func stringPtrToString(val *string) types.String {
 		return types.StringValue(*val)
 	}
 	return types.StringNull()
+}
+
+// platformListToString converts a types.List of platform strings to a comma-separated string for the API.
+func platformListToString(ctx context.Context, list types.List) string {
+	if list.IsNull() || list.IsUnknown() || len(list.Elements()) == 0 {
+		return ""
+	}
+	var platforms []string
+	list.ElementsAs(ctx, &platforms, false)
+	return strings.Join(platforms, ",")
+}
+
+// platformStringToList converts a comma-separated platform string from the API to a types.List.
+func platformStringToList(s string) types.List {
+	if s == "" {
+		return types.ListValueMust(types.StringType, []attr.Value{})
+	}
+	parts := strings.Split(s, ",")
+	values := make([]attr.Value, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			values = append(values, types.StringValue(p))
+		}
+	}
+	if len(values) == 0 {
+		return types.ListValueMust(types.StringType, []attr.Value{})
+	}
+	return types.ListValueMust(types.StringType, values)
 }
 
 // userTeamAttrTypes defines the Terraform object type for user team assignments.

@@ -75,7 +75,6 @@ func (r *scriptResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"content": schema.StringAttribute{
 				Description: "The content of the script.",
 				Required:    true,
-				Sensitive:   true,
 			},
 			"created_at": schema.StringAttribute{
 				Description: "When the script was created.",
@@ -169,7 +168,16 @@ func (r *scriptResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	state.TeamID = intPtrToInt64(script.TeamID)
 
-	// Note: Content is not returned by GetScript API, so we preserve the state value
+	// Fetch script content via alt=media endpoint
+	content, err := r.client.GetScriptContent(ctx, state.ID.ValueInt64())
+	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Unable to Read Script Content",
+			"Could not read script content for ID "+strconv.FormatInt(state.ID.ValueInt64(), 10)+": "+err.Error(),
+		)
+	} else {
+		state.Content = types.StringValue(content)
+	}
 
 	// Set refreshed state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -245,8 +253,16 @@ func (r *scriptResource) ImportState(ctx context.Context, req resource.ImportSta
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 
-	// Content is not returned by the Fleet API so it cannot be imported.
-	// We set it to an empty string here; Terraform will detect a diff on the
-	// next plan and the user must fill in the correct value in their config.
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("content"), "")...)
+	// Fetch script content via alt=media endpoint.
+	// ParseInt uses bitSize=64 so the cast to int is safe for any valid script ID.
+	content, err := r.client.GetScriptContent(ctx, id)
+	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Unable to Import Script Content",
+			"Could not read script content for ID "+strconv.FormatInt(id, 10)+": "+err.Error()+". Content will be empty.",
+		)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("content"), "")...)
+	} else {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("content"), content)...)
+	}
 }

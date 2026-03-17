@@ -31,7 +31,7 @@ type PolicyDataSourceModel struct {
 	Query            types.String `tfsdk:"query"`
 	Critical         types.Bool   `tfsdk:"critical"`
 	Resolution       types.String `tfsdk:"resolution"`
-	Platform         types.String `tfsdk:"platform"`
+	Platform         types.List   `tfsdk:"platform"`
 	TeamID           types.Int64  `tfsdk:"team_id"`
 	AuthorID         types.Int64  `tfsdk:"author_id"`
 	AuthorName       types.String `tfsdk:"author_name"`
@@ -77,9 +77,10 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 				Computed:            true,
 				MarkdownDescription: "Instructions for resolving a failing policy.",
 			},
-			"platform": schema.StringAttribute{
+			"platform": schema.ListAttribute{
 				Computed:            true,
-				MarkdownDescription: "Comma-separated platforms this policy applies to.",
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -130,7 +131,7 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.Query = types.StringValue(policy.Query)
 	data.Critical = types.BoolValue(policy.Critical)
 	data.Resolution = types.StringValue(policy.Resolution)
-	data.Platform = types.StringValue(policy.Platform)
+	data.Platform = platformStringToList(policy.Platform)
 	data.AuthorID = types.Int64Value(int64(policy.AuthorID))
 	data.AuthorName = types.StringValue(policy.AuthorName)
 	data.AuthorEmail = types.StringValue(policy.AuthorEmail)

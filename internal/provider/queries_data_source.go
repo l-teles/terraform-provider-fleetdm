@@ -36,7 +36,7 @@ type QueryModel struct {
 	Name               types.String `tfsdk:"name"`
 	Description        types.String `tfsdk:"description"`
 	Query              types.String `tfsdk:"query"`
-	Platform           types.String `tfsdk:"platform"`
+	Platform           types.List   `tfsdk:"platform"`
 	MinOsqueryVersion  types.String `tfsdk:"min_osquery_version"`
 	Interval           types.Int64  `tfsdk:"interval"`
 	ObserverCanRun     types.Bool   `tfsdk:"observer_can_run"`
@@ -83,9 +83,10 @@ func (d *QueriesDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 							Computed:            true,
 							MarkdownDescription: "The SQL query.",
 						},
-						"platform": schema.StringAttribute{
+						"platform": schema.ListAttribute{
 							Computed:            true,
-							MarkdownDescription: "Comma-separated platforms this query is compatible with.",
+							ElementType:         types.StringType,
+							MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
 						},
 						"min_osquery_version": schema.StringAttribute{
 							Computed:            true,
@@ -168,7 +169,7 @@ func (d *QueriesDataSource) Read(ctx context.Context, req datasource.ReadRequest
 			Name:               types.StringValue(query.Name),
 			Description:        types.StringValue(query.Description),
 			Query:              types.StringValue(query.Query),
-			Platform:           types.StringValue(query.Platform),
+			Platform:           platformStringToList(query.Platform),
 			MinOsqueryVersion:  types.StringValue(query.MinOsqueryVersion),
 			Interval:           types.Int64Value(int64(query.Interval)),
 			ObserverCanRun:     types.BoolValue(query.ObserverCanRun),

@@ -62,7 +62,9 @@ func TestAccStandardQueryLibrary_CRUD(t *testing.T) {
 					resource.TestCheckResourceAttr("fleetdm_query.test", "name", queryName),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "description",
 						"Presence of authorized SSH keys may be unusual on laptops."),
-					resource.TestCheckResourceAttr("fleetdm_query.test", "platform", "darwin,linux"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.#", "2"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.0", "darwin"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.1", "linux"),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "observer_can_run", "false"),
 					resource.TestCheckResourceAttrSet("fleetdm_query.test", "id"),
 				),
@@ -81,7 +83,8 @@ func TestAccStandardQueryLibrary_CRUD(t *testing.T) {
 					resource.TestCheckResourceAttr("fleetdm_query.test", "name", queryName),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "description",
 						"Retrieve application, system, and mobile app crash logs."),
-					resource.TestCheckResourceAttr("fleetdm_query.test", "platform", "darwin"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "platform.0", "darwin"),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "observer_can_run", "true"),
 					resource.TestCheckResourceAttr("fleetdm_query.test", "logging", "snapshot"),
 				),
@@ -198,7 +201,7 @@ resource "fleetdm_query" "test" {
   name            = %[1]q
   description     = "Presence of authorized SSH keys may be unusual on laptops."
   query           = "SELECT username, authorized_keys.* FROM users CROSS JOIN authorized_keys USING (uid);"
-  platform        = "darwin,linux"
+  platform        = ["darwin", "linux"]
   observer_can_run = false
 }
 `, name)
@@ -210,7 +213,7 @@ resource "fleetdm_query" "test" {
   name             = %[1]q
   description      = "Retrieve application, system, and mobile app crash logs."
   query            = "SELECT uid, datetime, responsible, exception_type, identifier, version, crash_path FROM users CROSS JOIN crashes USING (uid);"
-  platform         = "darwin"
+  platform         = ["darwin"]
   observer_can_run = true
   logging          = "snapshot"
 }
@@ -227,7 +230,7 @@ resource "fleetdm_query" "ssh_keys" {
   name        = %[2]q
   description = "Presence of authorized SSH keys may be unusual on laptops."
   query       = "SELECT username, authorized_keys.* FROM users CROSS JOIN authorized_keys USING (uid);"
-  platform    = "darwin,linux"
+  platform    = ["darwin", "linux"]
   team_id     = tonumber(fleetdm_team.test.id)
 }
 
@@ -305,7 +308,7 @@ resource "fleetdm_query" "ssh_keys" {
   name        = %[2]q
   description = "Presence of authorized SSH keys may be unusual on laptops."
   query       = "SELECT username, authorized_keys.* FROM users CROSS JOIN authorized_keys USING (uid);"
-  platform    = "darwin,linux"
+  platform    = ["darwin", "linux"]
   team_id     = tonumber(fleetdm_team.test.id)
 }
 
@@ -345,7 +348,7 @@ resource "fleetdm_query" "ssh_keys" {
   name             = %[2]q
   description      = "Updated: auditing SSH keys across all users."
   query            = "SELECT username, authorized_keys.* FROM users CROSS JOIN authorized_keys USING (uid);"
-  platform         = "darwin,linux"
+  platform         = ["darwin", "linux"]
   observer_can_run = true
   team_id          = tonumber(fleetdm_team.test.id)
 }

@@ -116,7 +116,6 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				Description:         "The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).",
 				MarkdownDescription: "The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).",
 				Required:            true,
-				Sensitive:           true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -294,14 +293,21 @@ func (r *ConfigurationProfileResource) Read(ctx context.Context, req resource.Re
 		return
 	}
 
-	// Map response to model, preserving the profile_content from state
-	// since it's not returned by the API
-	profileContent := state.ProfileContent
 	r.mapProfileToModel(ctx, profile, &state, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	state.ProfileContent = profileContent
+
+	// Fetch profile content via alt=media endpoint
+	content, err := r.client.GetConfigProfileContent(ctx, state.ProfileUUID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Unable to Read Profile Content",
+			"Could not read profile content for "+state.ProfileUUID.ValueString()+": "+err.Error(),
+		)
+	} else {
+		state.ProfileContent = types.StringValue(content)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -369,8 +375,17 @@ func (r *ConfigurationProfileResource) ImportState(ctx context.Context, req reso
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("profile_uuid"), profile.ProfileUUID)...)
 
-	// Note: profile_content cannot be retrieved from the API, so it will be unknown after import
-	// The user will need to set it manually or accept drift
+	// Fetch profile content via alt=media endpoint
+	content, err := r.client.GetConfigProfileContent(ctx, profile.ProfileUUID)
+	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"Unable to Import Profile Content",
+			"Could not read profile content for "+profile.ProfileUUID+": "+err.Error()+". Content will be empty.",
+		)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("profile_content"), "")...)
+	} else {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("profile_content"), content)...)
+	}
 }
 
 // mapProfileToModel maps an MDMConfigProfile to the Terraform model.
