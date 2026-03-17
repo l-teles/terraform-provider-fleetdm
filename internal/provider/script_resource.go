@@ -169,7 +169,7 @@ func (r *scriptResource) Read(ctx context.Context, req resource.ReadRequest, res
 	state.TeamID = intPtrToInt64(script.TeamID)
 
 	// Fetch script content via alt=media endpoint
-	content, err := r.client.GetScriptContent(ctx, int(state.ID.ValueInt64()))
+	content, err := r.client.GetScriptContent(ctx, state.ID.ValueInt64())
 	if err != nil {
 		resp.Diagnostics.AddWarning(
 			"Unable to Read Script Content",
@@ -255,7 +255,7 @@ func (r *scriptResource) ImportState(ctx context.Context, req resource.ImportSta
 
 	// Fetch script content via alt=media endpoint.
 	// ParseInt uses bitSize=64 so the cast to int is safe for any valid script ID.
-	content, err := r.client.GetScriptContent(ctx, int(id)) // #nosec G115 -- script IDs are small positive integers
+	content, err := r.client.GetScriptContent(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddWarning(
 			"Unable to Import Script Content",

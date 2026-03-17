@@ -103,7 +103,7 @@ func (c *Client) UpdateScript(ctx context.Context, id int, name string, content 
 }
 
 // GetScriptContent retrieves the content of a script by ID using the alt=media query parameter.
-func (c *Client) GetScriptContent(ctx context.Context, id int) (string, error) {
+func (c *Client) GetScriptContent(ctx context.Context, id int64) (string, error) {
 	endpoint := fmt.Sprintf("/scripts/%d?alt=media", id)
 	reqURL := c.BaseURL + endpoint
 
