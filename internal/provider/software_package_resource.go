@@ -42,26 +42,26 @@ type softwarePackageResource struct {
 
 // softwarePackageResourceModel maps the resource schema data.
 type softwarePackageResourceModel struct {
-	ID                     types.Int64  `tfsdk:"id"`
-	TitleID                types.Int64  `tfsdk:"title_id"`
-	TeamID                 types.Int64  `tfsdk:"team_id"`
-	Type                   types.String `tfsdk:"type"`
-	Name                   types.String `tfsdk:"name"`
-	Version                types.String `tfsdk:"version"`
-	Filename               types.String `tfsdk:"filename"`
-	PackagePath            types.String `tfsdk:"package_path"`
-	PackageSHA256          types.String `tfsdk:"package_sha256"`
-	Platform               types.String `tfsdk:"platform"`
-	InstallScript          types.String `tfsdk:"install_script"`
-	UninstallScript        types.String `tfsdk:"uninstall_script"`
-	PreInstallQuery        types.String `tfsdk:"pre_install_query"`
-	PostInstallScript      types.String `tfsdk:"post_install_script"`
-	SelfService            types.Bool   `tfsdk:"self_service"`
-	AutomaticInstall       types.Bool   `tfsdk:"automatic_install"`
-	LabelsIncludeAny       types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny       types.List   `tfsdk:"labels_exclude_any"`
-	AppStoreID             types.String `tfsdk:"app_store_id"`
-	FleetMaintainedAppID   types.Int64  `tfsdk:"fleet_maintained_app_id"`
+	ID                   types.Int64  `tfsdk:"id"`
+	TitleID              types.Int64  `tfsdk:"title_id"`
+	TeamID               types.Int64  `tfsdk:"team_id"`
+	Type                 types.String `tfsdk:"type"`
+	Name                 types.String `tfsdk:"name"`
+	Version              types.String `tfsdk:"version"`
+	Filename             types.String `tfsdk:"filename"`
+	PackagePath          types.String `tfsdk:"package_path"`
+	PackageSHA256        types.String `tfsdk:"package_sha256"`
+	Platform             types.String `tfsdk:"platform"`
+	InstallScript        types.String `tfsdk:"install_script"`
+	UninstallScript      types.String `tfsdk:"uninstall_script"`
+	PreInstallQuery      types.String `tfsdk:"pre_install_query"`
+	PostInstallScript    types.String `tfsdk:"post_install_script"`
+	SelfService          types.Bool   `tfsdk:"self_service"`
+	AutomaticInstall     types.Bool   `tfsdk:"automatic_install"`
+	LabelsIncludeAny     types.List   `tfsdk:"labels_include_any"`
+	LabelsExcludeAny     types.List   `tfsdk:"labels_exclude_any"`
+	AppStoreID           types.String `tfsdk:"app_store_id"`
+	FleetMaintainedAppID types.Int64  `tfsdk:"fleet_maintained_app_id"`
 }
 
 // Metadata returns the resource type name.
@@ -337,8 +337,6 @@ func (r *softwarePackageResource) createVPP(ctx context.Context, plan *softwareP
 	}
 	if title.AppStoreApp != nil && title.AppStoreApp.Platform != "" {
 		plan.Platform = types.StringValue(title.AppStoreApp.Platform)
-	} else {
-		plan.Platform = types.StringValue(title.Source)
 	}
 	plan.PackageSHA256 = types.StringValue("")
 	if plan.Filename.IsNull() || plan.Filename.IsUnknown() {
@@ -402,7 +400,9 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 	if len(title.Versions) > 0 {
 		plan.Version = types.StringValue(title.Versions[0].Version)
 	}
-	plan.Platform = types.StringValue(title.Source)
+	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
+		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
+	}
 	plan.PackageSHA256 = types.StringValue("")
 	if plan.Filename.IsNull() || plan.Filename.IsUnknown() {
 		plan.Filename = types.StringValue("")
@@ -667,6 +667,17 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 				AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
 			}
 
+			uploadDiags := extractLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
+			resp.Diagnostics.Append(uploadDiags...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			uploadDiags = extractLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+			resp.Diagnostics.Append(uploadDiags...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+
 			title, err := r.client.UploadSoftwarePackage(ctx, uploadReq)
 			if err != nil {
 				resp.Diagnostics.AddError(
@@ -682,7 +693,11 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 			if len(title.Versions) > 0 {
 				plan.Version = types.StringValue(title.Versions[0].Version)
 			}
-			plan.Platform = types.StringValue(title.Source)
+			if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
+				plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
+			} else {
+				plan.Platform = types.StringValue(title.Source)
+			}
 			plan.PackageSHA256 = types.StringValue(localSHA)
 			return
 		}

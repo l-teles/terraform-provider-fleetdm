@@ -98,9 +98,9 @@ func TestPlatformListToString(t *testing.T) {
 			want:  "darwin",
 		},
 		{
-			name:  "multiple platforms joined with comma-space",
+			name:  "multiple platforms joined with comma",
 			input: makeList("darwin", "linux", "windows"),
-			want:  "darwin, linux, windows",
+			want:  "darwin,linux,windows",
 		},
 	}
 

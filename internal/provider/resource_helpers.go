@@ -84,7 +84,7 @@ func platformListToString(ctx context.Context, list types.List) string {
 	}
 	var platforms []string
 	list.ElementsAs(ctx, &platforms, false)
-	return strings.Join(platforms, ", ")
+	return strings.Join(platforms, ",")
 }
 
 // platformStringToList converts a comma-separated platform string from the API to a types.List.
