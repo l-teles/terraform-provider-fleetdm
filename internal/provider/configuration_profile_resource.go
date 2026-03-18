@@ -245,7 +245,8 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 		if displayName.IsUnknown() {
 			return
 		}
-		if displayName.IsNull() || strings.TrimSpace(displayName.ValueString()) == "" {
+		name := displayName.ValueString()
+		if displayName.IsNull() || strings.TrimSpace(name) == "" {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("display_name"),
 				"display_name is required for Windows profiles",
@@ -254,7 +255,14 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 			)
 			return
 		}
-		name := displayName.ValueString()
+		if strings.TrimSpace(name) != name {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"Invalid display_name",
+				"display_name must not have leading or trailing whitespace.",
+			)
+			return
+		}
 		if strings.ContainsAny(name, "/\\\r\n") {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("display_name"),
@@ -301,8 +309,8 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	// For macOS/JSON profiles, display_name is informational — name comes from content.
 	filename := "profile" + ext
 	if ext == ".xml" {
-		displayName := strings.TrimSpace(plan.DisplayName.ValueString())
-		if plan.DisplayName.IsNull() || plan.DisplayName.IsUnknown() || displayName == "" {
+		displayName := plan.DisplayName.ValueString()
+		if plan.DisplayName.IsNull() || plan.DisplayName.IsUnknown() || strings.TrimSpace(displayName) == "" {
 			// Apply-time guard: ValidateConfig may have been skipped if profile_content was unknown
 			resp.Diagnostics.AddError(
 				"display_name is required for Windows profiles",
@@ -311,7 +319,30 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 			)
 			return
 		}
-		// ValidateConfig already rejects extensions, path separators, and control chars
+		// Apply-time guard: ValidateConfig skips when display_name is unknown at plan time,
+		// so validate the resolved value here too
+		if strings.TrimSpace(displayName) != displayName {
+			resp.Diagnostics.AddError(
+				"Invalid display_name",
+				"display_name must not have leading or trailing whitespace.",
+			)
+			return
+		}
+		if strings.ContainsAny(displayName, "/\\\r\n") {
+			resp.Diagnostics.AddError(
+				"Invalid display_name",
+				"display_name must not contain path separators (/ or \\) or newline characters.",
+			)
+			return
+		}
+		lower := strings.ToLower(displayName)
+		if strings.HasSuffix(lower, ".xml") || strings.HasSuffix(lower, ".mobileconfig") || strings.HasSuffix(lower, ".json") {
+			resp.Diagnostics.AddError(
+				"Invalid display_name",
+				"display_name must not include a profile file extension (.xml, .mobileconfig, .json).",
+			)
+			return
+		}
 		filename = displayName + ext
 	}
 
