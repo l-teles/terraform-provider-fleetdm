@@ -270,7 +270,11 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 	if hasS3 {
 		var s3Config packageS3Model
 		diags := data.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
-		if !diags.HasError() {
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+		{
 			if s3Config.Bucket.IsUnknown() {
 				resp.Diagnostics.AddAttributeError(
 					path.Root("package_s3"),
@@ -342,7 +346,17 @@ func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.M
 		return
 	}
 
-	// Set the computed SHA in the plan so Terraform can detect drift.
+	// Only set computed SHA if the user didn't explicitly configure package_sha256.
+	var config softwarePackageResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !config.PackageSHA256.IsNull() && !config.PackageSHA256.IsUnknown() {
+		// User explicitly set package_sha256 — respect their value.
+		return
+	}
+
 	plan.PackageSHA256 = types.StringValue(computedSHA)
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
