@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	gopath "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -294,10 +295,17 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 		return
 	}
 
+	// Derive filename: explicit > S3 key > package path
+	filename := deriveFilename(ctx, plan)
+	if filename == "" {
+		resp.Diagnostics.AddError("Missing filename", "Could not determine filename. Set 'filename' explicitly, or ensure package_path or package_s3.key is set.")
+		return
+	}
+
 	// Build the upload request
 	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
 		Software:          packageContent,
-		Filename:          plan.Filename.ValueString(),
+		Filename:          filename,
 		InstallScript:     plan.InstallScript.ValueString(),
 		UninstallScript:   plan.UninstallScript.ValueString(),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
@@ -586,18 +594,10 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	} else {
 		state.Platform = types.StringValue(title.Source)
 	}
-	if pkg.InstallScript != "" {
-		state.InstallScript = types.StringValue(pkg.InstallScript)
-	}
-	if pkg.UninstallScript != "" {
-		state.UninstallScript = types.StringValue(pkg.UninstallScript)
-	}
-	if pkg.PreInstallQuery != "" {
-		state.PreInstallQuery = types.StringValue(pkg.PreInstallQuery)
-	}
-	if pkg.PostInstallScript != "" {
-		state.PostInstallScript = types.StringValue(pkg.PostInstallScript)
-	}
+	state.InstallScript = types.StringValue(pkg.InstallScript)
+	state.UninstallScript = types.StringValue(pkg.UninstallScript)
+	state.PreInstallQuery = types.StringValue(pkg.PreInstallQuery)
+	state.PostInstallScript = types.StringValue(pkg.PostInstallScript)
 	state.SelfService = types.BoolValue(pkg.SelfService)
 	if pkg.InstallDuringSetup != nil {
 		state.AutomaticInstall = types.BoolValue(*pkg.InstallDuringSetup)
@@ -705,20 +705,7 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 				}
 			}
 
-			filename := plan.Filename.ValueString()
-			if filename == "" {
-				// Derive filename from the package source path.
-				if !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != "" {
-					filename = filepath.Base(plan.PackagePath.ValueString())
-				} else if !plan.PackageS3.IsNull() && !plan.PackageS3.IsUnknown() {
-					var s3Cfg packageS3Model
-					if d := plan.PackageS3.As(ctx, &s3Cfg, basetypes.ObjectAsOptions{}); !d.HasError() {
-						if !s3Cfg.Key.IsNull() && !s3Cfg.Key.IsUnknown() && s3Cfg.Key.ValueString() != "" {
-							filename = filepath.Base(s3Cfg.Key.ValueString())
-						}
-					}
-				}
-			}
+			filename := deriveFilename(ctx, plan)
 
 			uploadReq := &fleetdm.UploadSoftwarePackageRequest{
 				TeamID:            teamID,
@@ -747,8 +734,11 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 			if err != nil {
 				resp.Diagnostics.AddError(
 					"Error re-uploading software package",
-					"Could not upload updated package: "+err.Error(),
+					"The existing package was deleted but the re-upload failed. "+
+						"The resource has been removed from state; run 'terraform apply' again to recreate it. "+
+						"Error: "+err.Error(),
 				)
+				resp.State.RemoveResource(ctx)
 				return
 			}
 
@@ -836,6 +826,12 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 		if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
 			return nil, "", fmt.Errorf("package_s3 bucket and key must be known values; they cannot be derived from resources that haven't been created yet")
 		}
+		if s3Config.Bucket.ValueString() == "" {
+			return nil, "", fmt.Errorf("package_s3 bucket must not be empty")
+		}
+		if s3Config.Key.ValueString() == "" {
+			return nil, "", fmt.Errorf("package_s3 key must not be empty")
+		}
 
 		src := fleetdm.S3Source{
 			Bucket: s3Config.Bucket.ValueString(),
@@ -860,14 +856,24 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 	return content, hex.EncodeToString(hash[:]), nil
 }
 
-// computeLocalPackageSHA reads a file and returns its SHA256 hex digest and content.
-func computeLocalPackageSHA(filePath string) (string, []byte, error) {
-	content, err := os.ReadFile(filePath) // #nosec G304 -- path comes from Terraform config
-	if err != nil {
-		return "", nil, err
+// deriveFilename returns the filename to use for the package upload.
+// Priority: explicit filename > local path basename > S3 key basename.
+func deriveFilename(ctx context.Context, model *softwarePackageResourceModel) string {
+	if !model.Filename.IsNull() && !model.Filename.IsUnknown() && model.Filename.ValueString() != "" {
+		return model.Filename.ValueString()
 	}
-	hash := sha256.Sum256(content)
-	return hex.EncodeToString(hash[:]), content, nil
+	if !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != "" {
+		return filepath.Base(model.PackagePath.ValueString())
+	}
+	if !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown() {
+		var s3Cfg packageS3Model
+		if d := model.PackageS3.As(ctx, &s3Cfg, basetypes.ObjectAsOptions{}); !d.HasError() {
+			if !s3Cfg.Key.IsNull() && !s3Cfg.Key.IsUnknown() && s3Cfg.Key.ValueString() != "" {
+				return gopath.Base(s3Cfg.Key.ValueString())
+			}
+		}
+	}
+	return ""
 }
 
 // Delete deletes the resource and removes the Terraform state.

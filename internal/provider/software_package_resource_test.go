@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -215,20 +216,23 @@ resource "fleetdm_software_package" "fma_test" {
 }
 
 func TestAccSoftwarePackageResource_s3(t *testing.T) {
-	// sha256("FAKES3PKG") = 156d5f3dc917f38e5bb9d9f9609ba2cc8f7147148a2247f5e83e57eab9209439
-	// sha256("FAKES3PKGv2") = computed below
 	contentV1 := []byte("FAKES3PKG")
 	contentV2 := []byte("FAKES3PKGv2")
 	shaV1 := "156d5f3dc917f38e5bb9d9f9609ba2cc8f7147148a2247f5e83e57eab9209439"
 
-	// Track which version the S3 mock should serve.
-	s3Version := &contentV1
+	// Mutex-protected state shared between test goroutine and httptest handlers.
+	var mu sync.Mutex
+	currentS3Content := contentV1
+	currentFleetSHA := shaV1
 
 	// Mock S3 server that serves the package content via path-style requests.
 	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/test-bucket/test.pkg" {
+			mu.Lock()
+			data := currentS3Content
+			mu.Unlock()
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(*s3Version)
+			w.Write(data)
 			return
 		}
 		http.NotFound(w, r)
@@ -238,9 +242,6 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 	// Set dummy AWS credentials so the S3 SDK does not fail.
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-
-	// Track the SHA that Fleet should report (updated after re-upload).
-	fleetSHA := &shaV1
 
 	// Mock Fleet server that accepts the upload and returns title metadata.
 	fleetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +257,9 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 		case r.URL.Path == "/api/v1/fleet/software/titles/55/package" && r.Method == "PATCH":
 			w.WriteHeader(http.StatusOK)
 		case r.URL.Path == "/api/v1/fleet/software/titles/55" && r.Method == "GET":
+			mu.Lock()
+			sha := currentFleetSHA
+			mu.Unlock()
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"software_title": map[string]interface{}{
 					"id":             55,
@@ -266,7 +270,7 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 					"versions_count": 1,
 					"software_package": map[string]interface{}{
 						"title_id":    55,
-						"hash_sha256": *fleetSHA,
+						"hash_sha256": sha,
 					},
 					"versions": []map[string]interface{}{
 						{"id": 1, "version": "1.0.0", "hosts_count": 0},
@@ -281,7 +285,6 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 	}))
 	defer fleetServer.Close()
 
-	// Compute v2 SHA for assertion.
 	v2Hash := sha256.Sum256(contentV2)
 	shaV2 := hex.EncodeToString(v2Hash[:])
 
@@ -300,8 +303,10 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 			// Step 2: S3 content changes → update should detect SHA mismatch and re-upload.
 			{
 				PreConfig: func() {
-					s3Version = &contentV2
-					fleetSHA = &shaV2
+					mu.Lock()
+					currentS3Content = contentV2
+					currentFleetSHA = shaV2
+					mu.Unlock()
 				},
 				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
 				Check: resource.ComposeAggregateTestCheckFunc(
