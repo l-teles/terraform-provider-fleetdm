@@ -479,6 +479,16 @@ func TestProfileExtensionFromContent(t *testing.T) {
 			content: "   \n\t  ",
 			want:    ".mobileconfig",
 		},
+		{
+			name:    "Windows XML with UTF-8 BOM",
+			content: "\xEF\xBB\xBF<?xml version=\"1.0\"?><SyncML><SyncBody></SyncBody></SyncML>",
+			want:    ".xml",
+		},
+		{
+			name:    "JSON with UTF-8 BOM",
+			content: "\xEF\xBB\xBF{\"Type\": \"com.apple.configuration.test\"}",
+			want:    ".json",
+		},
 	}
 
 	for _, tt := range tests {

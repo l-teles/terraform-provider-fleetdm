@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -249,11 +248,13 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 				"display_name must not contain path separators (/ or \\) or newline characters.",
 			)
 		}
-		if filepath.Ext(name) != "" {
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".xml") || strings.HasSuffix(lower, ".mobileconfig") || strings.HasSuffix(lower, ".json") {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("display_name"),
 				"Invalid display_name",
-				"display_name must not include a file extension (e.g. use \"BitLocker Policy\" not \"BitLocker Policy.xml\"). "+
+				"display_name must not include a profile file extension (.xml, .mobileconfig, .json). "+
+					"Use just the name (e.g. \"BitLocker Policy\" not \"BitLocker Policy.xml\"). "+
 					"The correct extension is added automatically based on the profile content.",
 			)
 		}
@@ -285,9 +286,19 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	// Fleet derives the Windows profile name from the filename (minus extension).
 	// For macOS/JSON profiles, display_name is informational — name comes from content.
 	filename := "profile" + ext
-	if ext == ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() && plan.DisplayName.ValueString() != "" {
+	if ext == ".xml" {
+		displayName := strings.TrimSpace(plan.DisplayName.ValueString())
+		if plan.DisplayName.IsNull() || plan.DisplayName.IsUnknown() || displayName == "" {
+			// Apply-time guard: ValidateConfig may have been skipped if profile_content was unknown
+			resp.Diagnostics.AddError(
+				"display_name is required for Windows profiles",
+				"Windows XML profiles derive their name from the upload filename. "+
+					"Set display_name to a non-empty value to control the profile name shown in Fleet.",
+			)
+			return
+		}
 		// ValidateConfig already rejects extensions, path separators, and control chars
-		filename = plan.DisplayName.ValueString() + ext
+		filename = displayName + ext
 	}
 
 	createReq := &fleetdm.CreateConfigProfileRequest{

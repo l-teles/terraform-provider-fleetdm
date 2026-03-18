@@ -212,7 +212,7 @@ resource "fleetdm_configuration_profile" "t" {
 			},
 			{
 				Config:      windowsProfileConfig(`display_name = "Policy.xml"`),
-				ExpectError: regexp.MustCompile(`must not include a file extension`),
+				ExpectError: regexp.MustCompile(`must not include a profile file extension`),
 			},
 		},
 	})

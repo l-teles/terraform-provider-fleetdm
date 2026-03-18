@@ -138,6 +138,8 @@ func (c *Client) GetMDMSummary(ctx context.Context, platform string, teamID *int
 //   - ".json" for Apple declaration (DDM) profiles
 func ProfileExtensionFromContent(content []byte) string {
 	trimmed := bytes.TrimSpace(content)
+	// Strip UTF-8 BOM if present (some editors add it to XML/JSON files)
+	trimmed = bytes.TrimPrefix(trimmed, []byte{0xEF, 0xBB, 0xBF})
 	switch {
 	case bytes.HasPrefix(trimmed, []byte("<")):
 		// Any XML-like content; distinguish Apple plist from Windows
