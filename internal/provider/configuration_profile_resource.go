@@ -128,8 +128,8 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				},
 			},
 			"display_name": schema.StringAttribute{
-				Description:         "The display name for the profile. For Windows profiles, this controls the profile name shown in Fleet (derived from the upload filename). For macOS profiles, the name is extracted from PayloadDisplayName in the XML content and this field is informational only.",
-				MarkdownDescription: "The display name for the profile. For Windows profiles, this controls the profile name shown in Fleet (derived from the upload filename). For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is informational only.",
+				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. For macOS profiles, the name is extracted from PayloadDisplayName in the XML content and this field is computed automatically.",
+				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is computed automatically.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -239,6 +239,23 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 				"Windows XML profiles derive their name from the upload filename. "+
 					"Set display_name to a non-empty value to control the profile name shown in Fleet.",
 			)
+			return
+		}
+		name := displayName.ValueString()
+		if strings.ContainsAny(name, "/\\\r\n") {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"Invalid display_name",
+				"display_name must not contain path separators (/ or \\) or newline characters.",
+			)
+		}
+		if filepath.Ext(name) != "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"Invalid display_name",
+				"display_name must not include a file extension (e.g. use \"BitLocker Policy\" not \"BitLocker Policy.xml\"). "+
+					"The correct extension is added automatically based on the profile content.",
+			)
 		}
 	}
 }
@@ -269,13 +286,8 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	// For macOS/JSON profiles, display_name is informational — name comes from content.
 	filename := "profile" + ext
 	if ext == ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() && plan.DisplayName.ValueString() != "" {
-		name := plan.DisplayName.ValueString()
-		// Strip any file extension the user may have included
-		name = strings.TrimSuffix(name, filepath.Ext(name))
-		// Sanitize: remove path separators and control characters that could
-		// inject into the multipart Content-Disposition header
-		name = strings.NewReplacer("/", "_", "\\", "_", "\r", "", "\n", "").Replace(name)
-		filename = name + ext
+		// ValidateConfig already rejects extensions, path separators, and control chars
+		filename = plan.DisplayName.ValueString() + ext
 	}
 
 	createReq := &fleetdm.CreateConfigProfileRequest{

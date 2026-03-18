@@ -179,23 +179,40 @@ resource "fleetdm_configuration_profile" "win_test" {
 }
 
 func TestAccConfigurationProfileResource_windowsRequiresDisplayName(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: `
+	windowsProfileConfig := func(displayNameLine string) string {
+		return `
 provider "fleetdm" {
   server_address = "http://localhost:0"
   api_key        = "test-token"
 }
 
-resource "fleetdm_configuration_profile" "win_no_name" {
+resource "fleetdm_configuration_profile" "t" {
+  ` + displayNameLine + `
   profile_content = <<-EOT
 ` + testWindowsXMLProfile + `
   EOT
 }
-`,
+`
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      windowsProfileConfig(""),
 				ExpectError: regexp.MustCompile(`display_name is required for Windows profiles`),
+			},
+			{
+				Config:      windowsProfileConfig(`display_name = ""`),
+				ExpectError: regexp.MustCompile(`display_name is required for Windows profiles`),
+			},
+			{
+				Config:      windowsProfileConfig(`display_name = "My/Policy"`),
+				ExpectError: regexp.MustCompile(`must not contain path separators`),
+			},
+			{
+				Config:      windowsProfileConfig(`display_name = "Policy.xml"`),
+				ExpectError: regexp.MustCompile(`must not include a file extension`),
 			},
 		},
 	})
