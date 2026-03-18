@@ -26,9 +26,10 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource                = &softwarePackageResource{}
-	_ resource.ResourceWithConfigure   = &softwarePackageResource{}
-	_ resource.ResourceWithImportState = &softwarePackageResource{}
+	_ resource.Resource                   = &softwarePackageResource{}
+	_ resource.ResourceWithConfigure      = &softwarePackageResource{}
+	_ resource.ResourceWithImportState    = &softwarePackageResource{}
+	_ resource.ResourceWithValidateConfig = &softwarePackageResource{}
 )
 
 // NewSoftwarePackageResource is a helper function to simplify the provider implementation.
@@ -51,7 +52,7 @@ type softwarePackageResourceModel struct {
 	Version              types.String `tfsdk:"version"`
 	Filename             types.String `tfsdk:"filename"`
 	PackagePath          types.String `tfsdk:"package_path"`
-	PackageS3 types.Object `tfsdk:"package_s3"`
+	PackageS3            types.Object `tfsdk:"package_s3"`
 	PackageSHA256        types.String `tfsdk:"package_sha256"`
 	Platform             types.String `tfsdk:"platform"`
 	InstallScript        types.String `tfsdk:"install_script"`
@@ -66,7 +67,7 @@ type softwarePackageResourceModel struct {
 	FleetMaintainedAppID types.Int64  `tfsdk:"fleet_maintained_app_id"`
 }
 
-// packageS3Model maps the nested package_s3 block.
+// packageS3Model maps the nested package_s3 attribute.
 type packageS3Model struct {
 	Bucket      types.String `tfsdk:"bucket"`
 	Key         types.String `tfsdk:"key"`
@@ -225,6 +226,26 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 		},
+	}
+}
+
+// ValidateConfig validates the resource configuration at plan time.
+func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data softwarePackageResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	hasPath := !data.PackagePath.IsNull() && !data.PackagePath.IsUnknown()
+	hasS3 := !data.PackageS3.IsNull() && !data.PackageS3.IsUnknown()
+
+	if hasPath && hasS3 {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("package_s3"),
+			"Conflicting Configuration",
+			"package_path and package_s3 are mutually exclusive. Set one or the other, not both.",
+		)
 	}
 }
 
@@ -798,9 +819,8 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 			return nil, "", fmt.Errorf("could not parse package_s3 configuration")
 		}
 
-		// If bucket/key are unknown (from another resource), defer to apply time
 		if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
-			return nil, "", fmt.Errorf("package_s3 bucket or key is not yet known; this will resolve during apply")
+			return nil, "", fmt.Errorf("package_s3 bucket and key must be known values; they cannot be derived from resources that haven't been created yet")
 		}
 
 		src := fleetdm.S3Source{
