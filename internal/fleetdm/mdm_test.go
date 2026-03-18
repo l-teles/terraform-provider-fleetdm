@@ -563,7 +563,11 @@ func TestClient_CreateConfigProfile_DefaultFilename(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to parse multipart form: %v", err)
 			}
-			_, header, _ := r.FormFile("profile")
+			file, header, err := r.FormFile("profile")
+			if err != nil {
+				t.Fatalf("failed to get form file: %v", err)
+			}
+			defer file.Close()
 			if header.Filename != "profile.mobileconfig" {
 				t.Errorf("expected default filename 'profile.mobileconfig', got %q", header.Filename)
 			}

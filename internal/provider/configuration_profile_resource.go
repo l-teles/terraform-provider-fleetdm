@@ -226,13 +226,20 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 	}
 
 	ext := fleetdm.ProfileExtensionFromContent([]byte(profileContent.ValueString()))
-	if ext == ".xml" && (displayName.IsNull() || displayName.IsUnknown()) {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("display_name"),
-			"display_name is required for Windows profiles",
-			"Windows XML profiles derive their name from the upload filename. "+
-				"Set display_name to control the profile name shown in Fleet.",
-		)
+	if ext == ".xml" {
+		// Skip validation when display_name is unknown (e.g. computed from another resource);
+		// the value will be resolved at apply time.
+		if displayName.IsUnknown() {
+			return
+		}
+		if displayName.IsNull() || strings.TrimSpace(displayName.ValueString()) == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"display_name is required for Windows profiles",
+				"Windows XML profiles derive their name from the upload filename. "+
+					"Set display_name to a non-empty value to control the profile name shown in Fleet.",
+			)
+		}
 	}
 }
 
@@ -462,10 +469,8 @@ func (r *ConfigurationProfileResource) mapProfileToModel(ctx context.Context, pr
 	model.Name = types.StringValue(profile.Name)
 	model.Platform = types.StringValue(profile.Platform)
 
-	// Populate display_name from API when not explicitly set by user
-	if model.DisplayName.IsNull() || model.DisplayName.IsUnknown() {
-		model.DisplayName = types.StringValue(profile.Name)
-	}
+	// Always set display_name from API so state reflects what Fleet reports
+	model.DisplayName = types.StringValue(profile.Name)
 	model.Identifier = types.StringValue(profile.Identifier)
 	model.Checksum = types.StringValue(profile.Checksum)
 	model.CreatedAt = types.StringValue(profile.CreatedAt)
