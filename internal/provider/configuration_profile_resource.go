@@ -272,6 +272,9 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 		name := plan.DisplayName.ValueString()
 		// Strip any file extension the user may have included
 		name = strings.TrimSuffix(name, filepath.Ext(name))
+		// Sanitize: remove path separators and control characters that could
+		// inject into the multipart Content-Disposition header
+		name = strings.NewReplacer("/", "_", "\\", "_", "\r", "", "\n", "").Replace(name)
 		filename = name + ext
 	}
 
