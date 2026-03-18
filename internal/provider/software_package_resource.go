@@ -457,7 +457,12 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 	if len(title.Versions) > 0 {
 		plan.Version = types.StringValue(title.Versions[0].Version)
 	}
-	plan.Platform = types.StringValue(title.Source)
+	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
+		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
+	}
+	// If SoftwarePackage.Platform is empty, leave plan.Platform unchanged
+	// (UseStateForUnknown handles this). Don't fall back to title.Source as
+	// it contains values like "pkg_packages" or "programs", not OS platforms.
 	plan.PackageSHA256 = types.StringValue(packageSHA256)
 
 	// Set the state
@@ -698,12 +703,11 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	}
 
 	pkg := title.SoftwarePackage
-	// Prefer the platform from the package metadata; fall back to source only when absent.
 	if pkg.Platform != "" {
 		state.Platform = types.StringValue(pkg.Platform)
-	} else {
-		state.Platform = types.StringValue(title.Source)
 	}
+	// Don't fall back to title.Source — it contains package source types
+	// ("pkg_packages", "programs"), not OS platforms ("darwin", "windows").
 	if pkg.InstallScript != "" {
 		state.InstallScript = types.StringValue(pkg.InstallScript)
 	}
