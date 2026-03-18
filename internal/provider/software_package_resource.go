@@ -291,8 +291,17 @@ func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.M
 	// Attempt to read the package and compute SHA at plan time.
 	_, computedSHA, err := readPackageContent(ctx, &plan)
 	if err != nil {
-		// S3 downloads may fail at plan time (e.g. credentials not available yet).
-		// Don't block the plan — the SHA will be computed during apply.
+		hasLocalPath := !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != ""
+		if hasLocalPath {
+			// Local file errors (missing file, permission denied) should be reported
+			// immediately so users get feedback during plan.
+			resp.Diagnostics.AddWarning(
+				"Unable to read package file",
+				fmt.Sprintf("Could not read package at plan time: %s. The SHA will be computed during apply.", err.Error()),
+			)
+		}
+		// S3 errors are silently suppressed — credentials or endpoints may not be
+		// available during plan (e.g. assume-role not yet resolved).
 		return
 	}
 	if computedSHA == "" {
@@ -1040,10 +1049,8 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 		}
 	}
 
-	// package_path is a local filesystem path that Fleet does not store.
-	// After import, set package_path in your Terraform config to the local file.
-
-	// package_s3 is not stored by Fleet; it stays nil (unset) on import.
+	// Neither package_path nor package_s3 are stored by Fleet.
+	// After import, set one of them in your Terraform config to manage the package binary.
 
 	// Set package_sha256 from the Fleet API if available
 	packageSHA := ""

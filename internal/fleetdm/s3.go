@@ -45,8 +45,10 @@ func getOrCreateS3Client(ctx context.Context, src S3Source) (*s3.Client, error) 
 		return client, nil
 	}
 	// Hold the lock while creating the client to prevent duplicate work.
-	// LoadDefaultConfig may do network I/O (IMDS) but that's acceptable
-	// since it only happens once per unique (region, endpoint) pair.
+	// LoadDefaultConfig may do network I/O (IMDS) which blocks concurrent
+	// downloads for different keys. This is acceptable since it only happens
+	// once per unique (region, endpoint) pair. If this becomes a bottleneck,
+	// consider singleflight or per-key locking.
 	defer s3ClientMu.Unlock()
 
 	var opts []func(*config.LoadOptions) error

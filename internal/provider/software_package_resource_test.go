@@ -260,20 +260,29 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == "POST":
 			// Parse the multipart upload and compute SHA from the uploaded content,
 			// simulating what Fleet does when it receives a package.
-			_ = r.ParseMultipartForm(10 << 20)
-			if file, _, err := r.FormFile("software"); err == nil {
-				uploaded, _ := io.ReadAll(file)
-				file.Close()
-				h := sha256.Sum256(uploaded)
-				mu.Lock()
-				currentFleetSHA = hex.EncodeToString(h[:])
-				uploadCount++
-				mu.Unlock()
-			} else {
-				mu.Lock()
-				uploadCount++
-				mu.Unlock()
+			if err := r.ParseMultipartForm(10 << 20); err != nil {
+				t.Errorf("failed to parse multipart form: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
 			}
+			file, _, err := r.FormFile("software")
+			if err != nil {
+				t.Errorf("failed to get form file 'software': %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			uploaded, err := io.ReadAll(file)
+			file.Close()
+			if err != nil {
+				t.Errorf("failed to read uploaded file: %v", err)
+				http.Error(w, "read error", http.StatusInternalServerError)
+				return
+			}
+			h := sha256.Sum256(uploaded)
+			mu.Lock()
+			currentFleetSHA = hex.EncodeToString(h[:])
+			uploadCount++
+			mu.Unlock()
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"software_package": map[string]interface{}{
 					"title_id": 55,
