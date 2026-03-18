@@ -164,6 +164,9 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Description: "The SHA256 hash of the package in Fleet. Computed from the local file on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.",
 				Optional:    true,
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"platform": schema.StringAttribute{
 				Description: "The platform (darwin, windows, linux, ipados, ios). Computed for packages, optional for VPP apps.",
@@ -237,7 +240,7 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 		return
 	}
 
-	hasPath := !data.PackagePath.IsNull() && !data.PackagePath.IsUnknown()
+	hasPath := !data.PackagePath.IsNull() && !data.PackagePath.IsUnknown() && data.PackagePath.ValueString() != ""
 	hasS3 := !data.PackageS3.IsNull() && !data.PackageS3.IsUnknown()
 
 	if hasPath && hasS3 {
@@ -613,6 +616,13 @@ func (r *softwarePackageResource) Update(ctx context.Context, req resource.Updat
 		return
 	}
 
+	var state softwarePackageResourceModel
+	diags = req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	softwareType := plan.Type.ValueString()
 	if softwareType == "" {
 		softwareType = "package"
@@ -626,7 +636,7 @@ func (r *softwarePackageResource) Update(ctx context.Context, req resource.Updat
 		r.updateVPP(ctx, titleID, teamID, &plan, resp)
 	default:
 		// Both "package" and "fleet_maintained" use PatchSoftwarePackage
-		r.updatePackageOrFMA(ctx, titleID, teamID, &plan, resp)
+		r.updatePackageOrFMA(ctx, titleID, teamID, &plan, &state, resp)
 	}
 
 	if resp.Diagnostics.HasError() {
@@ -672,7 +682,7 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 }
 
 // updatePackageOrFMA handles updating a software package or Fleet Maintained App.
-func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, resp *resource.UpdateResponse) {
+func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, priorState *softwarePackageResourceModel, resp *resource.UpdateResponse) {
 	// Check if we have a package source (local file or S3)
 	packageContent, localSHA, err := readPackageContent(ctx, plan)
 	if err != nil {
@@ -681,8 +691,8 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 	}
 
 	if packageContent != nil {
-		// Compare with the current SHA in Fleet
-		currentSHA := plan.PackageSHA256.ValueString()
+		// Compare with the SHA from the prior state (what Fleet had last time we read)
+		currentSHA := priorState.PackageSHA256.ValueString()
 		if localSHA != currentSHA {
 			// SHA differs — delete and re-upload the package
 			if err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID); err != nil {
@@ -816,7 +826,11 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 		var s3Config packageS3Model
 		diags := model.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
 		if diags.HasError() {
-			return nil, "", fmt.Errorf("could not parse package_s3 configuration")
+			var details string
+			for _, d := range diags.Errors() {
+				details += d.Summary() + ": " + d.Detail() + "; "
+			}
+			return nil, "", fmt.Errorf("could not parse package_s3 configuration: %s", details)
 		}
 
 		if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
