@@ -304,6 +304,18 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	profileContent := []byte(plan.ProfileContent.ValueString())
 	ext := fleetdm.ProfileExtensionFromContent(profileContent)
 
+	// Apply-time guard: reject display_name for non-Windows profiles
+	// (ValidateConfig skips this when display_name is unknown at plan time)
+	if ext != ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
+		resp.Diagnostics.AddError(
+			"display_name is not supported for this profile type",
+			"display_name only controls the profile name for Windows (.xml) profiles. "+
+				"For macOS and Apple declaration profiles, the name is extracted from the profile content. "+
+				"Remove display_name from the configuration.",
+		)
+		return
+	}
+
 	// For Windows profiles, use display_name as the upload filename stem.
 	// Fleet derives the Windows profile name from the filename (minus extension).
 	// For macOS/JSON profiles, display_name is informational — name comes from content.

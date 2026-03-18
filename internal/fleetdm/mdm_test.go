@@ -490,6 +490,16 @@ func TestProfileExtensionFromContent(t *testing.T) {
 			content: "\xEF\xBB\xBF{\"Type\": \"com.apple.configuration.test\"}",
 			want:    ".json",
 		},
+		{
+			name:    "Windows XML with BOM and leading whitespace",
+			content: "\xEF\xBB\xBF\n  <SyncML><SyncBody></SyncBody></SyncML>",
+			want:    ".xml",
+		},
+		{
+			name:    "JSON with BOM and leading whitespace",
+			content: "\xEF\xBB\xBF  \n{\"Type\": \"com.apple.configuration.test\"}",
+			want:    ".json",
+		},
 	}
 
 	for _, tt := range tests {
