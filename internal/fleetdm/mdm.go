@@ -1,6 +1,7 @@
 package fleetdm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -130,9 +131,30 @@ func (c *Client) GetMDMSummary(ctx context.Context, platform string, teamID *int
 	return &response, nil
 }
 
+// ProfileExtensionFromContent inspects profile bytes and returns the appropriate
+// file extension. Fleet uses the extension to detect the platform:
+//   - ".mobileconfig" for Apple (macOS/iOS) configuration profiles
+//   - ".xml" for Windows configuration profiles
+//   - ".json" for Apple declaration (DDM) profiles
+func ProfileExtensionFromContent(content []byte) string {
+	trimmed := bytes.TrimSpace(content)
+	switch {
+	case bytes.HasPrefix(trimmed, []byte("<?xml")) || bytes.HasPrefix(trimmed, []byte("<!DOCTYPE")):
+		if bytes.Contains(trimmed, []byte("<plist")) || bytes.Contains(trimmed, []byte("PayloadType")) {
+			return ".mobileconfig"
+		}
+		return ".xml"
+	case bytes.HasPrefix(trimmed, []byte("{")):
+		return ".json"
+	default:
+		return ".mobileconfig"
+	}
+}
+
 // CreateConfigProfileRequest contains the parameters for creating a configuration profile.
 type CreateConfigProfileRequest struct {
 	TeamID           *int     // Optional team ID
+	Filename         string   // Upload filename; Fleet derives the Windows profile name from this
 	Profile          []byte   // Profile content (mobileconfig or XML)
 	Labels           []string // Deprecated: use LabelsIncludeAll instead
 	LabelsIncludeAll []string // Labels that must all match
@@ -160,7 +182,12 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 		fields["labels_exclude_any"] = strings.Join(req.LabelsExcludeAny, ",")
 	}
 
-	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/configuration_profiles", "profile", "profile.mobileconfig", req.Profile, fields)
+	filename := req.Filename
+	if filename == "" {
+		filename = "profile.mobileconfig"
+	}
+
+	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/configuration_profiles", "profile", filename, req.Profile, fields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config profile: %w", err)
 	}

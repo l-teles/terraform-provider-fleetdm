@@ -70,12 +70,110 @@ func TestAccConfigurationProfileResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "profile_uuid", profileUUID),
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "name", "Test Profile"),
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "display_name", "Test Profile"),
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "platform", "darwin"),
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "identifier", "com.example.test"),
 				),
 			},
 		},
 	})
+}
+
+const testWindowsXMLProfile = `<?xml version="1.0" encoding="utf-8"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncBody>
+    <Replace>
+      <CmdID>1</CmdID>
+      <Item>
+        <Target><LocURI>./Device/Vendor/MSFT/BitLocker/RequireDeviceEncryption</LocURI></Target>
+        <Data>1</Data>
+      </Item>
+    </Replace>
+  </SyncBody>
+</SyncML>`
+
+func TestAccConfigurationProfileResource_displayName(t *testing.T) {
+	const profileUUID = "uuid-win-profile-5678"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/configuration_profiles" && r.Method == "POST":
+			// Verify the uploaded filename includes the display name
+			err := r.ParseMultipartForm(10 << 20)
+			if err != nil {
+				t.Errorf("failed to parse multipart form: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_, header, err := r.FormFile("profile")
+			if err != nil {
+				t.Errorf("failed to get form file: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if header.Filename != "BitLocker Policy.xml" {
+				t.Errorf("expected filename 'BitLocker Policy.xml', got %q", header.Filename)
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"profile_uuid": profileUUID,
+			})
+		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+profileUUID && r.URL.Query().Get("alt") == "media" && r.Method == "GET":
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(testWindowsXMLProfile + "\n"))
+		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+profileUUID && r.Method == "GET":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"profile_uuid":       profileUUID,
+				"team_id":            nil,
+				"name":               "BitLocker Policy",
+				"platform":           "windows",
+				"identifier":         "",
+				"checksum":           "",
+				"created_at":         "2024-01-15T10:00:00Z",
+				"uploaded_at":        "2024-01-15T10:00:00Z",
+				"labels_include_all": []interface{}{},
+				"labels_include_any": []interface{}{},
+				"labels_exclude_any": []interface{}{},
+			})
+		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+profileUUID && r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccConfigurationProfileWindowsConfig(server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.win_test", "profile_uuid", profileUUID),
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.win_test", "display_name", "BitLocker Policy"),
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.win_test", "name", "BitLocker Policy"),
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.win_test", "platform", "windows"),
+				),
+			},
+		},
+	})
+}
+
+func testAccConfigurationProfileWindowsConfig(serverURL string) string {
+	return `
+provider "fleetdm" {
+  server_address = "` + serverURL + `"
+  api_key        = "test-token"
+}
+
+resource "fleetdm_configuration_profile" "win_test" {
+  display_name    = "BitLocker Policy"
+  profile_content = <<-EOT
+` + testWindowsXMLProfile + `
+  EOT
+}
+`
 }
 
 func testAccConfigurationProfileResourceConfig(serverURL string) string {

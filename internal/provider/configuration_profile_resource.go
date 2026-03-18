@@ -36,6 +36,7 @@ type ConfigurationProfileResource struct {
 type ConfigurationProfileResourceModel struct {
 	ProfileUUID      types.String `tfsdk:"profile_uuid"`
 	TeamID           types.Int64  `tfsdk:"team_id"`
+	DisplayName      types.String `tfsdk:"display_name"`
 	ProfileContent   types.String `tfsdk:"profile_content"`
 	Name             types.String `tfsdk:"name"`
 	Platform         types.String `tfsdk:"platform"`
@@ -75,6 +76,17 @@ resource "fleetdm_configuration_profile" "disable_bluetooth" {
 }
 ` + "```" + `
 
+### Windows Profile with Display Name
+
+` + "```hcl" + `
+resource "fleetdm_configuration_profile" "bitlocker" {
+  team_id      = fleetdm_team.workstations.id
+  display_name = "BitLocker Policy"
+
+  profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
+}
+` + "```" + `
+
 ### Profile with Label Targeting
 
 ` + "```hcl" + `
@@ -110,6 +122,15 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				Optional:            true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
+				},
+			},
+			"display_name": schema.StringAttribute{
+				Description:         "The display name for the profile. For Windows profiles, this controls the profile name shown in Fleet (derived from the upload filename). For macOS profiles, the name is extracted from PayloadDisplayName in the XML content and this field is informational only.",
+				MarkdownDescription: "The display name for the profile. For Windows profiles, this controls the profile name shown in Fleet (derived from the upload filename). For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is informational only.",
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"profile_content": schema.StringAttribute{
@@ -202,8 +223,17 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	tflog.Debug(ctx, "Creating configuration profile")
 
 	// Build the create request
+	profileContent := []byte(plan.ProfileContent.ValueString())
+	ext := fleetdm.ProfileExtensionFromContent(profileContent)
+
+	filename := "profile" + ext
+	if !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() && plan.DisplayName.ValueString() != "" {
+		filename = plan.DisplayName.ValueString() + ext
+	}
+
 	createReq := &fleetdm.CreateConfigProfileRequest{
-		Profile: []byte(plan.ProfileContent.ValueString()),
+		Profile:  profileContent,
+		Filename: filename,
 	}
 
 	// Set team ID if provided
@@ -374,6 +404,7 @@ func (r *ConfigurationProfileResource) ImportState(ctx context.Context, req reso
 	}
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("profile_uuid"), profile.ProfileUUID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("display_name"), profile.Name)...)
 
 	// Fetch profile content via alt=media endpoint
 	content, err := r.client.GetConfigProfileContent(ctx, profile.ProfileUUID)
@@ -393,6 +424,11 @@ func (r *ConfigurationProfileResource) mapProfileToModel(ctx context.Context, pr
 	model.ProfileUUID = types.StringValue(profile.ProfileUUID)
 	model.Name = types.StringValue(profile.Name)
 	model.Platform = types.StringValue(profile.Platform)
+
+	// Populate display_name from API when not explicitly set by user
+	if model.DisplayName.IsNull() || model.DisplayName.IsUnknown() {
+		model.DisplayName = types.StringValue(profile.Name)
+	}
 	model.Identifier = types.StringValue(profile.Identifier)
 	model.Checksum = types.StringValue(profile.Checksum)
 	model.CreatedAt = types.StringValue(profile.CreatedAt)

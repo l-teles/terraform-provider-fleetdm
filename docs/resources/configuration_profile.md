@@ -15,6 +15,15 @@ description: |-
     profile_content = file("${path.module}/profiles/disable_bluetooth.mobileconfig")
   }
   
+  Windows Profile with Display Name
+  
+  resource "fleetdm_configuration_profile" "bitlocker" {
+    team_id      = fleetdm_team.workstations.id
+    display_name = "BitLocker Policy"
+  
+    profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
+  }
+  
   Profile with Label Targeting
   
   resource "fleetdm_configuration_profile" "vpn_config" {
@@ -51,6 +60,17 @@ resource "fleetdm_configuration_profile" "disable_bluetooth" {
 }
 ```
 
+### Windows Profile with Display Name
+
+```hcl
+resource "fleetdm_configuration_profile" "bitlocker" {
+  team_id      = fleetdm_team.workstations.id
+  display_name = "BitLocker Policy"
+
+  profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
+}
+```
+
 ### Profile with Label Targeting
 
 ```hcl
@@ -82,9 +102,10 @@ resource "fleetdm_configuration_profile" "wifi_settings" {
   profile_content = file("${path.module}/profiles/wifi-settings.mobileconfig")
 }
 
-# Create a Windows configuration profile
+# Create a Windows configuration profile with a display name
 resource "fleetdm_configuration_profile" "windows_bitlocker" {
   team_id         = fleetdm_team.workstations.id
+  display_name    = "BitLocker Policy"
   profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
 }
 
@@ -124,6 +145,7 @@ output "wifi_profile_name" {
 
 ### Optional
 
+- `display_name` (String) The display name for the profile. For Windows profiles, this controls the profile name shown in Fleet (derived from the upload filename). For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is informational only.
 - `labels_exclude_any` (List of String) Labels where hosts with **ANY** of these will **NOT** receive this profile.
 - `labels_include_all` (List of String) Labels that hosts must have **ALL** of to receive this profile.
 - `labels_include_any` (List of String) Labels where hosts must have **ANY** of to receive this profile.

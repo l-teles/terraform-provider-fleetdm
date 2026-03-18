@@ -6,9 +6,10 @@ resource "fleetdm_configuration_profile" "wifi_settings" {
   profile_content = file("${path.module}/profiles/wifi-settings.mobileconfig")
 }
 
-# Create a Windows configuration profile
+# Create a Windows configuration profile with a display name
 resource "fleetdm_configuration_profile" "windows_bitlocker" {
   team_id         = fleetdm_team.workstations.id
+  display_name    = "BitLocker Policy"
   profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
 }
 
