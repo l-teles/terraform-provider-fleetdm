@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -578,8 +579,8 @@ func TestClient_CreateConfigProfile_DefaultFilename(t *testing.T) {
 				t.Fatalf("failed to get form file: %v", err)
 			}
 			defer file.Close()
-			if header.Filename != "profile.mobileconfig" {
-				t.Errorf("expected default filename 'profile.mobileconfig', got %q", header.Filename)
+			if !strings.HasPrefix(header.Filename, "tf_") || !strings.HasSuffix(header.Filename, ".mobileconfig") {
+				t.Errorf("expected filename matching 'tf_<random>.mobileconfig', got %q", header.Filename)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-mac-5678"})

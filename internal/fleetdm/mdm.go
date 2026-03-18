@@ -3,6 +3,8 @@ package fleetdm
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -187,7 +189,9 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 
 	filename := req.Filename
 	if filename == "" {
-		filename = "profile.mobileconfig"
+		b := make([]byte, 4)
+		_, _ = rand.Read(b)
+		filename = "tf_" + hex.EncodeToString(b) + ProfileExtensionFromContent(req.Profile)
 	}
 
 	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/configuration_profiles", "profile", filename, req.Profile, fields)
