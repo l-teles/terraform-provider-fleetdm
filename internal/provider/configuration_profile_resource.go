@@ -227,7 +227,7 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 	ext := fleetdm.ProfileExtensionFromContent([]byte(profileContent.ValueString()))
 
 	// display_name is only meaningful for Windows profiles; reject it for other types
-	// to avoid perpetual diffs (Read always overwrites from API, Create ignores it)
+	// to avoid perpetual diffs (Read always overwrites from API, Create rejects it)
 	if ext != ".xml" && !displayName.IsNull() && !displayName.IsUnknown() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("display_name"),
