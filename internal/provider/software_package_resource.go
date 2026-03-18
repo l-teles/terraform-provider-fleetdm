@@ -126,6 +126,9 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 			"version": schema.StringAttribute{
 				Description: "The version of the software.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"filename": schema.StringAttribute{
 				Description: "The filename of the package (e.g., 'myapp-1.0.0.pkg'). Required for type 'package'.",
