@@ -225,6 +225,20 @@ func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req r
 	}
 
 	ext := fleetdm.ProfileExtensionFromContent([]byte(profileContent.ValueString()))
+
+	// display_name is only meaningful for Windows profiles; reject it for other types
+	// to avoid perpetual diffs (Read always overwrites from API, Create ignores it)
+	if ext != ".xml" && !displayName.IsNull() && !displayName.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("display_name"),
+			"display_name is not supported for this profile type",
+			"display_name only controls the profile name for Windows (.xml) profiles. "+
+				"For macOS and Apple declaration profiles, the name is extracted from the profile content. "+
+				"Remove display_name from the configuration.",
+		)
+		return
+	}
+
 	if ext == ".xml" {
 		// Skip validation when display_name is unknown (e.g. computed from another resource);
 		// the value will be resolved at apply time.

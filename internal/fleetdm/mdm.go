@@ -190,7 +190,9 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 	filename := req.Filename
 	if filename == "" {
 		b := make([]byte, 4)
-		_, _ = rand.Read(b)
+		if _, err := rand.Read(b); err != nil {
+			return nil, fmt.Errorf("failed to generate random filename: %w", err)
+		}
 		filename = "tf_" + hex.EncodeToString(b) + ProfileExtensionFromContent(req.Profile)
 	}
 

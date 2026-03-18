@@ -607,7 +607,7 @@ func TestClient_CreateConfigProfile_DefaultFilename(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	// Empty Filename should fall back to "profile.mobileconfig"
+	// Empty Filename should generate a random "tf_<hex>.mobileconfig" name
 	profile, err := client.CreateConfigProfile(context.Background(), &CreateConfigProfileRequest{
 		Profile: []byte(`<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>`),
 	})
