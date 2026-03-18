@@ -31,6 +31,7 @@ var (
 	_ resource.ResourceWithConfigure      = &softwarePackageResource{}
 	_ resource.ResourceWithImportState    = &softwarePackageResource{}
 	_ resource.ResourceWithValidateConfig = &softwarePackageResource{}
+	_ resource.ResourceWithModifyPlan     = &softwarePackageResource{}
 )
 
 // NewSoftwarePackageResource is a helper function to simplify the provider implementation.
@@ -266,6 +267,43 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 	}
 }
 
+// ModifyPlan computes package_sha256 at plan time from the package source.
+// This ensures that changes to the file content (local or S3) are detected
+// even when the Terraform config itself hasn't changed.
+func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Skip during destroy or when there's no plan (initial import).
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan softwarePackageResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Only compute SHA for type=package with a source configured.
+	swType := plan.Type.ValueString()
+	if swType != "" && swType != "package" {
+		return
+	}
+
+	// Attempt to read the package and compute SHA at plan time.
+	_, computedSHA, err := readPackageContent(ctx, &plan)
+	if err != nil {
+		// S3 downloads may fail at plan time (e.g. credentials not available yet).
+		// Don't block the plan — the SHA will be computed during apply.
+		return
+	}
+	if computedSHA == "" {
+		return
+	}
+
+	// Set the computed SHA in the plan so Terraform can detect drift.
+	plan.PackageSHA256 = types.StringValue(computedSHA)
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
 // Configure adds the provider configured client to the resource.
 func (r *softwarePackageResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
@@ -314,6 +352,8 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 		resp.Diagnostics.AddError("Missing filename", "Could not determine filename. Set 'filename' explicitly, or ensure package_path or package_s3.key is set.")
 		return
 	}
+	// Persist the derived filename to state so it's available on subsequent plans.
+	plan.Filename = types.StringValue(filename)
 
 	// Build the upload request
 	uploadReq := &fleetdm.UploadSoftwarePackageRequest{

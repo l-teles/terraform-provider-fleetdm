@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
 func TestAccSoftwarePackageResource_basic(t *testing.T) {
@@ -216,9 +219,13 @@ resource "fleetdm_software_package" "fma_test" {
 }
 
 func TestAccSoftwarePackageResource_s3(t *testing.T) {
+	fleetdm.ResetS3ClientCache()
 	contentV1 := []byte("FAKES3PKG")
 	contentV2 := []byte("FAKES3PKGv2")
-	shaV1 := "156d5f3dc917f38e5bb9d9f9609ba2cc8f7147148a2247f5e83e57eab9209439"
+	v1Hash := sha256.Sum256(contentV1)
+	shaV1 := hex.EncodeToString(v1Hash[:])
+	v2Hash := sha256.Sum256(contentV2)
+	shaV2 := hex.EncodeToString(v2Hash[:])
 
 	// Mutex-protected state shared between test goroutine and httptest handlers.
 	var mu sync.Mutex
@@ -243,11 +250,30 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", "test")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
+	// Track Fleet API calls to verify the re-upload lifecycle.
+	var uploadCount, deleteCount int
+
 	// Mock Fleet server that accepts the upload and returns title metadata.
 	fleetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == "POST":
+			// Parse the multipart upload and compute SHA from the uploaded content,
+			// simulating what Fleet does when it receives a package.
+			_ = r.ParseMultipartForm(10 << 20)
+			if file, _, err := r.FormFile("software"); err == nil {
+				uploaded, _ := io.ReadAll(file)
+				file.Close()
+				h := sha256.Sum256(uploaded)
+				mu.Lock()
+				currentFleetSHA = hex.EncodeToString(h[:])
+				uploadCount++
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				uploadCount++
+				mu.Unlock()
+			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"software_package": map[string]interface{}{
 					"title_id": 55,
@@ -278,15 +304,15 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 				},
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/55/available_for_install" && r.Method == "DELETE":
+			mu.Lock()
+			deleteCount++
+			mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer fleetServer.Close()
-
-	v2Hash := sha256.Sum256(contentV2)
-	shaV2 := hex.EncodeToString(v2Hash[:])
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -304,14 +330,28 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 			{
 				PreConfig: func() {
 					mu.Lock()
+					// Only change S3 content. Fleet SHA stays at v1 until re-upload.
 					currentS3Content = contentV2
-					currentFleetSHA = shaV2
 					mu.Unlock()
 				},
 				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "title_id", "55"),
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaV2),
+					func(s *terraform.State) error {
+						mu.Lock()
+						uploads := uploadCount
+						deletes := deleteCount
+						mu.Unlock()
+						// Step 1 does 1 upload (create). Step 2 should do 1 delete + 1 upload (re-upload).
+						if uploads != 2 {
+							return fmt.Errorf("expected 2 total uploads (create + re-upload), got %d", uploads)
+						}
+						if deletes != 1 {
+							return fmt.Errorf("expected 1 delete (before re-upload), got %d", deletes)
+						}
+						return nil
+					},
 				),
 			},
 		},
