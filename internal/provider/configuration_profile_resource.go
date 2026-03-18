@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -18,8 +19,9 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &ConfigurationProfileResource{}
-	_ resource.ResourceWithImportState = &ConfigurationProfileResource{}
+	_ resource.Resource                   = &ConfigurationProfileResource{}
+	_ resource.ResourceWithImportState    = &ConfigurationProfileResource{}
+	_ resource.ResourceWithValidateConfig = &ConfigurationProfileResource{}
 )
 
 // NewConfigurationProfileResource creates a new configuration profile resource.
@@ -36,6 +38,7 @@ type ConfigurationProfileResource struct {
 type ConfigurationProfileResourceModel struct {
 	ProfileUUID      types.String `tfsdk:"profile_uuid"`
 	TeamID           types.Int64  `tfsdk:"team_id"`
+	DisplayName      types.String `tfsdk:"display_name"`
 	ProfileContent   types.String `tfsdk:"profile_content"`
 	Name             types.String `tfsdk:"name"`
 	Platform         types.String `tfsdk:"platform"`
@@ -72,6 +75,17 @@ resource "fleetdm_configuration_profile" "disable_bluetooth" {
   team_id = fleetdm_team.workstations.id
 
   profile_content = file("${path.module}/profiles/disable_bluetooth.mobileconfig")
+}
+` + "```" + `
+
+### Windows Profile with Display Name
+
+` + "```hcl" + `
+resource "fleetdm_configuration_profile" "bitlocker" {
+  team_id      = fleetdm_team.workstations.id
+  display_name = "BitLocker Policy"
+
+  profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
 }
 ` + "```" + `
 
@@ -112,9 +126,18 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 					int64planmodifier.RequiresReplace(),
 				},
 			},
+			"display_name": schema.StringAttribute{
+				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. For macOS profiles, the name is extracted from PayloadDisplayName in the XML content and this field is computed automatically.",
+				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is computed automatically.",
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
 			"profile_content": schema.StringAttribute{
-				Description:         "The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).",
-				MarkdownDescription: "The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).",
+				Description:         "The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations).",
+				MarkdownDescription: "The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations).",
 				Required:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -184,6 +207,82 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 	}
 }
 
+// ValidateConfig validates the resource configuration.
+func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var profileContent types.String
+	var displayName types.String
+
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("profile_content"), &profileContent)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("display_name"), &displayName)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Skip validation if values are unknown (e.g. computed or from another resource)
+	if profileContent.IsUnknown() || profileContent.IsNull() {
+		return
+	}
+
+	ext := fleetdm.ProfileExtensionFromContent([]byte(profileContent.ValueString()))
+
+	// display_name is only meaningful for Windows profiles; reject it for other types
+	// to avoid perpetual diffs (Read always overwrites from API, Create rejects it)
+	if ext != ".xml" && !displayName.IsNull() && !displayName.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("display_name"),
+			"display_name is not supported for this profile type",
+			"display_name only controls the profile name for Windows (.xml) profiles. "+
+				"For macOS and Apple declaration profiles, the name is extracted from the profile content. "+
+				"Remove display_name from the configuration.",
+		)
+		return
+	}
+
+	if ext == ".xml" {
+		// Skip validation when display_name is unknown (e.g. computed from another resource);
+		// the value will be resolved at apply time.
+		if displayName.IsUnknown() {
+			return
+		}
+		name := displayName.ValueString()
+		if displayName.IsNull() || strings.TrimSpace(name) == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"display_name is required for Windows profiles",
+				"Windows XML profiles derive their name from the upload filename. "+
+					"Set display_name to a non-empty value to control the profile name shown in Fleet.",
+			)
+			return
+		}
+		if strings.TrimSpace(name) != name {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"Invalid display_name",
+				"display_name must not have leading or trailing whitespace.",
+			)
+			return
+		}
+		if strings.ContainsAny(name, "/\\\r\n") {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"Invalid display_name",
+				"display_name must not contain path separators (/ or \\) or newline characters.",
+			)
+		}
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".xml") || strings.HasSuffix(lower, ".mobileconfig") || strings.HasSuffix(lower, ".json") {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("display_name"),
+				"Invalid display_name",
+				"display_name must not include a profile file extension (.xml, .mobileconfig, .json). "+
+					"Use just the name (e.g. \"BitLocker Policy\" not \"BitLocker Policy.xml\"). "+
+					"The correct extension is added automatically based on the profile content.",
+			)
+		}
+	}
+}
+
 // Configure adds the provider configured client to the resource.
 func (r *ConfigurationProfileResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
@@ -202,8 +301,66 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	tflog.Debug(ctx, "Creating configuration profile")
 
 	// Build the create request
+	profileContent := []byte(plan.ProfileContent.ValueString())
+	ext := fleetdm.ProfileExtensionFromContent(profileContent)
+
+	// Apply-time guard: reject display_name for non-Windows profiles
+	// (ValidateConfig skips this when display_name is unknown at plan time)
+	if ext != ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
+		resp.Diagnostics.AddError(
+			"display_name is not supported for this profile type",
+			"display_name only controls the profile name for Windows (.xml) profiles. "+
+				"For macOS and Apple declaration profiles, the name is extracted from the profile content. "+
+				"Remove display_name from the configuration.",
+		)
+		return
+	}
+
+	// For Windows profiles, use display_name as the upload filename stem.
+	// Fleet derives the Windows profile name from the filename (minus extension).
+	// For macOS/JSON profiles, display_name is informational — name comes from content.
+	filename := "profile" + ext
+	if ext == ".xml" {
+		displayName := plan.DisplayName.ValueString()
+		if plan.DisplayName.IsNull() || plan.DisplayName.IsUnknown() || strings.TrimSpace(displayName) == "" {
+			// Apply-time guard: ValidateConfig may have been skipped if profile_content was unknown
+			resp.Diagnostics.AddError(
+				"display_name is required for Windows profiles",
+				"Windows XML profiles derive their name from the upload filename. "+
+					"Set display_name to a non-empty value to control the profile name shown in Fleet.",
+			)
+			return
+		}
+		// Apply-time guard: ValidateConfig skips when display_name is unknown at plan time,
+		// so validate the resolved value here too
+		if strings.TrimSpace(displayName) != displayName {
+			resp.Diagnostics.AddError(
+				"Invalid display_name",
+				"display_name must not have leading or trailing whitespace.",
+			)
+			return
+		}
+		if strings.ContainsAny(displayName, "/\\\r\n") {
+			resp.Diagnostics.AddError(
+				"Invalid display_name",
+				"display_name must not contain path separators (/ or \\) or newline characters.",
+			)
+			return
+		}
+		lower := strings.ToLower(displayName)
+		if strings.HasSuffix(lower, ".xml") || strings.HasSuffix(lower, ".mobileconfig") || strings.HasSuffix(lower, ".json") {
+			resp.Diagnostics.AddError(
+				"Invalid display_name",
+				"display_name must not include a profile file extension (.xml, .mobileconfig, .json).",
+			)
+			return
+		}
+		filename = displayName + ext
+	}
+
 	createReq := &fleetdm.CreateConfigProfileRequest{
-		Profile: []byte(plan.ProfileContent.ValueString()),
+		Profile:  profileContent,
+		Filename: filename,
 	}
 
 	// Set team ID if provided
@@ -374,6 +531,7 @@ func (r *ConfigurationProfileResource) ImportState(ctx context.Context, req reso
 	}
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("profile_uuid"), profile.ProfileUUID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("display_name"), profile.Name)...)
 
 	// Fetch profile content via alt=media endpoint
 	content, err := r.client.GetConfigProfileContent(ctx, profile.ProfileUUID)
@@ -393,6 +551,9 @@ func (r *ConfigurationProfileResource) mapProfileToModel(ctx context.Context, pr
 	model.ProfileUUID = types.StringValue(profile.ProfileUUID)
 	model.Name = types.StringValue(profile.Name)
 	model.Platform = types.StringValue(profile.Platform)
+
+	// Always set display_name from API so state reflects what Fleet reports
+	model.DisplayName = types.StringValue(profile.Name)
 	model.Identifier = types.StringValue(profile.Identifier)
 	model.Checksum = types.StringValue(profile.Checksum)
 	model.CreatedAt = types.StringValue(profile.CreatedAt)

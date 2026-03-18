@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -412,6 +413,219 @@ func TestClient_GetConfigProfileContent(t *testing.T) {
 	}
 	if content != wantContent {
 		t.Errorf("expected content %q, got: %q", wantContent, content)
+	}
+}
+
+func TestProfileExtensionFromContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name: "macOS mobileconfig with PayloadType",
+			content: `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+</dict>
+</plist>`,
+			want: ".mobileconfig",
+		},
+		{
+			name: "macOS mobileconfig with plist tag",
+			content: `<?xml version="1.0"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict></dict></plist>`,
+			want: ".mobileconfig",
+		},
+		{
+			name: "Windows XML profile",
+			content: `<?xml version="1.0" encoding="utf-8"?>
+<SyncML xmlns="SYNCML:SYNCML1.2">
+  <SyncBody>
+    <Replace>
+      <CmdID>1</CmdID>
+      <Item>
+        <Target><LocURI>./Device/Vendor/MSFT/BitLocker</LocURI></Target>
+      </Item>
+    </Replace>
+  </SyncBody>
+</SyncML>`,
+			want: ".xml",
+		},
+		{
+			name:    "Windows XML without XML declaration",
+			content: `<SyncML xmlns="SYNCML:SYNCML1.2"><SyncBody></SyncBody></SyncML>`,
+			want:    ".xml",
+		},
+		{
+			name:    "macOS plist without XML declaration",
+			content: `<plist version="1.0"><dict><key>PayloadType</key><string>Configuration</string></dict></plist>`,
+			want:    ".mobileconfig",
+		},
+		{
+			name:    "Apple declaration JSON",
+			content: `{"Type": "com.apple.configuration.management.test", "Payload": {}}`,
+			want:    ".json",
+		},
+		{
+			name:    "empty content defaults to mobileconfig",
+			content: "",
+			want:    ".mobileconfig",
+		},
+		{
+			name:    "whitespace-only content defaults to mobileconfig",
+			content: "   \n\t  ",
+			want:    ".mobileconfig",
+		},
+		{
+			name:    "Windows XML with UTF-8 BOM",
+			content: "\xEF\xBB\xBF<?xml version=\"1.0\"?><SyncML><SyncBody></SyncBody></SyncML>",
+			want:    ".xml",
+		},
+		{
+			name:    "JSON with UTF-8 BOM",
+			content: "\xEF\xBB\xBF{\"Type\": \"com.apple.configuration.test\"}",
+			want:    ".json",
+		},
+		{
+			name:    "Windows XML with BOM and leading whitespace",
+			content: "\xEF\xBB\xBF\n  <SyncML><SyncBody></SyncBody></SyncML>",
+			want:    ".xml",
+		},
+		{
+			name:    "JSON with BOM and leading whitespace",
+			content: "\xEF\xBB\xBF  \n{\"Type\": \"com.apple.configuration.test\"}",
+			want:    ".json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ProfileExtensionFromContent([]byte(tt.content))
+			if got != tt.want {
+				t.Errorf("ProfileExtensionFromContent() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClient_CreateConfigProfile(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			err := r.ParseMultipartForm(10 << 20)
+			if err != nil {
+				t.Fatalf("failed to parse multipart form: %v", err)
+			}
+			file, header, err := r.FormFile("profile")
+			if err != nil {
+				t.Fatalf("failed to get form file: %v", err)
+			}
+			defer file.Close()
+
+			if header.Filename != "BitLocker Policy.xml" {
+				t.Errorf("expected filename 'BitLocker Policy.xml', got %q", header.Filename)
+			}
+			if r.FormValue("team_id") != "1" {
+				t.Errorf("expected team_id '1', got %q", r.FormValue("team_id"))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-win-1234"})
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles/p-win-1234", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MDMConfigProfile{
+			ProfileUUID: "p-win-1234",
+			Name:        "BitLocker Policy",
+			Platform:    "windows",
+			CreatedAt:   "2024-01-01T00:00:00Z",
+			UploadedAt:  "2024-01-01T00:00:00Z",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	teamID := 1
+	profile, err := client.CreateConfigProfile(context.Background(), &CreateConfigProfileRequest{
+		TeamID:   &teamID,
+		Filename: "BitLocker Policy.xml",
+		Profile:  []byte(`<?xml version="1.0"?><SyncML><SyncBody></SyncBody></SyncML>`),
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigProfile failed: %v", err)
+	}
+	if profile.ProfileUUID != "p-win-1234" {
+		t.Errorf("expected UUID 'p-win-1234', got %s", profile.ProfileUUID)
+	}
+	if profile.Name != "BitLocker Policy" {
+		t.Errorf("expected name 'BitLocker Policy', got %s", profile.Name)
+	}
+	if profile.Platform != "windows" {
+		t.Errorf("expected platform 'windows', got %s", profile.Platform)
+	}
+}
+
+func TestClient_CreateConfigProfile_DefaultFilename(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			err := r.ParseMultipartForm(10 << 20)
+			if err != nil {
+				t.Fatalf("failed to parse multipart form: %v", err)
+			}
+			file, header, err := r.FormFile("profile")
+			if err != nil {
+				t.Fatalf("failed to get form file: %v", err)
+			}
+			defer file.Close()
+			if !strings.HasPrefix(header.Filename, "tf_") || !strings.HasSuffix(header.Filename, ".mobileconfig") {
+				t.Errorf("expected filename matching 'tf_<random>.mobileconfig', got %q", header.Filename)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-mac-5678"})
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles/p-mac-5678", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MDMConfigProfile{
+			ProfileUUID: "p-mac-5678",
+			Name:        "Test Profile",
+			Platform:    "darwin",
+			Identifier:  "com.example.test",
+			CreatedAt:   "2024-01-01T00:00:00Z",
+			UploadedAt:  "2024-01-01T00:00:00Z",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	// Empty Filename should generate a random "tf_<hex>.mobileconfig" name
+	profile, err := client.CreateConfigProfile(context.Background(), &CreateConfigProfileRequest{
+		Profile: []byte(`<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>`),
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigProfile failed: %v", err)
+	}
+	if profile.ProfileUUID != "p-mac-5678" {
+		t.Errorf("expected UUID 'p-mac-5678', got %s", profile.ProfileUUID)
 	}
 }
 

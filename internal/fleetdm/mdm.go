@@ -1,7 +1,10 @@
 package fleetdm
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -130,10 +133,34 @@ func (c *Client) GetMDMSummary(ctx context.Context, platform string, teamID *int
 	return &response, nil
 }
 
+// ProfileExtensionFromContent inspects profile bytes and returns the appropriate
+// file extension. Fleet uses the extension to detect the platform:
+//   - ".mobileconfig" for Apple (macOS/iOS) configuration profiles
+//   - ".xml" for Windows configuration profiles
+//   - ".json" for Apple declaration (DDM) profiles
+func ProfileExtensionFromContent(content []byte) string {
+	// Strip UTF-8 BOM first (some editors add it), then trim whitespace
+	trimmed := bytes.TrimPrefix(content, []byte{0xEF, 0xBB, 0xBF})
+	trimmed = bytes.TrimSpace(trimmed)
+	switch {
+	case bytes.HasPrefix(trimmed, []byte("<")):
+		// Any XML-like content; distinguish Apple plist from Windows
+		if bytes.Contains(trimmed, []byte("<plist")) || bytes.Contains(trimmed, []byte("PayloadType")) {
+			return ".mobileconfig"
+		}
+		return ".xml"
+	case bytes.HasPrefix(trimmed, []byte("{")):
+		return ".json"
+	default:
+		return ".mobileconfig"
+	}
+}
+
 // CreateConfigProfileRequest contains the parameters for creating a configuration profile.
 type CreateConfigProfileRequest struct {
 	TeamID           *int     // Optional team ID
-	Profile          []byte   // Profile content (mobileconfig or XML)
+	Filename         string   // Upload filename; Fleet derives the Windows profile name from this
+	Profile          []byte   // Profile content (mobileconfig XML, Windows XML, or Apple declaration JSON)
 	Labels           []string // Deprecated: use LabelsIncludeAll instead
 	LabelsIncludeAll []string // Labels that must all match
 	LabelsIncludeAny []string // Labels where any can match
@@ -160,7 +187,16 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 		fields["labels_exclude_any"] = strings.Join(req.LabelsExcludeAny, ",")
 	}
 
-	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/configuration_profiles", "profile", "profile.mobileconfig", req.Profile, fields)
+	filename := req.Filename
+	if filename == "" {
+		b := make([]byte, 4)
+		if _, err := rand.Read(b); err != nil {
+			return nil, fmt.Errorf("failed to generate random filename: %w", err)
+		}
+		filename = "tf_" + hex.EncodeToString(b) + ProfileExtensionFromContent(req.Profile)
+	}
+
+	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/configuration_profiles", "profile", filename, req.Profile, fields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config profile: %w", err)
 	}
