@@ -8,12 +8,12 @@ on:
             - "docs/**"
             - "examples/**"
     push:
-        # branches:
-        #     - main
-        # paths-ignore:
-        #     - "README.md"
-        #     - "docs/**"
-        #     - "examples/**"
+        branches:
+            - main
+        paths-ignore:
+            - "README.md"
+            - "docs/**"
+            - "examples/**"
 
 permissions:
     contents: read

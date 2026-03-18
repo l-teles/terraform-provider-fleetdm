@@ -49,6 +49,31 @@ resource "fleetdm_software_package" "developer_tools" {
   self_service = true
 }
 
+# --- type = "package" with S3 source ---
+# Download the installer from S3 instead of a local file.
+# Useful for CI/CD pipelines on ephemeral runners.
+
+resource "aws_s3_object" "example_app" {
+  bucket = "my-software-bucket"
+  key    = "installers/example-app-1.0.0.pkg"
+  source = "${path.module}/packages/example-app-1.0.0.pkg"
+  etag   = filemd5("${path.module}/packages/example-app-1.0.0.pkg")
+}
+
+resource "fleetdm_software_package" "example_app_s3" {
+  team_id  = fleetdm_team.workstations.id
+  filename = "example-app-1.0.0.pkg"
+
+  package_s3 = {
+    bucket = aws_s3_object.example_app.bucket
+    key    = aws_s3_object.example_app.key
+    region = "eu-west-1" # optional, uses AWS_REGION if omitted
+  }
+
+  install_script = "installer -pkg $INSTALLER_PATH -target /"
+  self_service   = true
+}
+
 # --- type = "vpp" ---
 # Add an App Store (VPP) app to a team.
 # Requires VPP to be configured in Fleet.
@@ -104,8 +129,9 @@ resource "fleetdm_software_package" "chrome_custom" {
 - `install_script` (String) The script to run during installation. Optional. Used by type 'package' and 'fleet_maintained'.
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels.
-- `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files.
-- `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed from the local file on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.
+- `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.
+- `package_s3` (Attributes) S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. Note: bucket and key must be known at plan time (they cannot reference computed values from resources that haven't been created yet). (see [below for nested schema](#nestedatt--package_s3))
+- `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed from the local file (package_path) or S3 object (package_s3) on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.
 - `platform` (String) The platform (darwin, windows, linux, ipados, ios). Computed for packages, optional for VPP apps.
 - `post_install_script` (String) The script to run after installation. Optional.
 - `pre_install_query` (String) An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.
@@ -120,3 +146,16 @@ resource "fleetdm_software_package" "chrome_custom" {
 - `name` (String) The name of the software (extracted from the package or App Store).
 - `title_id` (Number) The software title ID.
 - `version` (String) The version of the software.
+
+<a id="nestedatt--package_s3"></a>
+### Nested Schema for `package_s3`
+
+Required:
+
+- `bucket` (String) The S3 bucket name.
+- `key` (String) The S3 object key.
+
+Optional:
+
+- `endpoint_url` (String) Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.
+- `region` (String) The AWS region. Uses AWS_REGION or default config if omitted.
