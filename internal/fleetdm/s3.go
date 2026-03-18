@@ -44,7 +44,10 @@ func getOrCreateS3Client(ctx context.Context, src S3Source) (*s3.Client, error) 
 		s3ClientMu.Unlock()
 		return client, nil
 	}
-	s3ClientMu.Unlock()
+	// Hold the lock while creating the client to prevent duplicate work.
+	// LoadDefaultConfig may do network I/O (IMDS) but that's acceptable
+	// since it only happens once per unique (region, endpoint) pair.
+	defer s3ClientMu.Unlock()
 
 	var opts []func(*config.LoadOptions) error
 	if src.Region != "" {
@@ -64,10 +67,7 @@ func getOrCreateS3Client(ctx context.Context, src S3Source) (*s3.Client, error) 
 		})
 	}
 	client := s3.NewFromConfig(cfg, s3Opts...)
-
-	s3ClientMu.Lock()
 	s3ClientCache[key] = client
-	s3ClientMu.Unlock()
 
 	return client, nil
 }

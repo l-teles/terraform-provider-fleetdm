@@ -165,7 +165,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 			"package_sha256": schema.StringAttribute{
-				Description: "The SHA256 hash of the package in Fleet. Computed from the local file on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.",
+				Description: "The SHA256 hash of the package in Fleet. Computed from the local file (package_path) or S3 object (package_s3) on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -246,12 +246,22 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 
 	hasPath := !data.PackagePath.IsNull() && !data.PackagePath.IsUnknown() && data.PackagePath.ValueString() != ""
 	hasS3 := !data.PackageS3.IsNull() && !data.PackageS3.IsUnknown()
+	swType := data.Type.ValueString()
 
 	if hasPath && hasS3 {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("package_s3"),
 			"Conflicting Configuration",
 			"package_path and package_s3 are mutually exclusive. Set one or the other, not both.",
+		)
+	}
+
+	if (hasPath || hasS3) && swType != "" && swType != "package" {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("type"),
+			"Invalid Configuration",
+			"package_path and package_s3 can only be used with type = \"package\". "+
+				"VPP and Fleet Maintained apps are managed through the Fleet API directly.",
 		)
 	}
 }
@@ -298,7 +308,7 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 		return
 	}
 
-	// Derive filename: explicit > S3 key > package path
+	// Derive filename: explicit > package_path > S3 key
 	filename := deriveFilename(ctx, plan)
 	if filename == "" {
 		resp.Diagnostics.AddError("Missing filename", "Could not determine filename. Set 'filename' explicitly, or ensure package_path or package_s3.key is set.")
@@ -401,9 +411,9 @@ func (r *softwarePackageResource) createVPP(ctx context.Context, plan *softwareP
 	if title.AppStoreApp != nil && title.AppStoreApp.Platform != "" {
 		plan.Platform = types.StringValue(title.AppStoreApp.Platform)
 	}
-	plan.PackageSHA256 = types.StringValue("")
+	plan.PackageSHA256 = types.StringNull()
 	if plan.Filename.IsNull() || plan.Filename.IsUnknown() {
-		plan.Filename = types.StringValue("")
+		plan.Filename = types.StringNull()
 	}
 
 	// Set the state
@@ -466,9 +476,9 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
 	}
-	plan.PackageSHA256 = types.StringValue("")
+	plan.PackageSHA256 = types.StringNull()
 	if plan.Filename.IsNull() || plan.Filename.IsUnknown() {
-		plan.Filename = types.StringValue("")
+		plan.Filename = types.StringNull()
 	}
 
 	diags = resp.State.Set(ctx, *plan)
@@ -597,10 +607,18 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	} else {
 		state.Platform = types.StringValue(title.Source)
 	}
-	state.InstallScript = types.StringValue(pkg.InstallScript)
-	state.UninstallScript = types.StringValue(pkg.UninstallScript)
-	state.PreInstallQuery = types.StringValue(pkg.PreInstallQuery)
-	state.PostInstallScript = types.StringValue(pkg.PostInstallScript)
+	if pkg.InstallScript != "" {
+		state.InstallScript = types.StringValue(pkg.InstallScript)
+	}
+	if pkg.UninstallScript != "" {
+		state.UninstallScript = types.StringValue(pkg.UninstallScript)
+	}
+	if pkg.PreInstallQuery != "" {
+		state.PreInstallQuery = types.StringValue(pkg.PreInstallQuery)
+	}
+	if pkg.PostInstallScript != "" {
+		state.PostInstallScript = types.StringValue(pkg.PostInstallScript)
+	}
 	state.SelfService = types.BoolValue(pkg.SelfService)
 	if pkg.InstallDuringSetup != nil {
 		state.AutomaticInstall = types.BoolValue(*pkg.InstallDuringSetup)
@@ -860,7 +878,7 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 }
 
 // deriveFilename returns the filename to use for the package upload.
-// Priority: explicit filename > local path basename > S3 key basename.
+// Priority: explicit filename attribute > package_path basename > package_s3 key basename.
 func deriveFilename(ctx context.Context, model *softwarePackageResourceModel) string {
 	if !model.Filename.IsNull() && !model.Filename.IsUnknown() && model.Filename.ValueString() != "" {
 		return model.Filename.ValueString()
@@ -984,7 +1002,6 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 
 	// package_path is a local filesystem path that Fleet does not store.
 	// After import, set package_path in your Terraform config to the local file.
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("package_path"), "")...)
 
 	// package_s3 is not stored by Fleet; it stays nil (unset) on import.
 

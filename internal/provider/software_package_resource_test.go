@@ -46,7 +46,7 @@ func TestAccSoftwarePackageResource_basic(t *testing.T) {
 					"versions_count": 1,
 					"software_package": map[string]interface{}{
 						"title_id":    42,
-						"hash_sha256": "4a15546a2e78673a30dbc0b45e2aef0e3fd0c1a28f5a2f42f22de476e1b70f89",
+						"hash_sha256": "ac7f05f70feb6201886d8a27a004bc322e7ba578262c984a213f48089e162183",
 					},
 					"versions": []map[string]interface{}{
 						{"id": 1, "version": "1.0.0", "hosts_count": 0},

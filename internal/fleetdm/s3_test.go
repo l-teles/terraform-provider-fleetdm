@@ -113,4 +113,12 @@ func TestDownloadS3Object_ClientCaching(t *testing.T) {
 	if requestCount != 2 {
 		t.Errorf("expected 2 HTTP requests, got %d", requestCount)
 	}
+
+	// Verify the cache has exactly one entry (same region+endpoint = same client).
+	s3ClientMu.Lock()
+	cacheSize := len(s3ClientCache)
+	s3ClientMu.Unlock()
+	if cacheSize != 1 {
+		t.Errorf("expected 1 cached S3 client, got %d", cacheSize)
+	}
 }
