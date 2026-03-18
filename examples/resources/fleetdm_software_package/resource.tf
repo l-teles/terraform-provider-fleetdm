@@ -34,6 +34,31 @@ resource "fleetdm_software_package" "developer_tools" {
   self_service = true
 }
 
+# --- type = "package" with S3 source ---
+# Download the installer from S3 instead of a local file.
+# Useful for CI/CD pipelines on ephemeral runners.
+
+resource "aws_s3_object" "example_app" {
+  bucket = "my-software-bucket"
+  key    = "installers/example-app-1.0.0.pkg"
+  source = "${path.module}/packages/example-app-1.0.0.pkg"
+  etag   = filemd5("${path.module}/packages/example-app-1.0.0.pkg")
+}
+
+resource "fleetdm_software_package" "example_app_s3" {
+  team_id  = fleetdm_team.workstations.id
+  filename = "example-app-1.0.0.pkg"
+
+  package_s3 = {
+    bucket = aws_s3_object.example_app.bucket
+    key    = aws_s3_object.example_app.key
+    region = "eu-west-1" # optional, uses AWS_REGION if omitted
+  }
+
+  install_script = "installer -pkg $INSTALLER_PATH -target /"
+  self_service   = true
+}
+
 # --- type = "vpp" ---
 # Add an App Store (VPP) app to a team.
 # Requires VPP to be configured in Fleet.

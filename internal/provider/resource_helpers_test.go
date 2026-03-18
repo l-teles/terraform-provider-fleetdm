@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -176,50 +178,70 @@ func TestExtractLabels(t *testing.T) {
 	})
 }
 
-func TestComputeLocalPackageSHA(t *testing.T) {
-	t.Run("computes correct sha256 and returns content", func(t *testing.T) {
+func TestReadPackageContent(t *testing.T) {
+	t.Run("reads local file and computes sha256", func(t *testing.T) {
 		content := []byte("fake pkg content for testing")
 		tmpFile := filepath.Join(t.TempDir(), "test.pkg")
 		if err := os.WriteFile(tmpFile, content, 0600); err != nil {
 			t.Fatalf("failed to write temp file: %v", err)
 		}
 
-		sha, got, err := computeLocalPackageSHA(tmpFile)
+		expectedHash := sha256.Sum256(content)
+		expectedSHA := hex.EncodeToString(expectedHash[:])
+
+		model := &softwarePackageResourceModel{
+			PackagePath: types.StringValue(tmpFile),
+		}
+		got, sha, err := readPackageContent(context.Background(), model)
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
 		if string(got) != string(content) {
 			t.Errorf("content mismatch: expected %q, got %q", content, got)
 		}
-		// Verify it's a 64-char hex string (SHA256 output)
-		if len(sha) != 64 {
-			t.Errorf("expected 64-char hex SHA256, got %d chars: %s", len(sha), sha)
-		}
-		// Calling again with the same file must produce the same hash
-		sha2, _, _ := computeLocalPackageSHA(tmpFile)
-		if sha != sha2 {
-			t.Errorf("SHA is not deterministic: %s vs %s", sha, sha2)
+		if sha != expectedSHA {
+			t.Errorf("SHA mismatch: expected %s, got %s", expectedSHA, sha)
 		}
 	})
 
-	t.Run("different content produces different sha", func(t *testing.T) {
+	t.Run("different files produce different sha", func(t *testing.T) {
 		dir := t.TempDir()
 		fileA := filepath.Join(dir, "a.pkg")
 		fileB := filepath.Join(dir, "b.pkg")
 		_ = os.WriteFile(fileA, []byte("content A"), 0600)
 		_ = os.WriteFile(fileB, []byte("content B"), 0600)
 
-		shaA, _, _ := computeLocalPackageSHA(fileA)
-		shaB, _, _ := computeLocalPackageSHA(fileB)
+		modelA := &softwarePackageResourceModel{PackagePath: types.StringValue(fileA)}
+		modelB := &softwarePackageResourceModel{PackagePath: types.StringValue(fileB)}
+
+		_, shaA, _ := readPackageContent(context.Background(), modelA)
+		_, shaB, _ := readPackageContent(context.Background(), modelB)
 		if shaA == shaB {
 			t.Error("expected different SHAs for different content")
 		}
 	})
 
 	t.Run("missing file returns error", func(t *testing.T) {
-		_, _, err := computeLocalPackageSHA("/nonexistent/path/pkg.pkg")
+		model := &softwarePackageResourceModel{
+			PackagePath: types.StringValue("/nonexistent/path/pkg.pkg"),
+		}
+		_, _, err := readPackageContent(context.Background(), model)
 		if err == nil {
 			t.Fatal("expected error for missing file, got nil")
+		}
+	})
+
+	t.Run("no source returns nil content", func(t *testing.T) {
+		model := &softwarePackageResourceModel{}
+		got, sha, err := readPackageContent(context.Background(), model)
+		if err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil content, got %d bytes", len(got))
+		}
+		if sha != "" {
+			t.Errorf("expected empty SHA, got %s", sha)
 		}
 	})
 }
