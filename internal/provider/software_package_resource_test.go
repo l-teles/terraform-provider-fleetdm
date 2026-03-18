@@ -49,6 +49,7 @@ func TestAccSoftwarePackageResource_basic(t *testing.T) {
 					"versions_count": 1,
 					"software_package": map[string]interface{}{
 						"title_id":    42,
+						"platform":    "darwin",
 						"hash_sha256": "ac7f05f70feb6201886d8a27a004bc322e7ba578262c984a213f48089e162183",
 					},
 					"versions": []map[string]interface{}{
@@ -305,6 +306,7 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 					"versions_count": 1,
 					"software_package": map[string]interface{}{
 						"title_id":    55,
+						"platform":    "darwin",
 						"hash_sha256": sha,
 					},
 					"versions": []map[string]interface{}{

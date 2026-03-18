@@ -331,11 +331,12 @@ func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.M
 	if err != nil {
 		hasLocalPath := !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != ""
 		if hasLocalPath {
-			// Local file errors (missing file, permission denied) should be reported
-			// immediately so users get feedback during plan.
+			// Local file errors are surfaced as warnings during plan so users
+			// get early feedback. The actual error will occur during apply if
+			// the file is still missing.
 			resp.Diagnostics.AddWarning(
-				"Unable to read package file",
-				fmt.Sprintf("Could not read package at plan time: %s. The SHA will be computed during apply.", err.Error()),
+				"Unable to read package file during plan",
+				fmt.Sprintf("Could not read %s: %s", plan.PackagePath.ValueString(), err.Error()),
 			)
 		}
 		// S3 errors are silently suppressed — credentials or endpoints may not be
@@ -459,10 +460,11 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 	}
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
+	} else if plan.Platform.IsNull() || plan.Platform.IsUnknown() {
+		// Fallback: set empty string to satisfy Computed requirement.
+		// The real Fleet API always populates SoftwarePackage.Platform.
+		plan.Platform = types.StringValue("")
 	}
-	// If SoftwarePackage.Platform is empty, leave plan.Platform unchanged
-	// (UseStateForUnknown handles this). Don't fall back to title.Source as
-	// it contains values like "pkg_packages" or "programs", not OS platforms.
 	plan.PackageSHA256 = types.StringValue(packageSHA256)
 
 	// Set the state
@@ -877,8 +879,6 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 			}
 			if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 				plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
-			} else {
-				plan.Platform = types.StringValue(title.Source)
 			}
 			plan.PackageSHA256 = types.StringValue(localSHA)
 			return
