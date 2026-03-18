@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// MaxPackageSize is the maximum allowed size for a software package download (2 GB).
+// MaxPackageSize is the maximum allowed size for a software package download (2 GiB).
 const MaxPackageSize = 2 << 30
 
 // S3Source represents an S3 object location.

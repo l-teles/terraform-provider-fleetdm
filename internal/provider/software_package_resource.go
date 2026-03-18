@@ -144,7 +144,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Optional:    true,
 			},
 			"package_s3": schema.SingleNestedAttribute{
-				Description: "S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path.",
+				Description: "S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. Note: bucket and key must be known at plan time (they cannot reference computed values from resources that haven't been created yet).",
 				Optional:    true,
 				Attributes: map[string]schema.Attribute{
 					"bucket": schema.StringAttribute{
@@ -264,6 +264,28 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 			"package_path and package_s3 can only be used with type = \"package\". "+
 				"VPP and Fleet Maintained apps are managed through the Fleet API directly.",
 		)
+	}
+
+	// Validate package_s3 fields when the block is present.
+	if hasS3 {
+		var s3Config packageS3Model
+		diags := data.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
+		if !diags.HasError() {
+			if !s3Config.Bucket.IsUnknown() && s3Config.Bucket.ValueString() == "" {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("package_s3"),
+					"Invalid Configuration",
+					"package_s3.bucket must not be empty.",
+				)
+			}
+			if !s3Config.Key.IsUnknown() && s3Config.Key.ValueString() == "" {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("package_s3"),
+					"Invalid Configuration",
+					"package_s3.key must not be empty.",
+				)
+			}
+		}
 	}
 }
 
@@ -776,6 +798,11 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 			}
 
 			filename := deriveFilename(ctx, plan)
+			if filename == "" {
+				resp.Diagnostics.AddError("Missing filename", "Could not determine filename for re-upload. Set 'filename' explicitly.")
+				return
+			}
+			plan.Filename = types.StringValue(filename)
 
 			uploadReq := &fleetdm.UploadSoftwarePackageRequest{
 				TeamID:            teamID,

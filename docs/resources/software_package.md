@@ -130,7 +130,7 @@ resource "fleetdm_software_package" "chrome_custom" {
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels.
 - `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.
-- `package_s3` (Attributes) S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. (see [below for nested schema](#nestedatt--package_s3))
+- `package_s3` (Attributes) S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. Note: bucket and key must be known at plan time (they cannot reference computed values from resources that haven't been created yet). (see [below for nested schema](#nestedatt--package_s3))
 - `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed from the local file (package_path) or S3 object (package_s3) on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.
 - `platform` (String) The platform (darwin, windows, linux, ipados, ios). Computed for packages, optional for VPP apps.
 - `post_install_script` (String) The script to run after installation. Optional.
