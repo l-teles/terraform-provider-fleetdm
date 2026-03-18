@@ -212,6 +212,96 @@ resource "fleetdm_software_package" "fma_test" {
 `, serverURL)
 }
 
+func TestAccSoftwarePackageResource_s3(t *testing.T) {
+	content := []byte("FAKES3PKG")
+
+	// Mock S3 server that serves the package content via path-style requests.
+	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/test-bucket/test.pkg" {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Write(content)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer s3Server.Close()
+
+	// Set dummy AWS credentials so the S3 SDK does not fail.
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+	// Mock Fleet server that accepts the upload and returns title metadata.
+	fleetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == "POST":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_package": map[string]interface{}{
+					"title_id": 55,
+					"team_id":  0,
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/55" && r.Method == "GET":
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_title": map[string]interface{}{
+					"id":             55,
+					"name":           "test.pkg",
+					"display_name":   "Test S3 Package",
+					"source":         "pkg",
+					"hosts_count":    0,
+					"versions_count": 1,
+					"software_package": map[string]interface{}{
+						"title_id":    55,
+						"hash_sha256": "9a0132a75956ed78f5bce50db38c tried",
+					},
+					"versions": []map[string]interface{}{
+						{"id": 1, "version": "1.0.0", "hosts_count": 0},
+					},
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/55/available_for_install" && r.Method == "DELETE":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fleetServer.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "title_id", "55"),
+					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "name", "test.pkg"),
+					resource.TestCheckResourceAttrSet("fleetdm_software_package.s3_test", "package_sha256"),
+				),
+			},
+		},
+	})
+}
+
+func testAccSoftwarePackageResourceConfig_s3(fleetURL, s3URL string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "s3_test" {
+  filename = "test.pkg"
+
+  package_s3 {
+    bucket       = "test-bucket"
+    key          = "test.pkg"
+    region       = "us-east-1"
+    endpoint_url = %[2]q
+  }
+}
+`, fleetURL, s3URL)
+}
+
 func testAccSoftwarePackageResourceConfig(serverURL, pkgPath string) string {
 	return fmt.Sprintf(`
 provider "fleetdm" {

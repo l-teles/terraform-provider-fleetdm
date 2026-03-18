@@ -50,6 +50,7 @@ type softwarePackageResourceModel struct {
 	Version              types.String `tfsdk:"version"`
 	Filename             types.String `tfsdk:"filename"`
 	PackagePath          types.String `tfsdk:"package_path"`
+	PackageS3            *packageS3Model `tfsdk:"package_s3"`
 	PackageSHA256        types.String `tfsdk:"package_sha256"`
 	Platform             types.String `tfsdk:"platform"`
 	InstallScript        types.String `tfsdk:"install_script"`
@@ -62,6 +63,14 @@ type softwarePackageResourceModel struct {
 	LabelsExcludeAny     types.List   `tfsdk:"labels_exclude_any"`
 	AppStoreID           types.String `tfsdk:"app_store_id"`
 	FleetMaintainedAppID types.Int64  `tfsdk:"fleet_maintained_app_id"`
+}
+
+// packageS3Model maps the nested package_s3 block.
+type packageS3Model struct {
+	Bucket      types.String `tfsdk:"bucket"`
+	Key         types.String `tfsdk:"key"`
+	Region      types.String `tfsdk:"region"`
+	EndpointURL types.String `tfsdk:"endpoint_url"`
 }
 
 // Metadata returns the resource type name.
@@ -124,7 +133,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 			"package_path": schema.StringAttribute{
-				Description: "The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files.",
+				Description: "The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.",
 				Optional:    true,
 			},
 			"package_sha256": schema.StringAttribute{
@@ -193,6 +202,29 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 		},
+		Blocks: map[string]schema.Block{
+			"package_s3": schema.SingleNestedBlock{
+				Description: "S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path.",
+				Attributes: map[string]schema.Attribute{
+					"bucket": schema.StringAttribute{
+						Description: "The S3 bucket name.",
+						Optional:    true,
+					},
+					"key": schema.StringAttribute{
+						Description: "The S3 object key.",
+						Optional:    true,
+					},
+					"region": schema.StringAttribute{
+						Description: "The AWS region. Uses AWS_REGION or default config if omitted.",
+						Optional:    true,
+					},
+					"endpoint_url": schema.StringAttribute{
+						Description: "Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.",
+						Optional:    true,
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -227,20 +259,16 @@ func (r *softwarePackageResource) Create(ctx context.Context, req resource.Creat
 
 // createPackage handles creating a software package (upload).
 func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softwarePackageResourceModel, resp *resource.CreateResponse) {
-	// Read package file from disk
-	packagePath := plan.PackagePath.ValueString()
-	packageContent, err := os.ReadFile(packagePath) // #nosec G304 -- path comes from Terraform config
+	// Read package content from local file or S3
+	packageContent, packageSHA256, err := readPackageContent(ctx, plan)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error reading package file",
-			fmt.Sprintf("Could not read package file at %s: %s", packagePath, err.Error()),
-		)
+		resp.Diagnostics.AddError("Error reading package", err.Error())
 		return
 	}
-
-	// Compute SHA256 hash
-	hash := sha256.Sum256(packageContent)
-	packageSHA256 := hex.EncodeToString(hash[:])
+	if packageContent == nil {
+		resp.Diagnostics.AddError("Missing package source", "Either package_path or package_s3 must be set for type 'package'.")
+		return
+	}
 
 	// Build the upload request
 	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
@@ -624,17 +652,14 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 
 // updatePackageOrFMA handles updating a software package or Fleet Maintained App.
 func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, resp *resource.UpdateResponse) {
-	// Check if package_path is set and the file has changed (SHA mismatch)
-	if !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != "" {
-		localSHA, packageContent, err := computeLocalPackageSHA(plan.PackagePath.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error reading package file",
-				fmt.Sprintf("Could not read package at %s: %s", plan.PackagePath.ValueString(), err.Error()),
-			)
-			return
-		}
+	// Check if we have a package source (local file or S3)
+	packageContent, localSHA, err := readPackageContent(ctx, plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Error reading package", err.Error())
+		return
+	}
 
+	if packageContent != nil {
 		// Compare with the current SHA in Fleet
 		currentSHA := plan.PackageSHA256.ValueString()
 		if localSHA != currentSHA {
@@ -651,8 +676,12 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 
 			filename := plan.Filename.ValueString()
 			if filename == "" {
-				// Use only the base name so Fleet receives a filename, not a full local path.
-				filename = filepath.Base(plan.PackagePath.ValueString())
+				// Derive filename from the package source path.
+				if !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != "" {
+					filename = filepath.Base(plan.PackagePath.ValueString())
+				} else if plan.PackageS3 != nil && !plan.PackageS3.Key.IsNull() && plan.PackageS3.Key.ValueString() != "" {
+					filename = filepath.Base(plan.PackageS3.Key.ValueString())
+				}
 			}
 
 			uploadReq := &fleetdm.UploadSoftwarePackageRequest{
@@ -737,6 +766,50 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 			"Could not update software package metadata: "+err.Error(),
 		)
 	}
+}
+
+// readPackageContent reads the package content from package_path or package_s3.
+// Returns the content, SHA256 hex digest, and any error.
+func readPackageContent(ctx context.Context, model *softwarePackageResourceModel) ([]byte, string, error) {
+	hasPath := !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != ""
+	hasS3 := model.PackageS3 != nil &&
+		!model.PackageS3.Bucket.IsNull() && model.PackageS3.Bucket.ValueString() != "" &&
+		!model.PackageS3.Key.IsNull() && model.PackageS3.Key.ValueString() != ""
+
+	if hasPath && hasS3 {
+		return nil, "", fmt.Errorf("package_path and package_s3 are mutually exclusive; set one or the other")
+	}
+
+	var content []byte
+	var err error
+
+	if hasPath {
+		content, err = os.ReadFile(model.PackagePath.ValueString()) // #nosec G304 -- path comes from Terraform config
+		if err != nil {
+			return nil, "", fmt.Errorf("could not read package at %s: %w", model.PackagePath.ValueString(), err)
+		}
+	} else if hasS3 {
+		src := fleetdm.S3Source{
+			Bucket: model.PackageS3.Bucket.ValueString(),
+			Key:    model.PackageS3.Key.ValueString(),
+		}
+		if !model.PackageS3.Region.IsNull() && !model.PackageS3.Region.IsUnknown() {
+			src.Region = model.PackageS3.Region.ValueString()
+		}
+		if !model.PackageS3.EndpointURL.IsNull() && !model.PackageS3.EndpointURL.IsUnknown() {
+			src.EndpointURL = model.PackageS3.EndpointURL.ValueString()
+		}
+
+		content, err = fleetdm.DownloadS3Object(ctx, src)
+		if err != nil {
+			return nil, "", err
+		}
+	} else {
+		return nil, "", nil // no source specified, that's OK for tracked-only packages
+	}
+
+	hash := sha256.Sum256(content)
+	return content, hex.EncodeToString(hash[:]), nil
 }
 
 // computeLocalPackageSHA reads a file and returns its SHA256 hex digest and content.
@@ -855,6 +928,8 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 	// package_path is a local filesystem path that Fleet does not store.
 	// After import, set package_path in your Terraform config to the local file.
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("package_path"), "")...)
+
+	// package_s3 is not stored by Fleet; it stays nil (unset) on import.
 
 	// Set package_sha256 from the Fleet API if available
 	packageSHA := ""
