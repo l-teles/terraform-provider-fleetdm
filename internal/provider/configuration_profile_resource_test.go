@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -106,12 +107,13 @@ func TestAccConfigurationProfileResource_displayName(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			_, header, err := r.FormFile("profile")
+			file, header, err := r.FormFile("profile")
 			if err != nil {
 				t.Errorf("failed to get form file: %v", err)
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			defer file.Close()
 			if header.Filename != "BitLocker Policy.xml" {
 				t.Errorf("expected filename 'BitLocker Policy.xml', got %q", header.Filename)
 			}
@@ -174,6 +176,29 @@ resource "fleetdm_configuration_profile" "win_test" {
   EOT
 }
 `
+}
+
+func TestAccConfigurationProfileResource_windowsRequiresDisplayName(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "fleetdm" {
+  server_address = "http://localhost:0"
+  api_key        = "test-token"
+}
+
+resource "fleetdm_configuration_profile" "win_no_name" {
+  profile_content = <<-EOT
+` + testWindowsXMLProfile + `
+  EOT
+}
+`,
+				ExpectError: regexp.MustCompile(`display_name is required for Windows profiles`),
+			},
+		},
+	})
 }
 
 func testAccConfigurationProfileResourceConfig(serverURL string) string {

@@ -141,7 +141,7 @@ output "wifi_profile_name" {
 
 ### Required
 
-- `profile_content` (String) The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).
+- `profile_content` (String) The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations).
 
 ### Optional
 

@@ -139,7 +139,8 @@ func (c *Client) GetMDMSummary(ctx context.Context, platform string, teamID *int
 func ProfileExtensionFromContent(content []byte) string {
 	trimmed := bytes.TrimSpace(content)
 	switch {
-	case bytes.HasPrefix(trimmed, []byte("<?xml")) || bytes.HasPrefix(trimmed, []byte("<!DOCTYPE")):
+	case bytes.HasPrefix(trimmed, []byte("<")):
+		// Any XML-like content; distinguish Apple plist from Windows
 		if bytes.Contains(trimmed, []byte("<plist")) || bytes.Contains(trimmed, []byte("PayloadType")) {
 			return ".mobileconfig"
 		}
@@ -155,7 +156,7 @@ func ProfileExtensionFromContent(content []byte) string {
 type CreateConfigProfileRequest struct {
 	TeamID           *int     // Optional team ID
 	Filename         string   // Upload filename; Fleet derives the Windows profile name from this
-	Profile          []byte   // Profile content (mobileconfig or XML)
+	Profile          []byte   // Profile content (mobileconfig XML, Windows XML, or Apple declaration JSON)
 	Labels           []string // Deprecated: use LabelsIncludeAll instead
 	LabelsIncludeAll []string // Labels that must all match
 	LabelsIncludeAny []string // Labels where any can match

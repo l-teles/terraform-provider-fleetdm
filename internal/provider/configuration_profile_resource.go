@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -18,8 +20,9 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &ConfigurationProfileResource{}
-	_ resource.ResourceWithImportState = &ConfigurationProfileResource{}
+	_ resource.Resource                   = &ConfigurationProfileResource{}
+	_ resource.ResourceWithImportState    = &ConfigurationProfileResource{}
+	_ resource.ResourceWithValidateConfig = &ConfigurationProfileResource{}
 )
 
 // NewConfigurationProfileResource creates a new configuration profile resource.
@@ -134,8 +137,8 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				},
 			},
 			"profile_content": schema.StringAttribute{
-				Description:         "The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).",
-				MarkdownDescription: "The content of the configuration profile (mobileconfig XML for macOS, or XML for Windows).",
+				Description:         "The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations).",
+				MarkdownDescription: "The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations).",
 				Required:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -205,6 +208,34 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 	}
 }
 
+// ValidateConfig validates the resource configuration.
+func (r *ConfigurationProfileResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var profileContent types.String
+	var displayName types.String
+
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("profile_content"), &profileContent)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("display_name"), &displayName)...)
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Skip validation if values are unknown (e.g. computed or from another resource)
+	if profileContent.IsUnknown() || profileContent.IsNull() {
+		return
+	}
+
+	ext := fleetdm.ProfileExtensionFromContent([]byte(profileContent.ValueString()))
+	if ext == ".xml" && (displayName.IsNull() || displayName.IsUnknown()) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("display_name"),
+			"display_name is required for Windows profiles",
+			"Windows XML profiles derive their name from the upload filename. "+
+				"Set display_name to control the profile name shown in Fleet.",
+		)
+	}
+}
+
 // Configure adds the provider configured client to the resource.
 func (r *ConfigurationProfileResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
@@ -226,9 +257,15 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	profileContent := []byte(plan.ProfileContent.ValueString())
 	ext := fleetdm.ProfileExtensionFromContent(profileContent)
 
+	// For Windows profiles, use display_name as the upload filename stem.
+	// Fleet derives the Windows profile name from the filename (minus extension).
+	// For macOS/JSON profiles, display_name is informational — name comes from content.
 	filename := "profile" + ext
-	if !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() && plan.DisplayName.ValueString() != "" {
-		filename = plan.DisplayName.ValueString() + ext
+	if ext == ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() && plan.DisplayName.ValueString() != "" {
+		name := plan.DisplayName.ValueString()
+		// Strip any file extension the user may have included
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+		filename = name + ext
 	}
 
 	createReq := &fleetdm.CreateConfigProfileRequest{

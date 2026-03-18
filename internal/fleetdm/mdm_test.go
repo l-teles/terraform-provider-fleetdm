@@ -455,6 +455,16 @@ func TestProfileExtensionFromContent(t *testing.T) {
 			want: ".xml",
 		},
 		{
+			name:    "Windows XML without XML declaration",
+			content: `<SyncML xmlns="SYNCML:SYNCML1.2"><SyncBody></SyncBody></SyncML>`,
+			want:    ".xml",
+		},
+		{
+			name:    "macOS plist without XML declaration",
+			content: `<plist version="1.0"><dict><key>PayloadType</key><string>Configuration</string></dict></plist>`,
+			want:    ".mobileconfig",
+		},
+		{
 			name:    "Apple declaration JSON",
 			content: `{"Type": "com.apple.configuration.management.test", "Payload": {}}`,
 			want:    ".json",
@@ -482,42 +492,6 @@ func TestProfileExtensionFromContent(t *testing.T) {
 }
 
 func TestClient_CreateConfigProfile(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST request, got %s", r.Method)
-		}
-		if r.URL.Path != "/api/v1/fleet/configuration_profiles" {
-			t.Errorf("expected path /api/v1/fleet/configuration_profiles, got %s", r.URL.Path)
-		}
-
-		err := r.ParseMultipartForm(10 << 20)
-		if err != nil {
-			t.Fatalf("failed to parse multipart form: %v", err)
-		}
-
-		// Verify the uploaded filename
-		file, header, err := r.FormFile("profile")
-		if err != nil {
-			t.Fatalf("failed to get form file: %v", err)
-		}
-		defer file.Close()
-
-		if header.Filename != "BitLocker Policy.xml" {
-			t.Errorf("expected filename 'BitLocker Policy.xml', got %q", header.Filename)
-		}
-
-		// Verify team_id field
-		if r.FormValue("team_id") != "1" {
-			t.Errorf("expected team_id '1', got %q", r.FormValue("team_id"))
-		}
-
-		// Return profile UUID then handle the follow-up GET
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-win-1234"})
-	}))
-	defer server.Close()
-
-	// Override the GET that CreateConfigProfile calls after POST
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -525,9 +499,17 @@ func TestClient_CreateConfigProfile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to parse multipart form: %v", err)
 			}
-			_, header, _ := r.FormFile("profile")
+			file, header, err := r.FormFile("profile")
+			if err != nil {
+				t.Fatalf("failed to get form file: %v", err)
+			}
+			defer file.Close()
+
 			if header.Filename != "BitLocker Policy.xml" {
 				t.Errorf("expected filename 'BitLocker Policy.xml', got %q", header.Filename)
+			}
+			if r.FormValue("team_id") != "1" {
+				t.Errorf("expected team_id '1', got %q", r.FormValue("team_id"))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-win-1234"})
@@ -545,8 +527,7 @@ func TestClient_CreateConfigProfile(t *testing.T) {
 			UploadedAt:  "2024-01-01T00:00:00Z",
 		})
 	})
-	server.Close()
-	server = httptest.NewServer(mux)
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
 	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
