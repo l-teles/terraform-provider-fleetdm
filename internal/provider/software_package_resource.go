@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
@@ -50,7 +51,7 @@ type softwarePackageResourceModel struct {
 	Version              types.String `tfsdk:"version"`
 	Filename             types.String `tfsdk:"filename"`
 	PackagePath          types.String `tfsdk:"package_path"`
-	PackageS3            *packageS3Model `tfsdk:"package_s3"`
+	PackageS3 types.Object `tfsdk:"package_s3"`
 	PackageSHA256        types.String `tfsdk:"package_sha256"`
 	Platform             types.String `tfsdk:"platform"`
 	InstallScript        types.String `tfsdk:"install_script"`
@@ -136,6 +137,28 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Description: "The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.",
 				Optional:    true,
 			},
+			"package_s3": schema.SingleNestedAttribute{
+				Description: "S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path.",
+				Optional:    true,
+				Attributes: map[string]schema.Attribute{
+					"bucket": schema.StringAttribute{
+						Description: "The S3 bucket name.",
+						Required:    true,
+					},
+					"key": schema.StringAttribute{
+						Description: "The S3 object key.",
+						Required:    true,
+					},
+					"region": schema.StringAttribute{
+						Description: "The AWS region. Uses AWS_REGION or default config if omitted.",
+						Optional:    true,
+					},
+					"endpoint_url": schema.StringAttribute{
+						Description: "Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.",
+						Optional:    true,
+					},
+				},
+			},
 			"package_sha256": schema.StringAttribute{
 				Description: "The SHA256 hash of the package in Fleet. Computed from the local file on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.",
 				Optional:    true,
@@ -199,29 +222,6 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
-				},
-			},
-		},
-		Blocks: map[string]schema.Block{
-			"package_s3": schema.SingleNestedBlock{
-				Description: "S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path.",
-				Attributes: map[string]schema.Attribute{
-					"bucket": schema.StringAttribute{
-						Description: "The S3 bucket name.",
-						Optional:    true,
-					},
-					"key": schema.StringAttribute{
-						Description: "The S3 object key.",
-						Optional:    true,
-					},
-					"region": schema.StringAttribute{
-						Description: "The AWS region. Uses AWS_REGION or default config if omitted.",
-						Optional:    true,
-					},
-					"endpoint_url": schema.StringAttribute{
-						Description: "Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.",
-						Optional:    true,
-					},
 				},
 			},
 		},
@@ -679,8 +679,13 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 				// Derive filename from the package source path.
 				if !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != "" {
 					filename = filepath.Base(plan.PackagePath.ValueString())
-				} else if plan.PackageS3 != nil && !plan.PackageS3.Key.IsNull() && plan.PackageS3.Key.ValueString() != "" {
-					filename = filepath.Base(plan.PackageS3.Key.ValueString())
+				} else if !plan.PackageS3.IsNull() && !plan.PackageS3.IsUnknown() {
+					var s3Cfg packageS3Model
+					if d := plan.PackageS3.As(ctx, &s3Cfg, basetypes.ObjectAsOptions{}); !d.HasError() {
+						if !s3Cfg.Key.IsNull() && !s3Cfg.Key.IsUnknown() && s3Cfg.Key.ValueString() != "" {
+							filename = filepath.Base(s3Cfg.Key.ValueString())
+						}
+					}
 				}
 			}
 
@@ -772,11 +777,9 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 // Returns the content, SHA256 hex digest, and any error.
 func readPackageContent(ctx context.Context, model *softwarePackageResourceModel) ([]byte, string, error) {
 	hasPath := !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != ""
-	hasS3 := model.PackageS3 != nil &&
-		!model.PackageS3.Bucket.IsNull() && model.PackageS3.Bucket.ValueString() != "" &&
-		!model.PackageS3.Key.IsNull() && model.PackageS3.Key.ValueString() != ""
+	s3Present := !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown()
 
-	if hasPath && hasS3 {
+	if hasPath && s3Present {
 		return nil, "", fmt.Errorf("package_path and package_s3 are mutually exclusive; set one or the other")
 	}
 
@@ -788,16 +791,27 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 		if err != nil {
 			return nil, "", fmt.Errorf("could not read package at %s: %w", model.PackagePath.ValueString(), err)
 		}
-	} else if hasS3 {
+	} else if s3Present {
+		var s3Config packageS3Model
+		diags := model.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
+		if diags.HasError() {
+			return nil, "", fmt.Errorf("could not parse package_s3 configuration")
+		}
+
+		// If bucket/key are unknown (from another resource), defer to apply time
+		if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
+			return nil, "", fmt.Errorf("package_s3 bucket or key is not yet known; this will resolve during apply")
+		}
+
 		src := fleetdm.S3Source{
-			Bucket: model.PackageS3.Bucket.ValueString(),
-			Key:    model.PackageS3.Key.ValueString(),
+			Bucket: s3Config.Bucket.ValueString(),
+			Key:    s3Config.Key.ValueString(),
 		}
-		if !model.PackageS3.Region.IsNull() && !model.PackageS3.Region.IsUnknown() {
-			src.Region = model.PackageS3.Region.ValueString()
+		if !s3Config.Region.IsNull() && !s3Config.Region.IsUnknown() {
+			src.Region = s3Config.Region.ValueString()
 		}
-		if !model.PackageS3.EndpointURL.IsNull() && !model.PackageS3.EndpointURL.IsUnknown() {
-			src.EndpointURL = model.PackageS3.EndpointURL.ValueString()
+		if !s3Config.EndpointURL.IsNull() && !s3Config.EndpointURL.IsUnknown() {
+			src.EndpointURL = s3Config.EndpointURL.ValueString()
 		}
 
 		content, err = fleetdm.DownloadS3Object(ctx, src)

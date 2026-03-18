@@ -64,7 +64,7 @@ resource "fleetdm_software_package" "example_app_s3" {
   team_id  = fleetdm_team.workstations.id
   filename = "example-app-1.0.0.pkg"
 
-  package_s3 {
+  package_s3 = {
     bucket = aws_s3_object.example_app.bucket
     key    = aws_s3_object.example_app.key
     region = "eu-west-1" # optional, uses AWS_REGION if omitted
@@ -130,7 +130,7 @@ resource "fleetdm_software_package" "chrome_custom" {
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels.
 - `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.
-- `package_s3` (Block, Optional) S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. (see [below for nested schema](#nestedblock--package_s3))
+- `package_s3` (Attributes) S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. (see [below for nested schema](#nestedatt--package_s3))
 - `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed from the local file on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.
 - `platform` (String) The platform (darwin, windows, linux, ipados, ios). Computed for packages, optional for VPP apps.
 - `post_install_script` (String) The script to run after installation. Optional.
@@ -147,12 +147,15 @@ resource "fleetdm_software_package" "chrome_custom" {
 - `title_id` (Number) The software title ID.
 - `version` (String) The version of the software.
 
-<a id="nestedblock--package_s3"></a>
+<a id="nestedatt--package_s3"></a>
 ### Nested Schema for `package_s3`
+
+Required:
+
+- `bucket` (String) The S3 bucket name.
+- `key` (String) The S3 object key.
 
 Optional:
 
-- `bucket` (String) The S3 bucket name.
 - `endpoint_url` (String) Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.
-- `key` (String) The S3 object key.
 - `region` (String) The AWS region. Uses AWS_REGION or default config if omitted.

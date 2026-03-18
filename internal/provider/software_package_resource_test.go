@@ -252,7 +252,7 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 					"versions_count": 1,
 					"software_package": map[string]interface{}{
 						"title_id":    55,
-						"hash_sha256": "9a0132a75956ed78f5bce50db38c tried",
+						"hash_sha256": "156d5f3dc917f38e5bb9d9f9609ba2cc8f7147148a2247f5e83e57eab9209439",
 					},
 					"versions": []map[string]interface{}{
 						{"id": 1, "version": "1.0.0", "hosts_count": 0},
@@ -292,7 +292,7 @@ provider "fleetdm" {
 resource "fleetdm_software_package" "s3_test" {
   filename = "test.pkg"
 
-  package_s3 {
+  package_s3 = {
     bucket       = "test-bucket"
     key          = "test.pkg"
     region       = "us-east-1"

@@ -49,7 +49,7 @@ resource "fleetdm_software_package" "example_app_s3" {
   team_id  = fleetdm_team.workstations.id
   filename = "example-app-1.0.0.pkg"
 
-  package_s3 {
+  package_s3 = {
     bucket = aws_s3_object.example_app.bucket
     key    = aws_s3_object.example_app.key
     region = "eu-west-1" # optional, uses AWS_REGION if omitted
