@@ -12,7 +12,7 @@ import (
 )
 
 // MaxPackageSize is the maximum allowed size for a software package download (2 GiB).
-const MaxPackageSize = 2 << 30
+const MaxPackageSize int64 = 2 << 30
 
 // S3Source represents an S3 object location.
 type S3Source struct {

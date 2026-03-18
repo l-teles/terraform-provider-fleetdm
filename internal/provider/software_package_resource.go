@@ -271,14 +271,26 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 		var s3Config packageS3Model
 		diags := data.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
 		if !diags.HasError() {
-			if !s3Config.Bucket.IsUnknown() && s3Config.Bucket.ValueString() == "" {
+			if s3Config.Bucket.IsUnknown() {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("package_s3"),
+					"Invalid Configuration",
+					"package_s3.bucket must be a known value at plan time. It cannot reference computed attributes from uncreated resources.",
+				)
+			} else if s3Config.Bucket.ValueString() == "" {
 				resp.Diagnostics.AddAttributeError(
 					path.Root("package_s3"),
 					"Invalid Configuration",
 					"package_s3.bucket must not be empty.",
 				)
 			}
-			if !s3Config.Key.IsUnknown() && s3Config.Key.ValueString() == "" {
+			if s3Config.Key.IsUnknown() {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("package_s3"),
+					"Invalid Configuration",
+					"package_s3.key must be a known value at plan time. It cannot reference computed attributes from uncreated resources.",
+				)
+			} else if s3Config.Key.ValueString() == "" {
 				resp.Diagnostics.AddAttributeError(
 					path.Root("package_s3"),
 					"Invalid Configuration",
