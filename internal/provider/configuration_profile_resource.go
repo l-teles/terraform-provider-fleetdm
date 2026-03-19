@@ -127,8 +127,8 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				},
 			},
 			"display_name": schema.StringAttribute{
-				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. Not used for macOS profiles (the name is extracted from PayloadDisplayName in the profile content).",
-				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. Not used for macOS profiles (the name is extracted from `PayloadDisplayName` in the profile content).",
+				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. Only applicable to Windows profiles; for macOS and declaration profiles the name is derived from the profile content.",
+				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. Only applicable to Windows profiles; for macOS and declaration profiles the name is derived from the profile content.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -634,9 +634,12 @@ func (m displayNamePlanModifier) PlanModifyString(ctx context.Context, req planm
 		return
 	}
 
-	// If the config value is unknown (e.g. from another resource), don't force
-	// replacement — the resolved value won't be available until apply.
+	// If the config value is unknown (e.g. from another resource), force
+	// replacement when state already has a value, since Update is not supported.
 	if req.ConfigValue.IsUnknown() {
+		if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() {
+			resp.RequiresReplace = true
+		}
 		return
 	}
 
