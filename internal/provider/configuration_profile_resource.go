@@ -127,8 +127,8 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				},
 			},
 			"display_name": schema.StringAttribute{
-				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. For macOS profiles, the name is extracted from PayloadDisplayName in the XML content and this field is computed automatically.",
-				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is computed automatically.",
+				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. Not used for macOS profiles (the name is extracted from PayloadDisplayName in the profile content).",
+				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. Not used for macOS profiles (the name is extracted from `PayloadDisplayName` in the profile content).",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -630,9 +630,13 @@ func (m displayNamePlanModifier) PlanModifyString(ctx context.Context, req planm
 	// If the config value is null, the user hasn't set display_name (macOS profile).
 	// Use the state value (or null) and do not force replacement.
 	if req.ConfigValue.IsNull() {
-		if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() {
-			resp.PlanValue = req.StateValue
-		}
+		resp.PlanValue = req.StateValue
+		return
+	}
+
+	// If the config value is unknown (e.g. from another resource), don't force
+	// replacement — the resolved value won't be available until apply.
+	if req.ConfigValue.IsUnknown() {
 		return
 	}
 

@@ -40,7 +40,7 @@ lint:
 .PHONY: clean
 clean:
 	rm -f terraform-provider-fleetdm
-	rm -rf ~/.terraform.d/plugins/registry.terraform.io/fleetdm
+	rm -rf ~/.terraform.d/plugins/registry.terraform.io/l-teles/fleetdm
 
 # Verify go modules
 .PHONY: verify
