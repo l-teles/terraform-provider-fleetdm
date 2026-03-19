@@ -127,12 +127,12 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				},
 			},
 			"display_name": schema.StringAttribute{
-				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. For macOS profiles, the name is extracted from PayloadDisplayName in the XML content and this field is computed automatically.",
-				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is computed automatically.",
+				Description:         "The display name for the profile. Required for Windows (.xml) profiles — controls the profile name shown in Fleet. Must not contain path separators (/ or \\) or file extensions. Only applicable to Windows profiles; for macOS and declaration profiles the name is derived from the profile content.",
+				MarkdownDescription: "The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\\`) or file extensions. Only applicable to Windows profiles; for macOS and declaration profiles the name is derived from the profile content.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					displayNamePlanModifier{},
 				},
 			},
 			"profile_content": schema.StringAttribute{
@@ -531,7 +531,13 @@ func (r *ConfigurationProfileResource) ImportState(ctx context.Context, req reso
 	}
 
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("profile_uuid"), profile.ProfileUUID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("display_name"), profile.Name)...)
+
+	// Only set display_name for Windows profiles — for macOS/declaration profiles
+	// it is computed from the profile content and must stay null in state to avoid
+	// a perpetual diff (users cannot set it in config).
+	if profile.Platform == "windows" {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("display_name"), profile.Name)...)
+	}
 
 	// Fetch profile content via alt=media endpoint
 	content, err := r.client.GetConfigProfileContent(ctx, profile.ProfileUUID)
@@ -552,8 +558,15 @@ func (r *ConfigurationProfileResource) mapProfileToModel(ctx context.Context, pr
 	model.Name = types.StringValue(profile.Name)
 	model.Platform = types.StringValue(profile.Platform)
 
-	// Always set display_name from API so state reflects what Fleet reports
-	model.DisplayName = types.StringValue(profile.Name)
+	// Only set display_name for Windows profiles where it is user-configurable.
+	// For macOS/declaration profiles, display_name is derived from the profile
+	// content — setting it in state would cause a perpetual diff because users
+	// cannot (and are validated against) setting it in config.
+	if profile.Platform == "windows" {
+		model.DisplayName = types.StringValue(profile.Name)
+	} else {
+		model.DisplayName = types.StringNull()
+	}
 	model.Identifier = types.StringValue(profile.Identifier)
 	model.Checksum = types.StringValue(profile.Checksum)
 	model.CreatedAt = types.StringValue(profile.CreatedAt)
@@ -598,3 +611,42 @@ func (r *ConfigurationProfileResource) mapProfileToModel(ctx context.Context, pr
 		model.LabelsExcludeAny = types.ListNull(types.StringType)
 	}
 }
+
+// displayNamePlanModifier is a custom plan modifier for display_name that only
+// forces replacement for Windows profiles (where it is user-configurable).
+// For macOS/declaration profiles, display_name is computed from the profile
+// content and should not trigger replacement.
+type displayNamePlanModifier struct{}
+
+func (m displayNamePlanModifier) Description(_ context.Context) string {
+	return "Requires replacement only when display_name is explicitly configured (Windows profiles)."
+}
+
+func (m displayNamePlanModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m displayNamePlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// If the config value is null, the user hasn't set display_name (macOS profile).
+	// Use the state value (or null) and do not force replacement.
+	if req.ConfigValue.IsNull() {
+		resp.PlanValue = req.StateValue
+		return
+	}
+
+	// If the config value is unknown (e.g. from another resource), force
+	// replacement when state already has a value, since Update is not supported.
+	if req.ConfigValue.IsUnknown() {
+		if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() {
+			resp.RequiresReplace = true
+		}
+		return
+	}
+
+	// Config has an explicit value (Windows profile) — if it changed, force replacement.
+	if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() &&
+		req.ConfigValue.ValueString() != req.StateValue.ValueString() {
+		resp.RequiresReplace = true
+	}
+}
+
