@@ -18,8 +18,8 @@ build:
 # Install the provider locally for testing
 .PHONY: install
 install: build
-	mkdir -p ~/.terraform.d/plugins/registry.terraform.io/fleetdm/fleetdm/0.1.0/$$(go env GOOS)_$$(go env GOARCH)
-	mv terraform-provider-fleetdm ~/.terraform.d/plugins/registry.terraform.io/fleetdm/fleetdm/0.1.0/$$(go env GOOS)_$$(go env GOARCH)/
+	mkdir -p ~/.terraform.d/plugins/registry.terraform.io/l-teles/fleetdm/0.1.0/$$(go env GOOS)_$$(go env GOARCH)
+	mv terraform-provider-fleetdm ~/.terraform.d/plugins/registry.terraform.io/l-teles/fleetdm/0.1.0/$$(go env GOOS)_$$(go env GOARCH)/
 
 # Generate documentation
 .PHONY: docs
