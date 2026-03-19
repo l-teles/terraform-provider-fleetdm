@@ -71,7 +71,7 @@ func TestAccConfigurationProfileResource_basic(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "profile_uuid", profileUUID),
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "name", "Test Profile"),
-					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "display_name", "Test Profile"),
+					resource.TestCheckNoResourceAttr("fleetdm_configuration_profile.test", "display_name"),
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "platform", "darwin"),
 					resource.TestCheckResourceAttr("fleetdm_configuration_profile.test", "identifier", "com.example.test"),
 				),
