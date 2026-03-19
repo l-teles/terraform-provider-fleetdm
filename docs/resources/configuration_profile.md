@@ -145,7 +145,7 @@ output "wifi_profile_name" {
 
 ### Optional
 
-- `display_name` (String) The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\`) or file extensions. For macOS profiles, the name is extracted from `PayloadDisplayName` in the XML content and this field is computed automatically.
+- `display_name` (String) The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\`) or file extensions. Not used for macOS profiles (the name is extracted from `PayloadDisplayName` in the profile content).
 - `labels_exclude_any` (List of String) Labels where hosts with **ANY** of these will **NOT** receive this profile.
 - `labels_include_all` (List of String) Labels that hosts must have **ALL** of to receive this profile.
 - `labels_include_any` (List of String) Labels where hosts must have **ANY** of to receive this profile.
