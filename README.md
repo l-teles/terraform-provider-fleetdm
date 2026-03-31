@@ -17,31 +17,35 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 
 ## Features
 
-### Resources (12)
+> **Requires Fleet 4.82.0+** for `fleetdm_fleet` and `fleetdm_report` resources. Earlier resources (`fleetdm_team`, `fleetdm_query`) are deprecated aliases that still work but will be removed in a future major version.
+
+### Resources (14)
 
 | Resource                        | Description                                                |
 | ------------------------------- | ---------------------------------------------------------- |
-| `fleetdm_team`                  | Manage teams with host expiry and disk encryption settings |
+| `fleetdm_fleet`                 | Manage fleets with host expiry and disk encryption settings |
 | `fleetdm_label`                 | Manage dynamic labels for host grouping                    |
-| `fleetdm_query`                 | Manage osquery queries with scheduling                     |
-| `fleetdm_policy`                | Manage compliance policies (global and team-scoped)        |
+| `fleetdm_report`                | Manage osquery reports with scheduling                     |
+| `fleetdm_policy`                | Manage compliance policies (global and fleet-scoped)       |
 | `fleetdm_script`                | Manage shell/PowerShell scripts                            |
-| `fleetdm_enroll_secret`         | Manage enrollment secrets (global and team)                |
+| `fleetdm_enroll_secret`         | Manage enrollment secrets (global and fleet)               |
 | `fleetdm_user`                  | Manage Fleet users and permissions                         |
 | `fleetdm_software_package`      | Upload and manage software packages (Premium)              |
 | `fleetdm_bootstrap_package`     | Manage bootstrap packages for setup assistant (Premium)    |
 | `fleetdm_configuration`         | Manage global Fleet configuration                          |
 | `fleetdm_configuration_profile` | Manage MDM configuration profiles (Premium)                |
 | `fleetdm_setup_experience`      | Manage macOS setup experience settings (Premium)           |
+| `fleetdm_team` *(deprecated)*   | Deprecated alias for `fleetdm_fleet`                       |
+| `fleetdm_query` *(deprecated)*  | Deprecated alias for `fleetdm_report`                      |
 
-### Data Sources (26)
+### Data Sources (30)
 
 | Data Source                                              | Description                               |
 | -------------------------------------------------------- | ----------------------------------------- |
-| `fleetdm_team` / `fleetdm_teams`                         | Read team information                     |
+| `fleetdm_fleet` / `fleetdm_fleets`                       | Read fleet information                    |
 | `fleetdm_label` / `fleetdm_labels`                       | Read label information                    |
-| `fleetdm_query` / `fleetdm_queries`                      | Read query information                    |
-| `fleetdm_policy` / `fleetdm_policies`                    | Read policy information (global and team) |
+| `fleetdm_report` / `fleetdm_reports`                     | Read report information                   |
+| `fleetdm_policy` / `fleetdm_policies`                    | Read policy information (global and fleet) |
 | `fleetdm_host` / `fleetdm_hosts`                         | Read host information (by ID, identifier, or list) |
 | `fleetdm_script` / `fleetdm_scripts`                     | Read script information                   |
 | `fleetdm_software_title` / `fleetdm_software_titles`     | Read software title information           |
@@ -55,12 +59,14 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_mdm_summary`                                    | Get MDM enrollment summary (Premium)      |
 | `fleetdm_abm_tokens`                                     | Read Apple Business Manager tokens        |
 | `fleetdm_vpp_tokens`                                     | Read Apple Volume Purchase tokens         |
+| `fleetdm_team` / `fleetdm_teams` *(deprecated)*          | Deprecated aliases for `fleetdm_fleet` / `fleetdm_fleets` |
+| `fleetdm_query` / `fleetdm_queries` *(deprecated)*       | Deprecated aliases for `fleetdm_report` / `fleetdm_reports` |
 
 ## Requirements
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.5
 - [Go](https://golang.org/doc/install) >= 1.24 (for building)
-- FleetDM server with API access
+- FleetDM server >= 4.82.0 (for `fleetdm_fleet` and `fleetdm_report`; older Fleet versions work with deprecated `fleetdm_team` / `fleetdm_query`)
 
 ## Installation
 
@@ -117,10 +123,10 @@ export FLEETDM_VERIFY_TLS="false"  # Optional: disable TLS verification
 
 ## Quick Start
 
-### Create a Team
+### Create a Fleet
 
 ```hcl
-resource "fleetdm_team" "workstations" {
+resource "fleetdm_fleet" "workstations" {
   name        = "Workstations"
   description = "All workstation devices"
 
@@ -140,10 +146,10 @@ resource "fleetdm_label" "macos_hosts" {
 }
 ```
 
-### Create a Query
+### Create a Report
 
 ```hcl
-resource "fleetdm_query" "os_version" {
+resource "fleetdm_report" "os_version" {
   name        = "Get OS Version"
   description = "Returns OS version information"
   query       = "SELECT * FROM os_version"
@@ -169,7 +175,7 @@ resource "fleetdm_policy" "disk_encryption" {
 
 ```hcl
 resource "fleetdm_software_package" "zoom" {
-  team_id      = fleetdm_team.workstations.id
+  team_id      = fleetdm_fleet.workstations.id
   filename     = "zoom-installer.pkg"
   package_path = "./packages/zoom-installer.pkg"
 
@@ -184,7 +190,7 @@ resource "fleetdm_software_package" "zoom" {
 
 ```hcl
 resource "fleetdm_script" "system_update" {
-  team_id = fleetdm_team.workstations.id
+  team_id = fleetdm_fleet.workstations.id
   name    = "update-system.sh"
   content = file("${path.module}/scripts/update-system.sh")
 }
@@ -228,9 +234,9 @@ terraform-provider-fleetdm/
 ├── internal/
 │   ├── fleetdm/          # FleetDM API client
 │   │   ├── client.go     # HTTP client implementation
-│   │   ├── teams.go      # Teams API
+│   │   ├── teams.go      # Fleets API (teams.go kept for compatibility)
 │   │   ├── labels.go     # Labels API
-│   │   ├── queries.go    # Queries API
+│   │   ├── queries.go    # Reports API (queries.go kept for compatibility)
 │   │   ├── policies.go   # Policies API
 │   │   └── *_test.go     # Unit tests
 │   └── provider/         # Terraform provider
@@ -248,10 +254,10 @@ terraform-provider-fleetdm/
 
 | Category      | API Operations              | Status         |
 | ------------- | --------------------------- | -------------- |
-| Teams         | CRUD, Enroll Secrets        | ✅ Implemented |
+| Fleets        | CRUD, Enroll Secrets        | ✅ Implemented |
 | Labels        | CRUD                        | ✅ Implemented |
-| Queries       | CRUD, Scheduling            | ✅ Implemented |
-| Policies      | CRUD (Global & Team)        | ✅ Implemented |
+| Reports       | CRUD, Scheduling            | ✅ Implemented |
+| Policies      | CRUD (Global & Fleet)       | ✅ Implemented |
 | Scripts       | CRUD                        | ✅ Implemented |
 | Hosts         | Read, Search, Filter        | ✅ Implemented |
 | Users         | CRUD                        | ✅ Implemented |

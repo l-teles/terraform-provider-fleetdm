@@ -79,10 +79,10 @@ func (c *Client) ListGlobalPolicies(ctx context.Context) ([]Policy, error) {
 // ListTeamPolicies retrieves all policies for a specific team.
 func (c *Client) ListTeamPolicies(ctx context.Context, teamID int) ([]Policy, error) {
 	var resp ListPoliciesResponse
-	endpoint := fmt.Sprintf("/teams/%d/policies", teamID)
+	endpoint := fmt.Sprintf("/fleets/%d/policies", teamID)
 	err := c.Get(ctx, endpoint, nil, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list team %d policies: %w", teamID, err)
+		return nil, fmt.Errorf("failed to list fleet %d policies: %w", teamID, err)
 	}
 	return resp.Policies, nil
 }
@@ -101,10 +101,10 @@ func (c *Client) GetGlobalPolicy(ctx context.Context, id int) (*Policy, error) {
 // GetTeamPolicy retrieves a team policy by ID.
 func (c *Client) GetTeamPolicy(ctx context.Context, teamID, policyID int) (*Policy, error) {
 	var resp GetPolicyResponse
-	endpoint := fmt.Sprintf("/teams/%d/policies/%d", teamID, policyID)
+	endpoint := fmt.Sprintf("/fleets/%d/policies/%d", teamID, policyID)
 	err := c.Get(ctx, endpoint, nil, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get team %d policy %d: %w", teamID, policyID, err)
+		return nil, fmt.Errorf("failed to get fleet %d policy %d: %w", teamID, policyID, err)
 	}
 	return &resp.Policy, nil
 }
@@ -122,10 +122,10 @@ func (c *Client) CreateGlobalPolicy(ctx context.Context, req CreatePolicyRequest
 // CreateTeamPolicy creates a new policy for a specific team.
 func (c *Client) CreateTeamPolicy(ctx context.Context, teamID int, req CreatePolicyRequest) (*Policy, error) {
 	var resp CreatePolicyResponse
-	endpoint := fmt.Sprintf("/teams/%d/policies", teamID)
+	endpoint := fmt.Sprintf("/fleets/%d/policies", teamID)
 	err := c.Post(ctx, endpoint, req, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create team %d policy: %w", teamID, err)
+		return nil, fmt.Errorf("failed to create fleet %d policy: %w", teamID, err)
 	}
 	return &resp.Policy, nil
 }
@@ -144,10 +144,10 @@ func (c *Client) UpdateGlobalPolicy(ctx context.Context, id int, req UpdatePolic
 // UpdateTeamPolicy updates an existing team policy.
 func (c *Client) UpdateTeamPolicy(ctx context.Context, teamID, policyID int, req UpdatePolicyRequest) (*Policy, error) {
 	var resp UpdatePolicyResponse
-	endpoint := fmt.Sprintf("/teams/%d/policies/%d", teamID, policyID)
+	endpoint := fmt.Sprintf("/fleets/%d/policies/%d", teamID, policyID)
 	err := c.Patch(ctx, endpoint, req, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update team %d policy %d: %w", teamID, policyID, err)
+		return nil, fmt.Errorf("failed to update fleet %d policy %d: %w", teamID, policyID, err)
 	}
 	return &resp.Policy, nil
 }
@@ -167,7 +167,7 @@ func (c *Client) DeleteGlobalPolicy(ctx context.Context, id int) error {
 func (c *Client) DeleteTeamPolicy(ctx context.Context, teamID, policyID int) error {
 	_, err := c.DeleteTeamPolicies(ctx, teamID, []int{policyID})
 	if err != nil {
-		return fmt.Errorf("failed to delete team %d policy %d: %w", teamID, policyID, err)
+		return fmt.Errorf("failed to delete fleet %d policy %d: %w", teamID, policyID, err)
 	}
 	return nil
 }
@@ -203,10 +203,10 @@ func (c *Client) DeleteTeamPolicies(ctx context.Context, teamID int, ids []int) 
 		IDs: ids,
 	}
 
-	endpoint := fmt.Sprintf("/teams/%d/policies/delete", teamID)
+	endpoint := fmt.Sprintf("/fleets/%d/policies/delete", teamID)
 	err := c.Post(ctx, endpoint, body, &resp)
 	if err != nil {
-		return 0, fmt.Errorf("failed to delete team %d policies: %w", teamID, err)
+		return 0, fmt.Errorf("failed to delete fleet %d policies: %w", teamID, err)
 	}
 	return len(resp.Deleted), nil
 }

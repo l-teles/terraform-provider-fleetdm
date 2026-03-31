@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-// Team represents a FleetDM team.
+// Team represents a FleetDM fleet (team).
 type Team struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
@@ -14,10 +14,10 @@ type Team struct {
 	UserCount   int    `json:"user_count,omitempty"`
 	HostCount   int    `json:"host_count,omitempty"`
 
-	// AgentOptions contains osquery agent configuration for this team
+	// AgentOptions contains osquery agent configuration for this fleet
 	AgentOptions *AgentOptions `json:"agent_options,omitempty"`
 
-	// Secrets contains enrollment secrets for this team
+	// Secrets contains enrollment secrets for this fleet
 	Secrets []EnrollSecret `json:"secrets,omitempty"`
 
 	// WebhookSettings contains webhook configuration
@@ -41,7 +41,7 @@ type AgentOptions struct {
 type EnrollSecret struct {
 	Secret    string `json:"secret"`
 	CreatedAt string `json:"created_at,omitempty"`
-	TeamID    *int64 `json:"team_id,omitempty"`
+	TeamID    *int64 `json:"fleet_id,omitempty"`
 }
 
 // TeamWebhookSettings represents team-level webhook settings.
@@ -57,7 +57,7 @@ type FailingPoliciesWebhook struct {
 	HostBatchSize  int    `json:"host_batch_size,omitempty"`
 }
 
-// TeamMDMSettings represents MDM settings for a team.
+// TeamMDMSettings represents MDM settings for a fleet.
 type TeamMDMSettings struct {
 	EnableDiskEncryption    bool                `json:"enable_disk_encryption"`
 	WindowsRequireBitlocker bool                `json:"windows_require_bitlocker_pin"`
@@ -127,17 +127,17 @@ type HostExpirySettings struct {
 	HostExpiryWindow  int  `json:"host_expiry_window"`
 }
 
-// ListTeamsResponse represents the response from listing teams.
+// ListTeamsResponse represents the response from listing fleets.
 type ListTeamsResponse struct {
-	Teams []Team `json:"teams"`
+	Teams []Team `json:"fleets"`
 }
 
-// GetTeamResponse represents the response from getting a team.
+// GetTeamResponse represents the response from getting a fleet.
 type GetTeamResponse struct {
-	Team Team `json:"team"`
+	Team Team `json:"fleet"`
 }
 
-// CreateTeamRequest represents the request to create a team.
+// CreateTeamRequest represents the request to create a fleet.
 type CreateTeamRequest struct {
 	Name         string         `json:"name"`
 	Description  string         `json:"description,omitempty"`
@@ -145,7 +145,7 @@ type CreateTeamRequest struct {
 	AgentOptions *AgentOptions  `json:"agent_options,omitempty"`
 }
 
-// UpdateTeamRequest represents the request to update a team.
+// UpdateTeamRequest represents the request to update a fleet.
 type UpdateTeamRequest struct {
 	Name               string               `json:"name"`
 	Description        string               `json:"description"`
@@ -155,7 +155,7 @@ type UpdateTeamRequest struct {
 	HostExpirySettings *HostExpirySettings  `json:"host_expiry_settings,omitempty"`
 }
 
-// ListTeams retrieves all teams.
+// ListTeams retrieves all fleets.
 func (c *Client) ListTeams(ctx context.Context, page, perPage int) ([]Team, error) {
 	params := make(map[string]string)
 	if page > 0 {
@@ -166,71 +166,71 @@ func (c *Client) ListTeams(ctx context.Context, page, perPage int) ([]Team, erro
 	}
 
 	var response ListTeamsResponse
-	err := c.Get(ctx, "/teams", params, &response)
+	err := c.Get(ctx, "/fleets", params, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list teams: %w", err)
+		return nil, fmt.Errorf("failed to list fleets: %w", err)
 	}
 
 	return response.Teams, nil
 }
 
-// GetTeam retrieves a team by ID.
+// GetTeam retrieves a fleet by ID.
 func (c *Client) GetTeam(ctx context.Context, teamID int64) (*Team, error) {
 	var response GetTeamResponse
-	err := c.Get(ctx, fmt.Sprintf("/teams/%d", teamID), nil, &response)
+	err := c.Get(ctx, fmt.Sprintf("/fleets/%d", teamID), nil, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get team %d: %w", teamID, err)
+		return nil, fmt.Errorf("failed to get fleet %d: %w", teamID, err)
 	}
 
 	return &response.Team, nil
 }
 
-// CreateTeam creates a new team.
+// CreateTeam creates a new fleet.
 func (c *Client) CreateTeam(ctx context.Context, req CreateTeamRequest) (*Team, error) {
 	var response GetTeamResponse
-	err := c.Post(ctx, "/teams", req, &response)
+	err := c.Post(ctx, "/fleets", req, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create team: %w", err)
+		return nil, fmt.Errorf("failed to create fleet: %w", err)
 	}
 
 	return &response.Team, nil
 }
 
-// UpdateTeam updates an existing team.
+// UpdateTeam updates an existing fleet.
 func (c *Client) UpdateTeam(ctx context.Context, teamID int64, req UpdateTeamRequest) (*Team, error) {
 	var response GetTeamResponse
-	err := c.Patch(ctx, fmt.Sprintf("/teams/%d", teamID), req, &response)
+	err := c.Patch(ctx, fmt.Sprintf("/fleets/%d", teamID), req, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update team %d: %w", teamID, err)
+		return nil, fmt.Errorf("failed to update fleet %d: %w", teamID, err)
 	}
 
 	return &response.Team, nil
 }
 
-// DeleteTeam deletes a team by ID.
+// DeleteTeam deletes a fleet by ID.
 func (c *Client) DeleteTeam(ctx context.Context, teamID int64) error {
-	err := c.Delete(ctx, fmt.Sprintf("/teams/%d", teamID), nil, nil)
+	err := c.Delete(ctx, fmt.Sprintf("/fleets/%d", teamID), nil, nil)
 	if err != nil {
-		return fmt.Errorf("failed to delete team %d: %w", teamID, err)
+		return fmt.Errorf("failed to delete fleet %d: %w", teamID, err)
 	}
 
 	return nil
 }
 
-// GetTeamEnrollSecrets retrieves the enrollment secrets for a team.
+// GetTeamEnrollSecrets retrieves the enrollment secrets for a fleet.
 func (c *Client) GetTeamEnrollSecrets(ctx context.Context, teamID int64) ([]EnrollSecret, error) {
 	var response struct {
 		Secrets []EnrollSecret `json:"secrets"`
 	}
-	err := c.Get(ctx, fmt.Sprintf("/teams/%d/secrets", teamID), nil, &response)
+	err := c.Get(ctx, fmt.Sprintf("/fleets/%d/secrets", teamID), nil, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get team %d secrets: %w", teamID, err)
+		return nil, fmt.Errorf("failed to get fleet %d secrets: %w", teamID, err)
 	}
 
 	return response.Secrets, nil
 }
 
-// ModifyTeamEnrollSecrets modifies the enrollment secrets for a team.
+// ModifyTeamEnrollSecrets modifies the enrollment secrets for a fleet.
 func (c *Client) ModifyTeamEnrollSecrets(ctx context.Context, teamID int64, secrets []EnrollSecret) ([]EnrollSecret, error) {
 	req := struct {
 		Secrets []EnrollSecret `json:"secrets"`
@@ -241,9 +241,9 @@ func (c *Client) ModifyTeamEnrollSecrets(ctx context.Context, teamID int64, secr
 	var response struct {
 		Secrets []EnrollSecret `json:"secrets"`
 	}
-	err := c.Patch(ctx, fmt.Sprintf("/teams/%d/secrets", teamID), req, &response)
+	err := c.Patch(ctx, fmt.Sprintf("/fleets/%d/secrets", teamID), req, &response)
 	if err != nil {
-		return nil, fmt.Errorf("failed to modify team %d secrets: %w", teamID, err)
+		return nil, fmt.Errorf("failed to modify fleet %d secrets: %w", teamID, err)
 	}
 
 	return response.Secrets, nil

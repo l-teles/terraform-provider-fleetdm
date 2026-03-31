@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-// Query represents a FleetDM query.
+// Query represents a FleetDM report (query).
 type Query struct {
 	ID                 int    `json:"id,omitempty"`
 	Name               string `json:"name"`
@@ -19,7 +19,7 @@ type Query struct {
 	AutomationsEnabled bool   `json:"automations_enabled,omitempty"`
 	Logging            string `json:"logging,omitempty"`
 	DiscardData        bool   `json:"discard_data,omitempty"`
-	TeamID             *int   `json:"team_id,omitempty"`
+	TeamID             *int   `json:"fleet_id,omitempty"`
 	AuthorID           int    `json:"author_id,omitempty"`
 	AuthorName         string `json:"author_name,omitempty"`
 	AuthorEmail        string `json:"author_email,omitempty"`
@@ -45,17 +45,17 @@ type Stats struct {
 	TotalExecutions int     `json:"total_executions,omitempty"`
 }
 
-// ListQueriesResponse represents the response from the list queries endpoint.
+// ListQueriesResponse represents the response from the list reports endpoint.
 type ListQueriesResponse struct {
-	Queries []Query `json:"queries"`
+	Queries []Query `json:"reports"`
 }
 
-// GetQueryResponse represents the response from the get query endpoint.
+// GetQueryResponse represents the response from the get report endpoint.
 type GetQueryResponse struct {
-	Query Query `json:"query"`
+	Query Query `json:"report"`
 }
 
-// CreateQueryRequest represents the request to create a query.
+// CreateQueryRequest represents the request to create a report.
 type CreateQueryRequest struct {
 	Name               string `json:"name"`
 	Description        string `json:"description,omitempty"`
@@ -67,15 +67,15 @@ type CreateQueryRequest struct {
 	AutomationsEnabled bool   `json:"automations_enabled,omitempty"`
 	Logging            string `json:"logging,omitempty"`
 	DiscardData        bool   `json:"discard_data,omitempty"`
-	TeamID             *int   `json:"team_id,omitempty"`
+	TeamID             *int   `json:"fleet_id,omitempty"`
 }
 
-// CreateQueryResponse represents the response from the create query endpoint.
+// CreateQueryResponse represents the response from the create report endpoint.
 type CreateQueryResponse struct {
-	Query Query `json:"query"`
+	Query Query `json:"report"`
 }
 
-// UpdateQueryRequest represents the request to update a query.
+// UpdateQueryRequest represents the request to update a report.
 type UpdateQueryRequest struct {
 	Name               string `json:"name,omitempty"`
 	Description        string `json:"description,omitempty"`
@@ -89,73 +89,72 @@ type UpdateQueryRequest struct {
 	DiscardData        bool   `json:"discard_data,omitempty"`
 }
 
-// UpdateQueryResponse represents the response from the update query endpoint.
+// UpdateQueryResponse represents the response from the update report endpoint.
 type UpdateQueryResponse struct {
-	Query Query `json:"query"`
+	Query Query `json:"report"`
 }
 
-// ListQueries retrieves all queries.
+// ListQueries retrieves all reports.
 func (c *Client) ListQueries(ctx context.Context) ([]Query, error) {
 	var resp ListQueriesResponse
-	err := c.Get(ctx, "/queries", nil, &resp)
+	err := c.Get(ctx, "/reports", nil, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list queries: %w", err)
+		return nil, fmt.Errorf("failed to list reports: %w", err)
 	}
 	return resp.Queries, nil
 }
 
-// ListQueriesByTeam retrieves queries for a specific team.
+// ListQueriesByTeam retrieves reports for a specific fleet.
 func (c *Client) ListQueriesByTeam(ctx context.Context, teamID int) ([]Query, error) {
 	var resp ListQueriesResponse
 	params := map[string]string{
-		"team_id": strconv.Itoa(teamID),
+		"fleet_id": strconv.Itoa(teamID),
 	}
-	err := c.Get(ctx, "/queries", params, &resp)
+	err := c.Get(ctx, "/reports", params, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list queries for team %d: %w", teamID, err)
+		return nil, fmt.Errorf("failed to list reports for fleet %d: %w", teamID, err)
 	}
 	return resp.Queries, nil
 }
 
-// GetQuery retrieves a query by ID.
+// GetQuery retrieves a report by ID.
 func (c *Client) GetQuery(ctx context.Context, id int) (*Query, error) {
 	var resp GetQueryResponse
-	endpoint := fmt.Sprintf("/queries/%d", id)
+	endpoint := fmt.Sprintf("/reports/%d", id)
 	err := c.Get(ctx, endpoint, nil, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get query %d: %w", id, err)
+		return nil, fmt.Errorf("failed to get report %d: %w", id, err)
 	}
 	return &resp.Query, nil
 }
 
-// CreateQuery creates a new query.
+// CreateQuery creates a new report.
 func (c *Client) CreateQuery(ctx context.Context, req CreateQueryRequest) (*Query, error) {
 	var resp CreateQueryResponse
-	err := c.Post(ctx, "/queries", req, &resp)
+	err := c.Post(ctx, "/reports", req, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create query: %w", err)
+		return nil, fmt.Errorf("failed to create report: %w", err)
 	}
 	return &resp.Query, nil
 }
 
-// UpdateQuery updates an existing query.
+// UpdateQuery updates an existing report.
 func (c *Client) UpdateQuery(ctx context.Context, id int, req UpdateQueryRequest) (*Query, error) {
 	var resp UpdateQueryResponse
-	endpoint := fmt.Sprintf("/queries/%d", id)
+	endpoint := fmt.Sprintf("/reports/%d", id)
 	err := c.Patch(ctx, endpoint, req, &resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to update query %d: %w", id, err)
+		return nil, fmt.Errorf("failed to update report %d: %w", id, err)
 	}
 	return &resp.Query, nil
 }
 
-// DeleteQuery deletes a query by ID.
+// DeleteQuery deletes a report by ID.
 func (c *Client) DeleteQuery(ctx context.Context, id int) error {
-	endpoint := fmt.Sprintf("/queries/id/%d", id)
+	endpoint := fmt.Sprintf("/reports/id/%d", id)
 	err := c.Delete(ctx, endpoint, nil, nil)
 	if err != nil {
-		return fmt.Errorf("failed to delete query %d: %w", id, err)
+		return fmt.Errorf("failed to delete report %d: %w", id, err)
 	}
 	return nil
 }
-

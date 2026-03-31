@@ -12,26 +12,26 @@ import (
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
-var _ datasource.DataSource = &QueriesDataSource{}
+var _ datasource.DataSource = &ReportsDataSource{}
 
-// NewQueriesDataSource creates a deprecated queries data source (use fleetdm_reports instead).
-func NewQueriesDataSource() datasource.DataSource {
-	return &QueriesDataSource{}
+// NewReportsDataSource creates a new reports data source.
+func NewReportsDataSource() datasource.DataSource {
+	return &ReportsDataSource{}
 }
 
-// QueriesDataSource defines the data source implementation.
-type QueriesDataSource struct {
+// ReportsDataSource defines the data source implementation.
+type ReportsDataSource struct {
 	client *fleetdm.Client
 }
 
-// QueriesDataSourceModel describes the data source data model.
-type QueriesDataSourceModel struct {
-	TeamID  types.Int64  `tfsdk:"team_id"`
-	Queries []QueryModel `tfsdk:"queries"`
+// ReportsDataSourceModel describes the data source data model.
+type ReportsDataSourceModel struct {
+	FleetID types.Int64   `tfsdk:"fleet_id"`
+	Reports []ReportModel `tfsdk:"reports"`
 }
 
-// QueryModel describes a single query in the list.
-type QueryModel struct {
+// ReportModel describes a single report in the list.
+type ReportModel struct {
 	ID                 types.String `tfsdk:"id"`
 	Name               types.String `tfsdk:"name"`
 	Description        types.String `tfsdk:"description"`
@@ -43,42 +43,41 @@ type QueryModel struct {
 	AutomationsEnabled types.Bool   `tfsdk:"automations_enabled"`
 	Logging            types.String `tfsdk:"logging"`
 	DiscardData        types.Bool   `tfsdk:"discard_data"`
-	TeamID             types.Int64  `tfsdk:"team_id"`
+	FleetID            types.Int64  `tfsdk:"fleet_id"`
 	AuthorID           types.Int64  `tfsdk:"author_id"`
 	AuthorName         types.String `tfsdk:"author_name"`
 	AuthorEmail        types.String `tfsdk:"author_email"`
 }
 
-func (d *QueriesDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_queries"
+func (d *ReportsDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_reports"
 }
 
-func (d *QueriesDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+func (d *ReportsDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		DeprecationMessage:  "fleetdm_queries is deprecated and will be removed in a future version. Use fleetdm_reports instead (requires Fleet 4.82.0+).",
-		MarkdownDescription: "Use this data source to retrieve information about all FleetDM queries.",
+		MarkdownDescription: "Use this data source to retrieve information about all FleetDM reports.",
 
 		Attributes: map[string]schema.Attribute{
-			"team_id": schema.Int64Attribute{
+			"fleet_id": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "Filter queries by team ID. If not specified, all global queries are returned.",
+				MarkdownDescription: "Filter reports by fleet ID. If not specified, all global reports are returned.",
 			},
-			"queries": schema.ListNestedAttribute{
+			"reports": schema.ListNestedAttribute{
 				Computed:            true,
-				MarkdownDescription: "List of queries.",
+				MarkdownDescription: "List of reports.",
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"id": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The unique identifier of the query.",
+							MarkdownDescription: "The unique identifier of the report.",
 						},
 						"name": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The name of the query.",
+							MarkdownDescription: "The name of the report.",
 						},
 						"description": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "A description of the query.",
+							MarkdownDescription: "A description of the report.",
 						},
 						"query": schema.StringAttribute{
 							Computed:            true,
@@ -87,7 +86,7 @@ func (d *QueriesDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 						"platform": schema.ListAttribute{
 							Computed:            true,
 							ElementType:         types.StringType,
-							MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
+							MarkdownDescription: "List of platforms this report is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
 						},
 						"min_osquery_version": schema.StringAttribute{
 							Computed:            true,
@@ -95,11 +94,11 @@ func (d *QueriesDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 						},
 						"interval": schema.Int64Attribute{
 							Computed:            true,
-							MarkdownDescription: "The scheduled query interval in seconds.",
+							MarkdownDescription: "The scheduled report interval in seconds.",
 						},
 						"observer_can_run": schema.BoolAttribute{
 							Computed:            true,
-							MarkdownDescription: "Whether observers can run this query.",
+							MarkdownDescription: "Whether observers can run this report.",
 						},
 						"automations_enabled": schema.BoolAttribute{
 							Computed:            true,
@@ -107,27 +106,27 @@ func (d *QueriesDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 						},
 						"logging": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The logging type for this query.",
+							MarkdownDescription: "The logging type for this report.",
 						},
 						"discard_data": schema.BoolAttribute{
 							Computed:            true,
-							MarkdownDescription: "Whether to discard query results after logging.",
+							MarkdownDescription: "Whether to discard report results after logging.",
 						},
-						"team_id": schema.Int64Attribute{
+						"fleet_id": schema.Int64Attribute{
 							Computed:            true,
-							MarkdownDescription: "The ID of the team this query belongs to.",
+							MarkdownDescription: "The ID of the fleet this report belongs to.",
 						},
 						"author_id": schema.Int64Attribute{
 							Computed:            true,
-							MarkdownDescription: "The ID of the user who created the query.",
+							MarkdownDescription: "The ID of the user who created the report.",
 						},
 						"author_name": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The name of the user who created the query.",
+							MarkdownDescription: "The name of the user who created the report.",
 						},
 						"author_email": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The email of the user who created the query.",
+							MarkdownDescription: "The email of the user who created the report.",
 						},
 					},
 				},
@@ -136,12 +135,12 @@ func (d *QueriesDataSource) Schema(ctx context.Context, req datasource.SchemaReq
 	}
 }
 
-func (d *QueriesDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+func (d *ReportsDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	d.client = configureClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 }
 
-func (d *QueriesDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data QueriesDataSourceModel
+func (d *ReportsDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var data ReportsDataSourceModel
 
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -151,21 +150,20 @@ func (d *QueriesDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	var queries []fleetdm.Query
 	var err error
 
-	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() {
-		queries, err = d.client.ListQueriesByTeam(ctx, int(data.TeamID.ValueInt64()))
+	if !data.FleetID.IsNull() && !data.FleetID.IsUnknown() {
+		queries, err = d.client.ListQueriesByTeam(ctx, int(data.FleetID.ValueInt64()))
 	} else {
 		queries, err = d.client.ListQueries(ctx)
 	}
 
 	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list queries: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list reports: %s", err))
 		return
 	}
 
-	// Map response to model
-	data.Queries = make([]QueryModel, len(queries))
+	data.Reports = make([]ReportModel, len(queries))
 	for i, query := range queries {
-		data.Queries[i] = QueryModel{
+		data.Reports[i] = ReportModel{
 			ID:                 types.StringValue(strconv.Itoa(query.ID)),
 			Name:               types.StringValue(query.Name),
 			Description:        types.StringValue(query.Description),
@@ -181,8 +179,7 @@ func (d *QueriesDataSource) Read(ctx context.Context, req datasource.ReadRequest
 			AuthorName:         types.StringValue(query.AuthorName),
 			AuthorEmail:        types.StringValue(query.AuthorEmail),
 		}
-
-		data.Queries[i].TeamID = intPtrToInt64(query.TeamID)
+		data.Reports[i].FleetID = intPtrToInt64(query.TeamID)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
