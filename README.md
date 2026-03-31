@@ -17,7 +17,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 
 ## Features
 
-> **Requires Fleet 4.82.0+** for `fleetdm_fleet` and `fleetdm_report` resources. Earlier resources (`fleetdm_team`, `fleetdm_query`) are deprecated aliases that still work but will be removed in a future major version.
+> **Requires Fleet 4.82.0+.** All resources and data sources in this provider version — including the deprecated `fleetdm_team` and `fleetdm_query` aliases — route through the new Fleet API endpoints (`/fleets`, `/reports`). These endpoints are only available on Fleet 4.82.0+.
 
 ### Resources (14)
 
@@ -66,7 +66,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.5
 - [Go](https://golang.org/doc/install) >= 1.24 (for building)
-- FleetDM server >= 4.82.0 (for `fleetdm_fleet` and `fleetdm_report`; older Fleet versions work with deprecated `fleetdm_team` / `fleetdm_query`)
+- FleetDM server >= 4.82.0 (required for all resources — the provider now exclusively uses the new `/fleets` and `/reports` API endpoints)
 
 ## Installation
 

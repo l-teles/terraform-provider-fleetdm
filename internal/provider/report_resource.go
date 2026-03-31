@@ -125,7 +125,10 @@ func (r *ReportResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"fleet_id": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "The ID of the fleet this report belongs to. If not specified, the report is global.",
+				MarkdownDescription: "The ID of the fleet this report belongs to. If not specified, the report is global. Changing this value forces a new resource to be created.",
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,

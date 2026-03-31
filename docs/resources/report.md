@@ -68,7 +68,7 @@ resource "fleetdm_report" "comprehensive" {
 - `automations_enabled` (Boolean) Whether automations are enabled for this report.
 - `description` (String) A description of the report.
 - `discard_data` (Boolean) Whether to discard the report results after logging.
-- `fleet_id` (Number) The ID of the fleet this report belongs to. If not specified, the report is global.
+- `fleet_id` (Number) The ID of the fleet this report belongs to. If not specified, the report is global. Changing this value forces a new resource to be created.
 - `interval` (Number) The interval in seconds at which to run this report as a scheduled report. 0 means the report is not scheduled.
 - `logging` (String) The logging type for this report (snapshot, differential, differential_ignore_removals).
 - `min_osquery_version` (String) The minimum osquery version required to run this report.
