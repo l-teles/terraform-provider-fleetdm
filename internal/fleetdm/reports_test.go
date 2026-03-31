@@ -14,8 +14,8 @@ func TestClient_ListQueries(t *testing.T) {
 			t.Errorf("expected GET request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/queries" {
-			t.Errorf("expected path /api/v1/fleet/queries, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/reports" {
+			t.Errorf("expected path /api/v1/fleet/reports, got: %s", r.URL.Path)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -56,8 +56,8 @@ func TestClient_GetQuery(t *testing.T) {
 			t.Errorf("expected GET request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/queries/1" {
-			t.Errorf("expected path /api/v1/fleet/queries/1, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/reports/1" {
+			t.Errorf("expected path /api/v1/fleet/reports/1, got: %s", r.URL.Path)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -102,8 +102,8 @@ func TestClient_CreateQuery(t *testing.T) {
 			t.Errorf("expected POST request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/queries" {
-			t.Errorf("expected path /api/v1/fleet/queries, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/reports" {
+			t.Errorf("expected path /api/v1/fleet/reports, got: %s", r.URL.Path)
 		}
 
 		var req CreateQueryRequest
@@ -162,8 +162,8 @@ func TestClient_UpdateQuery(t *testing.T) {
 			t.Errorf("expected PATCH request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/queries/3" {
-			t.Errorf("expected path /api/v1/fleet/queries/3, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/reports/3" {
+			t.Errorf("expected path /api/v1/fleet/reports/3, got: %s", r.URL.Path)
 		}
 
 		var req UpdateQueryRequest
@@ -207,8 +207,8 @@ func TestClient_DeleteQuery(t *testing.T) {
 			t.Errorf("expected DELETE request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/queries/id/3" {
-			t.Errorf("expected path /api/v1/fleet/queries/id/3, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/reports/id/3" {
+			t.Errorf("expected path /api/v1/fleet/reports/id/3, got: %s", r.URL.Path)
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -234,11 +234,11 @@ func TestClient_ListQueriesByTeam(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET request, got: %s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/fleet/queries" {
-			t.Errorf("expected path /api/v1/fleet/queries, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/reports" {
+			t.Errorf("expected path /api/v1/fleet/reports, got: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("team_id") != "5" {
-			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
+		if r.URL.Query().Get("fleet_id") != "5" {
+			t.Errorf("expected fleet_id=5, got: %s", r.URL.Query().Get("fleet_id"))
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -262,4 +262,3 @@ func TestClient_ListQueriesByTeam(t *testing.T) {
 		t.Errorf("expected name 'Team Query', got: %s", queries[0].Name)
 	}
 }
-

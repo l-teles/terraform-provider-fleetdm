@@ -12,24 +12,28 @@ Supports both **FleetDM Free** and **Premium** editions. Not affiliated with Fle
 
 ## Resources
 
+> **Requires Fleet 4.82.0+** for all resources.
+
 | Resource | Description |
 |----------|-------------|
-| `fleetdm_team` | Teams with host expiry and disk encryption settings |
-| `fleetdm_query` | Saved queries with scheduling options |
-| `fleetdm_policy` | Compliance policies (global and team-scoped) |
+| `fleetdm_fleet` | Fleets with host expiry and disk encryption settings |
+| `fleetdm_report` | Saved reports (SQL queries) with scheduling options |
+| `fleetdm_policy` | Compliance policies (global and fleet-scoped) |
 | `fleetdm_label` | Dynamic labels with query-based membership |
 | `fleetdm_script` | Shell/PowerShell scripts |
 | `fleetdm_user` | Users and permissions |
-| `fleetdm_enroll_secret` | Enrollment secrets (global and team) |
+| `fleetdm_enroll_secret` | Enrollment secrets (global and fleet) |
 | `fleetdm_configuration` | Global Fleet server configuration |
 | `fleetdm_software_package` | Software packages (Premium) |
 | `fleetdm_bootstrap_package` | Bootstrap packages for DEP enrollment (Premium) |
 | `fleetdm_configuration_profile` | MDM configuration profiles (Premium) |
 | `fleetdm_setup_experience` | macOS setup experience settings (Premium) |
+| `fleetdm_team` *(deprecated)* | Deprecated alias for `fleetdm_fleet` |
+| `fleetdm_query` *(deprecated)* | Deprecated alias for `fleetdm_report` |
 
 ## Data Sources
 
-Singular and plural data sources for: teams, queries, policies, labels, scripts, users, hosts, software titles, software versions, configuration, configuration profiles, enroll secrets, activities, ABM tokens, VPP tokens, MDM summary, and server version.
+Singular and plural data sources for: fleets, reports, policies, labels, scripts, users, hosts, software titles, software versions, configuration, configuration profiles, enroll secrets, activities, ABM tokens, VPP tokens, MDM summary, and server version.
 
 ## Authentication
 

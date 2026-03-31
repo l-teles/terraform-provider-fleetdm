@@ -10,8 +10,8 @@ import (
 
 func TestClient_ListTeams(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams" {
-			t.Errorf("Expected path '/api/v1/fleet/teams', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets', got '%s'", r.URL.Path)
 		}
 		if r.Method != "GET" {
 			t.Errorf("Expected method 'GET', got '%s'", r.Method)
@@ -49,8 +49,8 @@ func TestClient_ListTeams(t *testing.T) {
 
 func TestClient_GetTeam(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/1" {
-			t.Errorf("Expected path '/api/v1/fleet/teams/1', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets/1', got '%s'", r.URL.Path)
 		}
 		if r.Method != "GET" {
 			t.Errorf("Expected method 'GET', got '%s'", r.Method)
@@ -85,8 +85,8 @@ func TestClient_GetTeam(t *testing.T) {
 
 func TestClient_CreateTeam(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams" {
-			t.Errorf("Expected path '/api/v1/fleet/teams', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets', got '%s'", r.URL.Path)
 		}
 		if r.Method != "POST" {
 			t.Errorf("Expected method 'POST', got '%s'", r.Method)
@@ -96,7 +96,7 @@ func TestClient_CreateTeam(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&req)
 
 		response := struct {
-			Team Team `json:"team"`
+			Team Team `json:"fleet"`
 		}{
 			Team: Team{ID: 1, Name: req.Name, Description: req.Description},
 		}
@@ -125,8 +125,8 @@ func TestClient_CreateTeam(t *testing.T) {
 
 func TestClient_UpdateTeam(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/1" {
-			t.Errorf("Expected path '/api/v1/fleet/teams/1', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets/1', got '%s'", r.URL.Path)
 		}
 		if r.Method != "PATCH" {
 			t.Errorf("Expected method 'PATCH', got '%s'", r.Method)
@@ -136,7 +136,7 @@ func TestClient_UpdateTeam(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&req)
 
 		response := struct {
-			Team Team `json:"team"`
+			Team Team `json:"fleet"`
 		}{
 			Team: Team{ID: 1, Name: req.Name, Description: req.Description},
 		}
@@ -165,8 +165,8 @@ func TestClient_UpdateTeam(t *testing.T) {
 
 func TestClient_DeleteTeam(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/1" {
-			t.Errorf("Expected path '/api/v1/fleet/teams/1', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets/1', got '%s'", r.URL.Path)
 		}
 		if r.Method != "DELETE" {
 			t.Errorf("Expected method 'DELETE', got '%s'", r.Method)
@@ -190,8 +190,8 @@ func TestClient_DeleteTeam(t *testing.T) {
 
 func TestClient_GetTeamEnrollSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/1/secrets" {
-			t.Errorf("Expected path '/api/v1/fleet/teams/1/secrets', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/secrets" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets/1/secrets', got '%s'", r.URL.Path)
 		}
 		if r.Method != "GET" {
 			t.Errorf("Expected method 'GET', got '%s'", r.Method)
@@ -231,8 +231,8 @@ func TestClient_GetTeamEnrollSecrets(t *testing.T) {
 
 func TestClient_ModifyTeamEnrollSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/1/secrets" {
-			t.Errorf("Expected path '/api/v1/fleet/teams/1/secrets', got '%s'", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/secrets" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets/1/secrets', got '%s'", r.URL.Path)
 		}
 		if r.Method != "PATCH" {
 			t.Errorf("Expected method 'PATCH', got '%s'", r.Method)

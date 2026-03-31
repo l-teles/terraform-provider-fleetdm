@@ -56,8 +56,8 @@ func TestClient_ListTeamPolicies(t *testing.T) {
 			t.Errorf("expected GET request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/teams/1/policies" {
-			t.Errorf("expected path /api/v1/fleet/teams/1/policies, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/policies" {
+			t.Errorf("expected path /api/v1/fleet/fleets/1/policies, got: %s", r.URL.Path)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -299,8 +299,8 @@ func TestClient_DeleteTeamPolicy(t *testing.T) {
 			t.Errorf("expected POST request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/teams/1/policies/delete" {
-			t.Errorf("expected path /api/v1/fleet/teams/1/policies/delete, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/policies/delete" {
+			t.Errorf("expected path /api/v1/fleet/fleets/1/policies/delete, got: %s", r.URL.Path)
 		}
 
 		var body struct {
@@ -338,8 +338,8 @@ func TestClient_CreateTeamPolicy(t *testing.T) {
 			t.Errorf("expected POST request, got: %s", r.Method)
 		}
 
-		if r.URL.Path != "/api/v1/fleet/teams/1/policies" {
-			t.Errorf("expected path /api/v1/fleet/teams/1/policies, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/policies" {
+			t.Errorf("expected path /api/v1/fleet/fleets/1/policies, got: %s", r.URL.Path)
 		}
 
 		var req CreatePolicyRequest
@@ -389,8 +389,8 @@ func TestClient_GetTeamPolicy(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET request, got: %s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/fleet/teams/1/policies/5" {
-			t.Errorf("expected path /api/v1/fleet/teams/1/policies/5, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/policies/5" {
+			t.Errorf("expected path /api/v1/fleet/fleets/1/policies/5, got: %s", r.URL.Path)
 		}
 
 		teamID := 1
@@ -416,8 +416,8 @@ func TestClient_UpdateTeamPolicy(t *testing.T) {
 		if r.Method != http.MethodPatch {
 			t.Errorf("expected PATCH request, got: %s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/fleet/teams/1/policies/5" {
-			t.Errorf("expected path /api/v1/fleet/teams/1/policies/5, got: %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/fleet/fleets/1/policies/5" {
+			t.Errorf("expected path /api/v1/fleet/fleets/1/policies/5, got: %s", r.URL.Path)
 		}
 
 		var req UpdatePolicyRequest
@@ -463,7 +463,7 @@ func TestClient_GetPolicy_Global(t *testing.T) {
 
 func TestClient_GetPolicy_Team(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/2/policies/3" {
+		if r.URL.Path != "/api/v1/fleet/fleets/2/policies/3" {
 			t.Errorf("expected team path, got: %s", r.URL.Path)
 		}
 		teamID := 2
@@ -505,7 +505,7 @@ func TestClient_CreatePolicy_Global(t *testing.T) {
 
 func TestClient_CreatePolicy_Team(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/3/policies" {
+		if r.URL.Path != "/api/v1/fleet/fleets/3/policies" {
 			t.Errorf("expected team path, got: %s", r.URL.Path)
 		}
 		teamID := 3
@@ -547,7 +547,7 @@ func TestClient_UpdatePolicy_Global(t *testing.T) {
 
 func TestClient_UpdatePolicy_Team(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/2/policies/5" {
+		if r.URL.Path != "/api/v1/fleet/fleets/2/policies/5" {
 			t.Errorf("expected team path, got: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -585,7 +585,7 @@ func TestClient_DeletePolicy_Global(t *testing.T) {
 
 func TestClient_DeletePolicy_Team(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/2/policies/delete" {
+		if r.URL.Path != "/api/v1/fleet/fleets/2/policies/delete" {
 			t.Errorf("expected team delete path, got: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -625,7 +625,7 @@ func TestClient_ListPolicies_Global(t *testing.T) {
 
 func TestClient_ListPolicies_Team(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/teams/3/policies" {
+		if r.URL.Path != "/api/v1/fleet/fleets/3/policies" {
 			t.Errorf("expected team path, got: %s", r.URL.Path)
 		}
 		teamID := 3

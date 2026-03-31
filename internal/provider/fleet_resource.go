@@ -19,22 +19,28 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &TeamResource{}
-	_ resource.ResourceWithImportState = &TeamResource{}
+	_ resource.Resource                = &FleetResource{}
+	_ resource.ResourceWithImportState = &FleetResource{}
 )
 
-// NewTeamResource creates a new team resource.
+// NewFleetResource creates a new fleet resource.
+func NewFleetResource() resource.Resource {
+	return &FleetResource{}
+}
+
+// NewTeamResource creates a deprecated team resource (alias for FleetResource).
 func NewTeamResource() resource.Resource {
-	return &TeamResource{}
+	return &FleetResource{deprecated: true}
 }
 
-// TeamResource defines the resource implementation.
-type TeamResource struct {
-	client *fleetdm.Client
+// FleetResource defines the resource implementation.
+type FleetResource struct {
+	client     *fleetdm.Client
+	deprecated bool
 }
 
-// TeamResourceModel describes the resource data model.
-type TeamResourceModel struct {
+// FleetResourceModel describes the resource data model.
+type FleetResourceModel struct {
 	ID          types.Int64  `tfsdk:"id"`
 	Name        types.String `tfsdk:"name"`
 	Description types.String `tfsdk:"description"`
@@ -52,64 +58,50 @@ type TeamResourceModel struct {
 }
 
 // Metadata returns the resource type name.
-func (r *TeamResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_team"
+func (r *FleetResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	if r.deprecated {
+		resp.TypeName = req.ProviderTypeName + "_team"
+	} else {
+		resp.TypeName = req.ProviderTypeName + "_fleet"
+	}
 }
 
 // Schema defines the schema for the resource.
-func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+func (r *FleetResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	deprecationMsg := ""
+	if r.deprecated {
+		deprecationMsg = "fleetdm_team is deprecated and will be removed in a future version. Use fleetdm_fleet instead (requires Fleet 4.82.0+)."
+	}
+
 	resp.Schema = schema.Schema{
-		Description: "Manages a FleetDM team.",
-		MarkdownDescription: `Manages a FleetDM team.
-
-Teams are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.
-
-## Example Usage
-
-` + "```hcl" + `
-resource "fleetdm_team" "workstations" {
-  name        = "Workstations"
-  description = "All workstation devices"
-
-  host_expiry_enabled = true
-  host_expiry_window  = 30
-
-  enable_disk_encryption = true
-}
-` + "```" + `
-
-## Import
-
-Teams can be imported using the team ID:
-
-` + "```shell" + `
-terraform import fleetdm_team.workstations 123
-` + "```",
+		DeprecationMessage:  deprecationMsg,
+		Description:         "Manages a FleetDM fleet.",
+		MarkdownDescription: "Manages a FleetDM fleet.\n\nFleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
-				Description:         "The unique identifier of the team.",
-				MarkdownDescription: "The unique identifier of the team.",
+				Description:         "The unique identifier of the fleet.",
+				MarkdownDescription: "The unique identifier of the fleet.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
 			},
 			"name": schema.StringAttribute{
-				Description:         "The name of the team.",
-				MarkdownDescription: "The name of the team.",
+				Description:         "The name of the fleet.",
+				MarkdownDescription: "The name of the fleet.",
 				Required:            true,
 			},
 			"description": schema.StringAttribute{
-				Description:         "A description of the team.",
-				MarkdownDescription: "A description of the team.",
+				Description:         "A description of the fleet.",
+				MarkdownDescription: "A description of the fleet.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(""),
 			},
 			"host_expiry_enabled": schema.BoolAttribute{
-				Description:         "Whether host expiry is enabled for this team.",
-				MarkdownDescription: "Whether host expiry is enabled for this team.",
+				Description:         "Whether host expiry is enabled for this fleet.",
+				MarkdownDescription: "Whether host expiry is enabled for this fleet.",
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
@@ -122,20 +114,20 @@ terraform import fleetdm_team.workstations 123
 				Default:             int64default.StaticInt64(0),
 			},
 			"enable_disk_encryption": schema.BoolAttribute{
-				Description:         "Whether disk encryption is enforced for hosts in this team.",
-				MarkdownDescription: "Whether disk encryption is enforced for hosts in this team.",
+				Description:         "Whether disk encryption is enforced for hosts in this fleet.",
+				MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.",
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 			},
 			"user_count": schema.Int64Attribute{
-				Description:         "The number of users in the team.",
-				MarkdownDescription: "The number of users in the team.",
+				Description:         "The number of users in the fleet.",
+				MarkdownDescription: "The number of users in the fleet.",
 				Computed:            true,
 			},
 			"host_count": schema.Int64Attribute{
-				Description:         "The number of hosts in the team.",
-				MarkdownDescription: "The number of hosts in the team.",
+				Description:         "The number of hosts in the fleet.",
+				MarkdownDescription: "The number of hosts in the fleet.",
 				Computed:            true,
 			},
 		},
@@ -143,13 +135,13 @@ terraform import fleetdm_team.workstations 123
 }
 
 // Configure adds the provider configured client to the resource.
-func (r *TeamResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+func (r *FleetResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
 }
 
 // Create creates the resource and sets the initial Terraform state.
-func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan TeamResourceModel
+func (r *FleetResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan FleetResourceModel
 
 	// Read Terraform plan data into the model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -158,11 +150,11 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	tflog.Debug(ctx, "Creating team", map[string]interface{}{
+	tflog.Debug(ctx, "Creating fleet", map[string]interface{}{
 		"name": plan.Name.ValueString(),
 	})
 
-	// Create the team
+	// Create the fleet
 	createReq := fleetdm.CreateTeamRequest{
 		Name:        plan.Name.ValueString(),
 		Description: plan.Description.ValueString(),
@@ -171,22 +163,22 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 	team, err := r.client.CreateTeam(ctx, createReq)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error Creating FleetDM Team",
-			"Could not create team, unexpected error: "+err.Error(),
+			"Error Creating FleetDM Fleet",
+			"Could not create fleet, unexpected error: "+err.Error(),
 		)
 		return
 	}
 
-	tflog.Debug(ctx, "Team created", map[string]interface{}{
+	tflog.Debug(ctx, "Fleet created", map[string]interface{}{
 		"id":   team.ID,
 		"name": team.Name,
 	})
 
-	// Save the team ID to state immediately. If the subsequent settings update
+	// Save the fleet ID to state immediately. If the subsequent settings update
 	// fails, the ID is already in state so Terraform won't create a duplicate
-	// team on the next apply. Use a separate variable so plan retains the
+	// fleet on the next apply. Use a separate variable so plan retains the
 	// original values for the settings update below.
-	initialState := TeamResourceModel{
+	initialState := FleetResourceModel{
 		ID:                   types.Int64Value(team.ID),
 		Name:                 types.StringValue(team.Name),
 		Description:          types.StringValue(team.Description),
@@ -201,7 +193,7 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	// Update the team with additional settings if needed
+	// Update the fleet with additional settings if needed
 	needsUpdate := false
 	updateReq := fleetdm.UpdateTeamRequest{
 		Name:        plan.Name.ValueString(),
@@ -227,8 +219,8 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		team, err = r.client.UpdateTeam(ctx, team.ID, updateReq)
 		if err != nil {
 			resp.Diagnostics.AddError(
-				"Error Updating FleetDM Team Settings",
-				"Team was created but settings could not be applied (team ID saved to state). Run 'terraform apply' again to retry. Error: "+err.Error(),
+				"Error Updating FleetDM Fleet Settings",
+				"Fleet was created but settings could not be applied (fleet ID saved to state). Run 'terraform apply' again to retry. Error: "+err.Error(),
 			)
 			return
 		}
@@ -242,8 +234,8 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 }
 
 // Read refreshes the Terraform state with the latest data.
-func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state TeamResourceModel
+func (r *FleetResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state FleetResourceModel
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -252,15 +244,15 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	tflog.Debug(ctx, "Reading team", map[string]interface{}{
+	tflog.Debug(ctx, "Reading fleet", map[string]interface{}{
 		"id": state.ID.ValueInt64(),
 	})
 
-	// Get the team from the API
+	// Get the fleet from the API
 	team, err := r.client.GetTeam(ctx, state.ID.ValueInt64())
 	if err != nil {
 		if isNotFound(err) {
-			tflog.Warn(ctx, "Team not found, removing from state", map[string]interface{}{
+			tflog.Warn(ctx, "Fleet not found, removing from state", map[string]interface{}{
 				"id": state.ID.ValueInt64(),
 			})
 			resp.State.RemoveResource(ctx)
@@ -268,8 +260,8 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		}
 
 		resp.Diagnostics.AddError(
-			"Error Reading FleetDM Team",
-			"Could not read team ID "+strconv.FormatInt(state.ID.ValueInt64(), 10)+": "+err.Error(),
+			"Error Reading FleetDM Fleet",
+			"Could not read fleet ID "+strconv.FormatInt(state.ID.ValueInt64(), 10)+": "+err.Error(),
 		)
 		return
 	}
@@ -282,8 +274,8 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 }
 
 // Update updates the resource and sets the updated Terraform state on success.
-func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan TeamResourceModel
+func (r *FleetResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan FleetResourceModel
 
 	// Read Terraform plan data into the model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -292,7 +284,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	tflog.Debug(ctx, "Updating team", map[string]interface{}{
+	tflog.Debug(ctx, "Updating fleet", map[string]interface{}{
 		"id":   plan.ID.ValueInt64(),
 		"name": plan.Name.ValueString(),
 	})
@@ -316,12 +308,12 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		}
 	}
 
-	// Update the team
+	// Update the fleet
 	team, err := r.client.UpdateTeam(ctx, plan.ID.ValueInt64(), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error Updating FleetDM Team",
-			"Could not update team, unexpected error: "+err.Error(),
+			"Error Updating FleetDM Fleet",
+			"Could not update fleet, unexpected error: "+err.Error(),
 		)
 		return
 	}
@@ -334,8 +326,8 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
-func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state TeamResourceModel
+func (r *FleetResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state FleetResourceModel
 
 	// Read Terraform prior state data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -344,35 +336,35 @@ func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
-	tflog.Debug(ctx, "Deleting team", map[string]interface{}{
+	tflog.Debug(ctx, "Deleting fleet", map[string]interface{}{
 		"id": state.ID.ValueInt64(),
 	})
 
-	// Delete the team
+	// Delete the fleet
 	err := r.client.DeleteTeam(ctx, state.ID.ValueInt64())
 	if err != nil {
 		// Check if already deleted
 		if isNotFound(err) {
-			tflog.Warn(ctx, "Team already deleted", map[string]interface{}{
+			tflog.Warn(ctx, "Fleet already deleted", map[string]interface{}{
 				"id": state.ID.ValueInt64(),
 			})
 			return
 		}
 
 		resp.Diagnostics.AddError(
-			"Error Deleting FleetDM Team",
-			"Could not delete team, unexpected error: "+err.Error(),
+			"Error Deleting FleetDM Fleet",
+			"Could not delete fleet, unexpected error: "+err.Error(),
 		)
 		return
 	}
 
-	tflog.Debug(ctx, "Team deleted", map[string]interface{}{
+	tflog.Debug(ctx, "Fleet deleted", map[string]interface{}{
 		"id": state.ID.ValueInt64(),
 	})
 }
 
 // mapTeamToModel maps a FleetDM Team to the Terraform model.
-func (r *TeamResource) mapTeamToModel(team *fleetdm.Team, model *TeamResourceModel) {
+func (r *FleetResource) mapTeamToModel(team *fleetdm.Team, model *FleetResourceModel) {
 	model.ID = types.Int64Value(team.ID)
 	model.Name = types.StringValue(team.Name)
 	model.Description = types.StringValue(team.Description)
@@ -395,14 +387,14 @@ func (r *TeamResource) mapTeamToModel(team *fleetdm.Team, model *TeamResourceMod
 }
 
 // ImportState imports an existing resource by ID.
-func (r *TeamResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+func (r *FleetResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	// Parse the ID from the import command
-	id, ok := parseIDFromString(req.ID, "Team", &resp.Diagnostics)
+	id, ok := parseIDFromString(req.ID, "Fleet", &resp.Diagnostics)
 	if !ok {
 		return
 	}
 
-	tflog.Debug(ctx, "Importing team", map[string]interface{}{
+	tflog.Debug(ctx, "Importing fleet", map[string]interface{}{
 		"id": id,
 	})
 

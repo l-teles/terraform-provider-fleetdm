@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
-func TestAccQueriesDataSource_basic(t *testing.T) {
+func TestAccReportsDataSource_basic(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v1/fleet/reports" && r.Method == "GET" {
@@ -59,58 +59,58 @@ func TestAccQueriesDataSource_basic(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccQueriesDataSourceConfig(server.URL),
+				Config: testAccReportsDataSourceConfig(server.URL),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.#", "2"),
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.name", "Get OS Version"),
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.platform.#", "1"),
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.0.platform.0", "darwin"),
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.1.name", "System Info"),
-					resource.TestCheckResourceAttr("data.fleetdm_queries.test", "queries.1.observer_can_run", "true"),
+					resource.TestCheckResourceAttr("data.fleetdm_reports.test", "reports.#", "2"),
+					resource.TestCheckResourceAttr("data.fleetdm_reports.test", "reports.0.name", "Get OS Version"),
+					resource.TestCheckResourceAttr("data.fleetdm_reports.test", "reports.0.platform.#", "1"),
+					resource.TestCheckResourceAttr("data.fleetdm_reports.test", "reports.0.platform.0", "darwin"),
+					resource.TestCheckResourceAttr("data.fleetdm_reports.test", "reports.1.name", "System Info"),
+					resource.TestCheckResourceAttr("data.fleetdm_reports.test", "reports.1.observer_can_run", "true"),
 				),
 			},
 		},
 	})
 }
 
-func testAccQueriesDataSourceConfig(serverURL string) string {
+func testAccReportsDataSourceConfig(serverURL string) string {
 	return `
 provider "fleetdm" {
   server_address = "` + serverURL + `"
   api_key        = "test-token"
 }
 
-data "fleetdm_queries" "test" {}
+data "fleetdm_reports" "test" {}
 `
 }
 
-// TestAccQueriesDataSource_live creates a query then verifies it appears in the list.
-func TestAccQueriesDataSource_live(t *testing.T) {
-	queryName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+// TestAccReportsDataSource_live creates a report then verifies it appears in the list.
+func TestAccReportsDataSource_live(t *testing.T) {
+	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccQueriesDataSourceConfig_live(queryName),
+				Config: testAccReportsDataSourceConfig_live(reportName),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttrSet("data.fleetdm_queries.test", "queries.#"),
+					resource.TestCheckResourceAttrSet("data.fleetdm_reports.test", "reports.#"),
 				),
 			},
 		},
 	})
 }
 
-func testAccQueriesDataSourceConfig_live(queryName string) string {
+func testAccReportsDataSourceConfig_live(reportName string) string {
 	return providerConfig() + fmt.Sprintf(`
-resource "fleetdm_query" "test" {
+resource "fleetdm_report" "test" {
   name  = %[1]q
   query = "SELECT * FROM system_info;"
 }
 
-data "fleetdm_queries" "test" {
-  depends_on = [fleetdm_query.test]
+data "fleetdm_reports" "test" {
+  depends_on = [fleetdm_report.test]
 }
-`, queryName)
+`, reportName)
 }

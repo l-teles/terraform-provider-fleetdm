@@ -11,20 +11,20 @@ import (
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
-var _ datasource.DataSource = &QueryDataSource{}
+var _ datasource.DataSource = &ReportDataSource{}
 
-// NewQueryDataSource creates a deprecated query data source (use fleetdm_report instead).
-func NewQueryDataSource() datasource.DataSource {
-	return &QueryDataSource{}
+// NewReportDataSource creates a new report data source.
+func NewReportDataSource() datasource.DataSource {
+	return &ReportDataSource{}
 }
 
-// QueryDataSource defines the data source implementation.
-type QueryDataSource struct {
+// ReportDataSource defines the data source implementation.
+type ReportDataSource struct {
 	client *fleetdm.Client
 }
 
-// QueryDataSourceModel describes the data source data model.
-type QueryDataSourceModel struct {
+// ReportDataSourceModel describes the data source data model.
+type ReportDataSourceModel struct {
 	ID                 types.Int64  `tfsdk:"id"`
 	Name               types.String `tfsdk:"name"`
 	Description        types.String `tfsdk:"description"`
@@ -36,33 +36,32 @@ type QueryDataSourceModel struct {
 	AutomationsEnabled types.Bool   `tfsdk:"automations_enabled"`
 	Logging            types.String `tfsdk:"logging"`
 	DiscardData        types.Bool   `tfsdk:"discard_data"`
-	TeamID             types.Int64  `tfsdk:"team_id"`
+	FleetID            types.Int64  `tfsdk:"fleet_id"`
 	AuthorID           types.Int64  `tfsdk:"author_id"`
 	AuthorName         types.String `tfsdk:"author_name"`
 	AuthorEmail        types.String `tfsdk:"author_email"`
 }
 
-func (d *QueryDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_query"
+func (d *ReportDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_report"
 }
 
-func (d *QueryDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+func (d *ReportDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		DeprecationMessage:  "fleetdm_query is deprecated and will be removed in a future version. Use fleetdm_report instead (requires Fleet 4.82.0+).",
-		MarkdownDescription: "Use this data source to retrieve information about a specific FleetDM query.",
+		MarkdownDescription: "Use this data source to retrieve information about a specific FleetDM report.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Required:            true,
-				MarkdownDescription: "The unique identifier of the query.",
+				MarkdownDescription: "The unique identifier of the report.",
 			},
 			"name": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "The name of the query.",
+				MarkdownDescription: "The name of the report.",
 			},
 			"description": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "A description of the query.",
+				MarkdownDescription: "A description of the report.",
 			},
 			"query": schema.StringAttribute{
 				Computed:            true,
@@ -71,7 +70,7 @@ func (d *QueryDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 			"platform": schema.ListAttribute{
 				Computed:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
+				MarkdownDescription: "List of platforms this report is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
 			},
 			"min_osquery_version": schema.StringAttribute{
 				Computed:            true,
@@ -79,11 +78,11 @@ func (d *QueryDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 			},
 			"interval": schema.Int64Attribute{
 				Computed:            true,
-				MarkdownDescription: "The scheduled query interval in seconds.",
+				MarkdownDescription: "The scheduled report interval in seconds.",
 			},
 			"observer_can_run": schema.BoolAttribute{
 				Computed:            true,
-				MarkdownDescription: "Whether observers can run this query.",
+				MarkdownDescription: "Whether observers can run this report.",
 			},
 			"automations_enabled": schema.BoolAttribute{
 				Computed:            true,
@@ -91,38 +90,38 @@ func (d *QueryDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 			},
 			"logging": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "The logging type for this query.",
+				MarkdownDescription: "The logging type for this report.",
 			},
 			"discard_data": schema.BoolAttribute{
 				Computed:            true,
-				MarkdownDescription: "Whether to discard query results after logging.",
+				MarkdownDescription: "Whether to discard report results after logging.",
 			},
-			"team_id": schema.Int64Attribute{
+			"fleet_id": schema.Int64Attribute{
 				Computed:            true,
-				MarkdownDescription: "The ID of the team this query belongs to.",
+				MarkdownDescription: "The ID of the fleet this report belongs to.",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
-				MarkdownDescription: "The ID of the user who created the query.",
+				MarkdownDescription: "The ID of the user who created the report.",
 			},
 			"author_name": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "The name of the user who created the query.",
+				MarkdownDescription: "The name of the user who created the report.",
 			},
 			"author_email": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "The email of the user who created the query.",
+				MarkdownDescription: "The email of the user who created the report.",
 			},
 		},
 	}
 }
 
-func (d *QueryDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+func (d *ReportDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	d.client = configureClient(req.ProviderData, &resp.Diagnostics, "Data Source")
 }
 
-func (d *QueryDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data QueryDataSourceModel
+func (d *ReportDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var data ReportDataSourceModel
 
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -131,11 +130,10 @@ func (d *QueryDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 
 	query, err := d.client.GetQuery(ctx, int(data.ID.ValueInt64()))
 	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read query: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read report: %s", err))
 		return
 	}
 
-	// Map response to model
 	data.ID = types.Int64Value(int64(query.ID))
 	data.Name = types.StringValue(query.Name)
 	data.Description = types.StringValue(query.Description)
@@ -150,8 +148,7 @@ func (d *QueryDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	data.AuthorID = types.Int64Value(int64(query.AuthorID))
 	data.AuthorName = types.StringValue(query.AuthorName)
 	data.AuthorEmail = types.StringValue(query.AuthorEmail)
-
-	data.TeamID = intPtrToInt64(query.TeamID)
+	data.FleetID = intPtrToInt64(query.TeamID)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
