@@ -163,7 +163,7 @@ func (c *Client) DeleteGlobalPolicy(ctx context.Context, id int) error {
 }
 
 // DeleteTeamPolicy deletes a team policy by ID.
-// FleetDM requires using the POST /teams/{id}/policies/delete endpoint with IDs in body.
+// FleetDM requires using the POST /fleets/{id}/policies/delete endpoint with IDs in body.
 func (c *Client) DeleteTeamPolicy(ctx context.Context, teamID, policyID int) error {
 	_, err := c.DeleteTeamPolicies(ctx, teamID, []int{policyID})
 	if err != nil {

@@ -14,9 +14,9 @@ import (
 func TestAccQueriesDataSource_basic(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/api/v1/fleet/queries" && r.Method == "GET" {
+		if r.URL.Path == "/api/v1/fleet/reports" && r.Method == "GET" {
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"queries": []map[string]interface{}{
+				"reports": []map[string]interface{}{
 					{
 						"id":                  1,
 						"name":                "Get OS Version",

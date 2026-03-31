@@ -85,7 +85,7 @@ func TestAccEnrollSecretResource_team(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
-		case r.URL.Path == "/api/v1/fleet/teams/1/secrets" && r.Method == "GET":
+		case r.URL.Path == "/api/v1/fleet/fleets/1/secrets" && r.Method == "GET":
 			// Return current secrets
 			response := map[string]interface{}{
 				"secrets": teamSecrets,
@@ -93,7 +93,7 @@ func TestAccEnrollSecretResource_team(t *testing.T) {
 			json.NewEncoder(w).Encode(response)
 			return
 
-		case r.URL.Path == "/api/v1/fleet/teams/1/secrets" && r.Method == "PATCH":
+		case r.URL.Path == "/api/v1/fleet/fleets/1/secrets" && r.Method == "PATCH":
 			// Modify secrets
 			var body map[string]interface{}
 			json.NewDecoder(r.Body).Decode(&body)
