@@ -65,4 +65,11 @@ resource "fleetdm_team" "secure_workstations" {
 
 ## Import
 
-/Users/luisteles/Git repos/terraform-provider-fleetdm/examples/resources/fleetdm_team/import.sh
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# Import a team using its ID
+terraform import fleetdm_team.workstations 123
+```
