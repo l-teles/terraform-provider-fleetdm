@@ -59,87 +59,93 @@ func (r *QueryResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 	resp.Schema = schema.Schema{
 		DeprecationMessage:  "fleetdm_query is deprecated and will be removed in a future version. Use fleetdm_report instead (requires Fleet 4.82.0+).",
 		MarkdownDescription: "Manages a FleetDM query. Queries are SQL statements that can be run against hosts to collect system information.",
+		Attributes:          querySchemaAttributes(),
+	}
+}
 
-		Attributes: map[string]schema.Attribute{
-			"id": schema.Int64Attribute{
-				Computed:            true,
-				MarkdownDescription: "The unique identifier of the query.",
-				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.UseStateForUnknown(),
-				},
+// querySchemaAttributes returns the schema attributes for the fleetdm_query resource.
+// Extracted to allow reuse in fleetdm_report's MoveState, keeping the source schema
+// in sync with the query resource definition.
+func querySchemaAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"id": schema.Int64Attribute{
+			Computed:            true,
+			MarkdownDescription: "The unique identifier of the query.",
+			PlanModifiers: []planmodifier.Int64{
+				int64planmodifier.UseStateForUnknown(),
 			},
-			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "The name of the query. Must be unique.",
-			},
-			"description": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "A description of the query.",
-			},
-			"query": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "The SQL query to run against hosts.",
-			},
-			"platform": schema.ListAttribute{
-				Optional:            true,
-				Computed:            true,
-				ElementType:         types.StringType,
-				MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
-			},
-			"min_osquery_version": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "The minimum osquery version required to run this query.",
-			},
-			"interval": schema.Int64Attribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             int64default.StaticInt64(0),
-				MarkdownDescription: "The interval in seconds at which to run this query as a scheduled query. 0 means the query is not scheduled.",
-			},
-			"observer_can_run": schema.BoolAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Whether observers can run this query.",
-			},
-			"automations_enabled": schema.BoolAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Whether automations are enabled for this query.",
-			},
-			"logging": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("snapshot"),
-				MarkdownDescription: "The logging type for this query (snapshot, differential, differential_ignore_removals).",
-			},
-			"discard_data": schema.BoolAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Whether to discard the query results after logging.",
-			},
-			"team_id": schema.Int64Attribute{
-				Optional:            true,
-				MarkdownDescription: "The ID of the team this query belongs to. If not specified, the query is global.",
-			},
-			"author_id": schema.Int64Attribute{
-				Computed:            true,
-				MarkdownDescription: "The ID of the user who created the query.",
-			},
-			"author_name": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "The name of the user who created the query.",
-			},
-			"author_email": schema.StringAttribute{
-				Computed:            true,
-				MarkdownDescription: "The email of the user who created the query.",
-			},
+		},
+		"name": schema.StringAttribute{
+			Required:            true,
+			MarkdownDescription: "The name of the query. Must be unique.",
+		},
+		"description": schema.StringAttribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString(""),
+			MarkdownDescription: "A description of the query.",
+		},
+		"query": schema.StringAttribute{
+			Required:            true,
+			MarkdownDescription: "The SQL query to run against hosts.",
+		},
+		"platform": schema.ListAttribute{
+			Optional:            true,
+			Computed:            true,
+			ElementType:         types.StringType,
+			MarkdownDescription: "List of platforms this query is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
+		},
+		"min_osquery_version": schema.StringAttribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString(""),
+			MarkdownDescription: "The minimum osquery version required to run this query.",
+		},
+		"interval": schema.Int64Attribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             int64default.StaticInt64(0),
+			MarkdownDescription: "The interval in seconds at which to run this query as a scheduled query. 0 means the query is not scheduled.",
+		},
+		"observer_can_run": schema.BoolAttribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+			MarkdownDescription: "Whether observers can run this query.",
+		},
+		"automations_enabled": schema.BoolAttribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+			MarkdownDescription: "Whether automations are enabled for this query.",
+		},
+		"logging": schema.StringAttribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString("snapshot"),
+			MarkdownDescription: "The logging type for this query (snapshot, differential, differential_ignore_removals).",
+		},
+		"discard_data": schema.BoolAttribute{
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+			MarkdownDescription: "Whether to discard the query results after logging.",
+		},
+		"team_id": schema.Int64Attribute{
+			Optional:            true,
+			MarkdownDescription: "The ID of the team this query belongs to. If not specified, the query is global.",
+		},
+		"author_id": schema.Int64Attribute{
+			Computed:            true,
+			MarkdownDescription: "The ID of the user who created the query.",
+		},
+		"author_name": schema.StringAttribute{
+			Computed:            true,
+			MarkdownDescription: "The name of the user who created the query.",
+		},
+		"author_email": schema.StringAttribute{
+			Computed:            true,
+			MarkdownDescription: "The email of the user who created the query.",
 		},
 	}
 }

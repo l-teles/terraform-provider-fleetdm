@@ -6,6 +6,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 )
 
 func TestAccReportResource_basic(t *testing.T) {
@@ -120,4 +121,58 @@ resource "fleetdm_report" "test" {
   logging          = "snapshot"
 }
 `, name)
+}
+
+func TestAccReportResource_moveStateFromQuery(t *testing.T) {
+	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	sqlQuery := "SELECT * FROM system_info;"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create using the deprecated fleetdm_query resource type.
+			// testAccQueryResourceConfig is defined in query_resource_test.go.
+			{
+				Config: testAccQueryResourceConfig(reportName, sqlQuery, "Initial description"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_query.test", "name", reportName),
+					resource.TestCheckResourceAttr("fleetdm_query.test", "description", "Initial description"),
+					resource.TestCheckResourceAttrSet("fleetdm_query.test", "id"),
+				),
+			},
+			// Step 2: Move state to fleetdm_report via a moved block. Verify the resource
+			// is not destroyed and recreated (plan is a no-op after the move), and that
+			// team_id is correctly represented as fleet_id in the new state.
+			{
+				Config: testAccReportResourceConfigWithMovedFromQuery(reportName, sqlQuery, "Initial description"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "name", reportName),
+					resource.TestCheckResourceAttr("fleetdm_report.test", "description", "Initial description"),
+					resource.TestCheckResourceAttr("fleetdm_report.test", "query", sqlQuery),
+					resource.TestCheckResourceAttrSet("fleetdm_report.test", "id"),
+				),
+			},
+		},
+	})
+}
+
+func testAccReportResourceConfigWithMovedFromQuery(name, query, description string) string {
+	return providerConfig() + fmt.Sprintf(`
+moved {
+  from = fleetdm_query.test
+  to   = fleetdm_report.test
+}
+
+resource "fleetdm_report" "test" {
+  name        = %[1]q
+  description = %[3]q
+  query       = %[2]q
+}
+`, name, query, description)
 }
