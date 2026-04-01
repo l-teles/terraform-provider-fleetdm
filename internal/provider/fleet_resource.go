@@ -21,6 +21,7 @@ import (
 var (
 	_ resource.Resource                = &FleetResource{}
 	_ resource.ResourceWithImportState = &FleetResource{}
+	_ resource.ResourceWithMoveState   = &FleetResource{}
 )
 
 // NewFleetResource creates a new fleet resource.
@@ -77,58 +78,79 @@ func (r *FleetResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 		DeprecationMessage:  deprecationMsg,
 		Description:         "Manages a FleetDM fleet.",
 		MarkdownDescription: "Manages a FleetDM fleet.\n\nFleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.",
+		Attributes:          fleetSchemaAttributes(),
+	}
+}
 
-		Attributes: map[string]schema.Attribute{
-			"id": schema.Int64Attribute{
-				Description:         "The unique identifier of the fleet.",
-				MarkdownDescription: "The unique identifier of the fleet.",
-				Computed:            true,
-				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.UseStateForUnknown(),
-				},
+// fleetSchemaAttributes returns the schema attributes shared between fleetdm_fleet and the
+// deprecated fleetdm_team resource. Extracted to allow reuse in MoveState.
+func fleetSchemaAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"id": schema.Int64Attribute{
+			Description:         "The unique identifier of the fleet.",
+			MarkdownDescription: "The unique identifier of the fleet.",
+			Computed:            true,
+			PlanModifiers: []planmodifier.Int64{
+				int64planmodifier.UseStateForUnknown(),
 			},
-			"name": schema.StringAttribute{
-				Description:         "The name of the fleet.",
-				MarkdownDescription: "The name of the fleet.",
-				Required:            true,
-			},
-			"description": schema.StringAttribute{
-				Description:         "A description of the fleet.",
-				MarkdownDescription: "A description of the fleet.",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-			},
-			"host_expiry_enabled": schema.BoolAttribute{
-				Description:         "Whether host expiry is enabled for this fleet.",
-				MarkdownDescription: "Whether host expiry is enabled for this fleet.",
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-			},
-			"host_expiry_window": schema.Int64Attribute{
-				Description:         "The number of days after which hosts are considered expired.",
-				MarkdownDescription: "The number of days after which hosts are considered expired.",
-				Optional:            true,
-				Computed:            true,
-				Default:             int64default.StaticInt64(0),
-			},
-			"enable_disk_encryption": schema.BoolAttribute{
-				Description:         "Whether disk encryption is enforced for hosts in this fleet.",
-				MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.",
-				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(false),
-			},
-			"user_count": schema.Int64Attribute{
-				Description:         "The number of users in the fleet.",
-				MarkdownDescription: "The number of users in the fleet.",
-				Computed:            true,
-			},
-			"host_count": schema.Int64Attribute{
-				Description:         "The number of hosts in the fleet.",
-				MarkdownDescription: "The number of hosts in the fleet.",
-				Computed:            true,
+		},
+		"name": schema.StringAttribute{
+			Description:         "The name of the fleet.",
+			MarkdownDescription: "The name of the fleet.",
+			Required:            true,
+		},
+		"description": schema.StringAttribute{
+			Description:         "A description of the fleet.",
+			MarkdownDescription: "A description of the fleet.",
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString(""),
+		},
+		"host_expiry_enabled": schema.BoolAttribute{
+			Description:         "Whether host expiry is enabled for this fleet.",
+			MarkdownDescription: "Whether host expiry is enabled for this fleet.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"host_expiry_window": schema.Int64Attribute{
+			Description:         "The number of days after which hosts are considered expired.",
+			MarkdownDescription: "The number of days after which hosts are considered expired.",
+			Optional:            true,
+			Computed:            true,
+			Default:             int64default.StaticInt64(0),
+		},
+		"enable_disk_encryption": schema.BoolAttribute{
+			Description:         "Whether disk encryption is enforced for hosts in this fleet.",
+			MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"user_count": schema.Int64Attribute{
+			Description:         "The number of users in the fleet.",
+			MarkdownDescription: "The number of users in the fleet.",
+			Computed:            true,
+		},
+		"host_count": schema.Int64Attribute{
+			Description:         "The number of hosts in the fleet.",
+			MarkdownDescription: "The number of hosts in the fleet.",
+			Computed:            true,
+		},
+	}
+}
+
+// MoveState supports moving state from the deprecated fleetdm_team resource to fleetdm_fleet.
+func (r *FleetResource) MoveState(ctx context.Context) []resource.StateMover {
+	return []resource.StateMover{
+		{
+			SourceSchema: &schema.Schema{Attributes: fleetSchemaAttributes()},
+			StateMover: func(ctx context.Context, req resource.MoveStateRequest, resp *resource.MoveStateResponse) {
+				var data FleetResourceModel
+				resp.Diagnostics.Append(req.SourceState.Get(ctx, &data)...)
+				if !resp.Diagnostics.HasError() {
+					resp.Diagnostics.Append(resp.TargetState.Set(ctx, &data)...)
+				}
 			},
 		},
 	}

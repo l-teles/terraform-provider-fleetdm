@@ -20,6 +20,7 @@ import (
 var (
 	_ resource.Resource                = &ReportResource{}
 	_ resource.ResourceWithImportState = &ReportResource{}
+	_ resource.ResourceWithMoveState   = &ReportResource{}
 )
 
 // NewReportResource creates a new report resource.
@@ -263,6 +264,64 @@ func (r *ReportResource) ImportState(ctx context.Context, req resource.ImportSta
 		return
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
+}
+
+// MoveState supports moving state from the deprecated fleetdm_query resource to fleetdm_report.
+// The only schema difference is that fleetdm_query used "team_id" while fleetdm_report uses "fleet_id".
+func (r *ReportResource) MoveState(ctx context.Context) []resource.StateMover {
+	return []resource.StateMover{
+		{
+			SourceSchema: &schema.Schema{
+				Attributes: map[string]schema.Attribute{
+					"id": schema.Int64Attribute{
+						Computed: true,
+						PlanModifiers: []planmodifier.Int64{
+							int64planmodifier.UseStateForUnknown(),
+						},
+					},
+					"name":                schema.StringAttribute{Required: true},
+					"description":         schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
+					"query":               schema.StringAttribute{Required: true},
+					"platform":            schema.ListAttribute{Optional: true, Computed: true, ElementType: types.StringType},
+					"min_osquery_version": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("")},
+					"interval":            schema.Int64Attribute{Optional: true, Computed: true, Default: int64default.StaticInt64(0)},
+					"observer_can_run":    schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false)},
+					"automations_enabled": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false)},
+					"logging":             schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("snapshot")},
+					"discard_data":        schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false)},
+					"team_id":             schema.Int64Attribute{Optional: true},
+					"author_id":           schema.Int64Attribute{Computed: true},
+					"author_name":         schema.StringAttribute{Computed: true},
+					"author_email":        schema.StringAttribute{Computed: true},
+				},
+			},
+			StateMover: func(ctx context.Context, req resource.MoveStateRequest, resp *resource.MoveStateResponse) {
+				var src QueryResourceModel
+				resp.Diagnostics.Append(req.SourceState.Get(ctx, &src)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				target := ReportResourceModel{
+					ID:                 src.ID,
+					Name:               src.Name,
+					Description:        src.Description,
+					Query:              src.Query,
+					Platform:           src.Platform,
+					MinOsqueryVersion:  src.MinOsqueryVersion,
+					Interval:           src.Interval,
+					ObserverCanRun:     src.ObserverCanRun,
+					AutomationsEnabled: src.AutomationsEnabled,
+					Logging:            src.Logging,
+					DiscardData:        src.DiscardData,
+					FleetID:            src.TeamID,
+					AuthorID:           src.AuthorID,
+					AuthorName:         src.AuthorName,
+					AuthorEmail:        src.AuthorEmail,
+				}
+				resp.Diagnostics.Append(resp.TargetState.Set(ctx, &target)...)
+			},
+		},
+	}
 }
 
 func (r *ReportResource) mapQueryToModel(query *fleetdm.Query, data *ReportResourceModel) {
