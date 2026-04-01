@@ -20,6 +20,7 @@ import (
 var (
 	_ resource.Resource                = &ReportResource{}
 	_ resource.ResourceWithImportState = &ReportResource{}
+	_ resource.ResourceWithMoveState   = &ReportResource{}
 )
 
 // NewReportResource creates a new report resource.
@@ -263,6 +264,41 @@ func (r *ReportResource) ImportState(ctx context.Context, req resource.ImportSta
 		return
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
+}
+
+// MoveState supports moving state from the deprecated fleetdm_query resource to fleetdm_report.
+// The only schema difference is that fleetdm_query used "team_id" while fleetdm_report uses "fleet_id".
+func (r *ReportResource) MoveState(ctx context.Context) []resource.StateMover {
+	return []resource.StateMover{
+		{
+			SourceSchema: &schema.Schema{Attributes: querySchemaAttributes()},
+			StateMover: func(ctx context.Context, req resource.MoveStateRequest, resp *resource.MoveStateResponse) {
+				var src QueryResourceModel
+				resp.Diagnostics.Append(req.SourceState.Get(ctx, &src)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+				target := ReportResourceModel{
+					ID:                 src.ID,
+					Name:               src.Name,
+					Description:        src.Description,
+					Query:              src.Query,
+					Platform:           src.Platform,
+					MinOsqueryVersion:  src.MinOsqueryVersion,
+					Interval:           src.Interval,
+					ObserverCanRun:     src.ObserverCanRun,
+					AutomationsEnabled: src.AutomationsEnabled,
+					Logging:            src.Logging,
+					DiscardData:        src.DiscardData,
+					FleetID:            src.TeamID,
+					AuthorID:           src.AuthorID,
+					AuthorName:         src.AuthorName,
+					AuthorEmail:        src.AuthorEmail,
+				}
+				resp.Diagnostics.Append(resp.TargetState.Set(ctx, &target)...)
+			},
+		},
+	}
 }
 
 func (r *ReportResource) mapQueryToModel(query *fleetdm.Query, data *ReportResourceModel) {
