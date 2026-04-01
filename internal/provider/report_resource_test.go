@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
 
 func TestAccReportResource_basic(t *testing.T) {
@@ -131,6 +132,9 @@ func TestAccReportResource_moveStateFromQuery(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
+			tfversion.SkipBelow(tfversion.Version1_8_0),
+		},
 		Steps: []resource.TestStep{
 			// Step 1: Create a fleet and a fleet-scoped fleetdm_query (with team_id set).
 			// This ensures the team_id → fleet_id field mapping is actually exercised.
