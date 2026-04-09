@@ -1,6 +1,6 @@
 module security-tools
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/securego/gosec/v2 v2.25.0
