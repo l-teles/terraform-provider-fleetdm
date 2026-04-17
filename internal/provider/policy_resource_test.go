@@ -108,10 +108,15 @@ func TestAccPolicyResource_outOfBandDeletion(t *testing.T) {
 // create it, which invalidates the test.
 func deletePolicyOutOfBand(t *testing.T, name string) {
 	t.Helper()
+	// Match provider.go's parsing: both "false" and "0" disable verification.
+	verifyTLS := true
+	if v := os.Getenv("FLEETDM_VERIFY_TLS"); v == "false" || v == "0" {
+		verifyTLS = false
+	}
 	client, err := fleetdm.NewClient(fleetdm.ClientConfig{
 		ServerAddress: os.Getenv("FLEETDM_URL"),
 		APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
-		VerifyTLS:     os.Getenv("FLEETDM_VERIFY_TLS") != "false",
+		VerifyTLS:     verifyTLS,
 	})
 	if err != nil {
 		t.Fatalf("failed to build fleet client: %v", err)
