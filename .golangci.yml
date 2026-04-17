@@ -1,6 +1,9 @@
 version: "2"
 
 linters:
+    enable:
+        # Catches type assertions and comparisons on wrapped errors
+        - errorlint
     exclusions:
         rules:
             # Test HTTP server handlers commonly omit error checks on json encode/decode

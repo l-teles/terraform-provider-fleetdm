@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -31,10 +32,12 @@ func configureClient(providerData any, diagnostics *diag.Diagnostics, typeName s
 	return client
 }
 
-// isNotFound returns true if the error is a FleetDM API 404 error.
+// isNotFound returns true if the error (or any error it wraps) is a FleetDM
+// API 404 response. Domain client methods wrap *fleetdm.APIError with
+// fmt.Errorf("...: %w", err), so we must unwrap with errors.As.
 func isNotFound(err error) bool {
-	apiErr, ok := err.(*fleetdm.APIError)
-	return ok && apiErr.StatusCode == 404
+	var apiErr *fleetdm.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 404
 }
 
 // parseIDFromString parses a numeric string ID and adds a diagnostic error on failure.

@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
 func TestPlatformStringToList(t *testing.T) {
@@ -244,4 +247,41 @@ func TestReadPackageContent(t *testing.T) {
 			t.Errorf("expected empty SHA, got %s", sha)
 		}
 	})
+}
+
+func TestIsNotFound(t *testing.T) {
+	notFound := &fleetdm.APIError{StatusCode: 404, Message: "Resource Not Found"}
+	serverErr := &fleetdm.APIError{StatusCode: 500, Message: "boom"}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "unrelated error", err: errors.New("boom"), want: false},
+		{name: "non-404 API error", err: serverErr, want: false},
+		{name: "direct 404 API error", err: notFound, want: true},
+		{
+			// Regression case: every domain client method wraps APIError with
+			// fmt.Errorf("...: %w", err). A direct type assertion on this
+			// returns false — isNotFound must use errors.As to unwrap.
+			name: "wrapped 404 API error",
+			err:  fmt.Errorf("failed to get policy 1: %w", notFound),
+			want: true,
+		},
+		{
+			name: "doubly-wrapped 404 API error",
+			err:  fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", notFound)),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNotFound(tt.err); got != tt.want {
+				t.Errorf("isNotFound(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
 }
