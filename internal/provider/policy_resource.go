@@ -389,11 +389,15 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		attrPath string
 		isSet    bool
 	}
+	// "Set" means "explicitly written in HCL" (config is non-null and
+	// non-unknown). For booleans, an explicit `false` still counts as
+	// set — the user wrote the line, even if the value happens to match
+	// the default — so we don't gate on .ValueBool() here.
 	checks := []teamOnly{
 		{"script_id", !data.ScriptID.IsNull() && !data.ScriptID.IsUnknown()},
 		{"software_title_id", !data.SoftwareTitleID.IsNull() && !data.SoftwareTitleID.IsUnknown()},
-		{"calendar_events_enabled", !data.CalendarEventsEnabled.IsNull() && !data.CalendarEventsEnabled.IsUnknown() && data.CalendarEventsEnabled.ValueBool()},
-		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown() && data.ConditionalAccessEnabled.ValueBool()},
+		{"calendar_events_enabled", !data.CalendarEventsEnabled.IsNull() && !data.CalendarEventsEnabled.IsUnknown()},
+		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown()},
 		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
 	}
 	if teamKnown && !teamSet {

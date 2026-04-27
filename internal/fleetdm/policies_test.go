@@ -761,12 +761,14 @@ func TestClient_CreateTeamPolicy_PatchOmitsQuery(t *testing.T) {
 	}
 }
 
-// TestClient_UpdateTeamPolicy_ClearsAutomations is the regression guard for
-// the no-omitempty decision on UpdatePolicyRequest's pointer fields. Setting
-// these to nil in Go must serialize as explicit JSON null so Fleet clears
-// the automation. omitempty would suppress the null and silently leave the
-// prior value in place.
-func TestClient_UpdateTeamPolicy_ClearsAutomations(t *testing.T) {
+// TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear is the
+// regression guard for the no-omitempty decision on the *pointer* fields
+// of UpdatePolicyRequest (script_id, software_title_id, the calendar/CA
+// bools). Fleet treats JSON null on these fields as "clear / reset to
+// default"; omitempty would suppress the null and silently leave the
+// previous server-side value in place. Label slice fields use a different
+// convention (null = no change, [] = clear) and are tested separately.
+func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -789,8 +791,6 @@ func TestClient_UpdateTeamPolicy_ClearsAutomations(t *testing.T) {
 		CalendarEventsEnabled:          nil,
 		ConditionalAccessEnabled:       nil,
 		ConditionalAccessBypassEnabled: nil,
-		LabelsIncludeAny:               nil,
-		LabelsExcludeAny:               nil,
 	}); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -801,12 +801,55 @@ func TestClient_UpdateTeamPolicy_ClearsAutomations(t *testing.T) {
 		`"calendar_events_enabled":null`,
 		`"conditional_access_enabled":null`,
 		`"conditional_access_bypass_enabled":null`,
-		`"labels_include_any":null`,
-		`"labels_exclude_any":null`,
 	} {
 		if !strings.Contains(rawBody, want) {
 			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
 		}
+	}
+}
+
+// TestClient_UpdateTeamPolicy_LabelClearVsNoChange documents and asserts
+// the asymmetric label semantics: a nil slice serializes as JSON null
+// (Fleet treats this as "no change" — keep existing labels), while an
+// empty slice serializes as JSON [] (Fleet clears the labels). The
+// provider relies on this distinction to preserve UI-set labels when a
+// label set is Unknown at plan time, and to actually clear labels when
+// the user removes them from HCL.
+func TestClient_UpdateTeamPolicy_LabelClearVsNoChange(t *testing.T) {
+	captured := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: Policy{ID: 5, Name: "ok"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	// nil slice => null (no change semantics).
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:             "ok",
+		LabelsIncludeAny: nil,
+	}); err != nil {
+		t.Fatalf("nil-labels update failed: %v", err)
+	}
+	body := <-captured
+	if !strings.Contains(body, `"labels_include_any":null`) {
+		t.Errorf("nil slice should serialize as JSON null; got: %s", body)
+	}
+
+	// Empty slice => [] (clear semantics).
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:             "ok",
+		LabelsIncludeAny: []string{},
+	}); err != nil {
+		t.Fatalf("empty-labels update failed: %v", err)
+	}
+	body = <-captured
+	if !strings.Contains(body, `"labels_include_any":[]`) {
+		t.Errorf("empty slice should serialize as JSON []; got: %s", body)
 	}
 }
 

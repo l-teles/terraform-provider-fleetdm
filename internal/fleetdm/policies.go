@@ -99,11 +99,24 @@ type CreatePolicyResponse struct {
 
 // UpdatePolicyRequest represents the request to update a policy.
 //
-// Fields that map to "automation" or "policy targeting" use pointers WITHOUT
-// omitempty so that an explicit JSON `null` reaches Fleet — that is how the
-// API clears a previously-set value (per the Update fleet policy docs).
-// Setting these fields to their Go zero value via `omitempty` would suppress
-// the null and silently leave the prior server-side value in place.
+// Fields here intentionally drop `omitempty` and use pointers (or, for
+// labels, slices) so the wire format can faithfully express the user's
+// intent. Two distinct conventions apply per Fleet's API:
+//
+//   - Pointer fields (script_id, software_title_id, calendar_events_enabled,
+//     conditional_access_enabled, conditional_access_bypass_enabled): a Go
+//     `nil` serializes as JSON `null`, which Fleet treats as "clear /
+//     reset to default". A non-nil pointer is sent as the value.
+//
+//   - Label slice fields (labels_include_any, labels_exclude_any): a `nil`
+//     slice serializes as JSON `null`, which Fleet treats as "no change"
+//     (preserve the existing labels). An empty slice (`[]string{}`)
+//     serializes as JSON `[]`, which Fleet treats as "clear all labels".
+//     Use the empty slice to clear; never use nil if the user has asked
+//     for labels to be removed.
+//
+// `omitempty` would suppress null/empty values entirely, breaking both
+// conventions.
 type UpdatePolicyRequest struct {
 	Name                           string   `json:"name,omitempty"`
 	Description                    string   `json:"description,omitempty"`
