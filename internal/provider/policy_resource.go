@@ -137,7 +137,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"team_id": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.",
+				MarkdownDescription: "The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type` = `\"patch\"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.",
 			},
 			"type": schema.StringAttribute{
 				Optional: true,
@@ -177,17 +177,17 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Whether to trigger calendar events when the policy is failing. Only applies to team policies; setting this is a no-op on global policies. _Available in Fleet Premium._",
+				MarkdownDescription: "Whether to trigger calendar events when the policy is failing. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._",
 			},
 			"conditional_access_enabled": schema.BoolAttribute{
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
-				MarkdownDescription: "Whether to block single sign-on for end users whose hosts fail this policy. Only applies to team policies. _Available in Fleet Premium._",
+				MarkdownDescription: "Whether to block single sign-on for end users whose hosts fail this policy. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._",
 			},
 			"conditional_access_bypass_enabled": schema.BoolAttribute{
 				Optional:            true,
-				MarkdownDescription: "Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. _Available in Fleet Premium._",
+				MarkdownDescription: "Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -305,7 +305,11 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	teamKnown := !data.TeamID.IsUnknown()
 	teamSet := teamKnown && !data.TeamID.IsNull() && data.TeamID.ValueInt64() > 0
 	patchTitleSet := !data.PatchSoftwareTitleID.IsNull() && !data.PatchSoftwareTitleID.IsUnknown()
-	isPatchType := data.Type.ValueString() == "patch"
+	// Same rationale for type: only enforce patch-vs-dynamic constraints
+	// when type is known. An Unknown type (e.g., referenced from another
+	// computed value) might still resolve to "patch" at apply time.
+	typeKnown := !data.Type.IsNull() && !data.Type.IsUnknown()
+	isPatchType := typeKnown && data.Type.ValueString() == "patch"
 
 	if isPatchType {
 		if !patchTitleSet {
@@ -322,7 +326,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 				"team_id is required when type = \"patch\" — patch policies are team-only.",
 			)
 		}
-	} else if patchTitleSet {
+	} else if typeKnown && patchTitleSet {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("patch_software_title_id"),
 			"Unsupported field",
@@ -539,13 +543,19 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 }
 
 // stringSetToSlice converts a types.Set of strings to a []string and
-// appends any element-conversion diagnostics. Always returns a non-nil
-// slice (empty when the set is null/unknown) so the JSON marshaler emits
-// `[]` rather than `null` on the no-omitempty Update fields — Fleet
-// treats an explicit empty array as "clear", whereas `null` is
-// interpreted as "no change" for label fields.
+// appends any element-conversion diagnostics.
+//
+// The Null vs Unknown distinction matters for the no-omitempty Update
+// fields: an explicit empty array (`[]`) tells Fleet to clear the
+// labels, while `null` is interpreted as "no change". A Null set means
+// the user has removed the attribute from HCL → clear; an Unknown set
+// means the value is still being computed and we should not touch
+// what's already on the server.
 func stringSetToSlice(ctx context.Context, set types.Set, diags *diag.Diagnostics) []string {
-	if set.IsNull() || set.IsUnknown() {
+	if set.IsUnknown() {
+		return nil
+	}
+	if set.IsNull() {
 		return []string{}
 	}
 	out := make([]string, 0, len(set.Elements()))

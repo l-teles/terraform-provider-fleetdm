@@ -99,9 +99,9 @@ resource "fleetdm_policy" "conditional_access" {
 
 ### Optional
 
-- `calendar_events_enabled` (Boolean) Whether to trigger calendar events when the policy is failing. Only applies to team policies; setting this is a no-op on global policies. _Available in Fleet Premium._
-- `conditional_access_bypass_enabled` (Boolean) Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. _Available in Fleet Premium._
-- `conditional_access_enabled` (Boolean) Whether to block single sign-on for end users whose hosts fail this policy. Only applies to team policies. _Available in Fleet Premium._
+- `calendar_events_enabled` (Boolean) Whether to trigger calendar events when the policy is failing. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._
+- `conditional_access_bypass_enabled` (Boolean) Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._
+- `conditional_access_enabled` (Boolean) Whether to block single sign-on for end users whose hosts fail this policy. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._
 - `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._
 - `description` (String) A description of the policy.
 - `labels_exclude_any` (Set of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium._
@@ -111,7 +111,7 @@ resource "fleetdm_policy" "conditional_access" {
 - `resolution` (String) Instructions for resolving a failing policy check.
 - `script_id` (Number) ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._
 - `software_title_id` (Number) ID of the software title to install if the policy fails. Set to `null` to clear the install-software automation. _Available in Fleet Premium, team policies only._
-- `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.
+- `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type` = `"patch"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.
 - `type` (String) The type of the policy. One of `dynamic` (classic policy with an editable query) or `patch` (tied to `patch_software_title_id` and automatically updated to include the newest Fleet-maintained app version). Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 
 ### Read-Only
