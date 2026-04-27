@@ -690,17 +690,20 @@ func isTeamPolicy(teamID types.Int64) bool {
 
 // policyNeedsAutomationFollowup is true when the planned model has any
 // PATCH-only field set to a non-default value, requiring a follow-up Update
-// after Create.
+// after Create. Unknown values short-circuit to false — Optional+Computed
+// defaults should resolve all of these to Known by the time Create runs,
+// but if one is still Unknown we'd rather skip the follow-up and let the
+// next apply converge than send `null` to Fleet and risk a misinterpretation.
 func policyNeedsAutomationFollowup(data PolicyResourceModel) bool {
-	if !data.CalendarEventsEnabled.IsNull() && data.CalendarEventsEnabled.ValueBool() {
+	if !data.CalendarEventsEnabled.IsNull() && !data.CalendarEventsEnabled.IsUnknown() && data.CalendarEventsEnabled.ValueBool() {
 		return true
 	}
-	if !data.ConditionalAccessEnabled.IsNull() && data.ConditionalAccessEnabled.ValueBool() {
+	if !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown() && data.ConditionalAccessEnabled.ValueBool() {
 		return true
 	}
 	// The API default for bypass is true. Only follow up if user explicitly
 	// set it to false.
-	if !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.ValueBool() {
+	if !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown() && !data.ConditionalAccessBypassEnabled.ValueBool() {
 		return true
 	}
 	return false
