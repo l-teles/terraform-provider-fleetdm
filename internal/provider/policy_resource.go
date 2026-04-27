@@ -346,8 +346,9 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	//   - queryDecided: not Unknown (Null counts as "decided to be missing")
 	//   - queryConfigured: user wrote query in HCL with any value, including ""
 	//   - querySet: user wrote query in HCL with a non-empty value
-	// Patch policies must have query absent entirely (querySet OR query="");
-	// dynamic policies must have it set to a non-empty value.
+	// Patch policies must omit query entirely (or set it to null); any
+	// configured value, including "", is invalid. Dynamic policies must
+	// have query set to a non-empty value.
 	queryDecided := !data.Query.IsUnknown()
 	queryConfigured := queryDecided && !data.Query.IsNull()
 	querySet := queryConfigured && data.Query.ValueString() != ""
