@@ -104,8 +104,8 @@ resource "fleetdm_policy" "conditional_access" {
 - `conditional_access_enabled` (Boolean) Whether to block single sign-on for end users whose hosts fail this policy. Only applies to team policies. _Available in Fleet Premium._
 - `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._
 - `description` (String) A description of the policy.
-- `labels_exclude_any` (List of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. _Available in Fleet Premium._
-- `labels_include_any` (List of String) Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. _Available in Fleet Premium._
+- `labels_exclude_any` (Set of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium._
+- `labels_include_any` (Set of String) Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium._
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title to create a patch policy for. Required when `type = "patch"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 - `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
 - `resolution` (String) Instructions for resolving a failing policy check.

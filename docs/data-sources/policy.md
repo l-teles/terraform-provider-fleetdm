@@ -71,8 +71,8 @@ output "compliance_rate" {
 - `fleet_maintained` (Boolean) Whether the policy is maintained by Fleet.
 - `host_count_updated_at` (String) Timestamp when the passing/failing host counts were last refreshed.
 - `install_software` (Attributes) Echo of the install-software automation attached to this policy. (see [below for nested schema](#nestedatt--install_software))
-- `labels_exclude_any` (List of String) Labels whose hosts are excluded from this policy (any-of semantics).
-- `labels_include_any` (List of String) Labels whose hosts are targeted by this policy (any-of semantics).
+- `labels_exclude_any` (Set of String) Labels whose hosts are excluded from this policy (any-of semantics).
+- `labels_include_any` (Set of String) Labels whose hosts are targeted by this policy (any-of semantics).
 - `name` (String) The name of the policy.
 - `passing_host_count` (Number) The number of hosts passing this policy.
 - `patch_software` (Attributes) Echo of the patch-software target for `type = "patch"` policies. (see [below for nested schema](#nestedatt--patch_software))

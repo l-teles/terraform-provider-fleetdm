@@ -67,8 +67,8 @@ type PolicyResourceModel struct {
 	PatchSoftwareTitleID           types.Int64  `tfsdk:"patch_software_title_id"`
 	SoftwareTitleID                types.Int64  `tfsdk:"software_title_id"`
 	ScriptID                       types.Int64  `tfsdk:"script_id"`
-	LabelsIncludeAny               types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny               types.List   `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAny               types.Set    `tfsdk:"labels_include_any"`
+	LabelsExcludeAny               types.Set    `tfsdk:"labels_exclude_any"`
 	CalendarEventsEnabled          types.Bool   `tfsdk:"calendar_events_enabled"`
 	ConditionalAccessEnabled       types.Bool   `tfsdk:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled types.Bool   `tfsdk:"conditional_access_bypass_enabled"`
@@ -163,15 +163,15 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 				MarkdownDescription: "ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._",
 			},
-			"labels_include_any": schema.ListAttribute{
+			"labels_include_any": schema.SetAttribute{
 				Optional:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. _Available in Fleet Premium._",
+				MarkdownDescription: "Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium._",
 			},
-			"labels_exclude_any": schema.ListAttribute{
+			"labels_exclude_any": schema.SetAttribute{
 				Optional:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. _Available in Fleet Premium._",
+				MarkdownDescription: "Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium._",
 			},
 			"calendar_events_enabled": schema.BoolAttribute{
 				Optional:            true,
@@ -261,7 +261,13 @@ func (r *PolicyResource) Configure(ctx context.Context, req resource.ConfigureRe
 // ValidateConfig enforces:
 //   - `type` must be one of "dynamic" or "patch".
 //   - `labels_include_any` and `labels_exclude_any` cannot both be set.
-//   - When `type = "patch"`, `patch_software_title_id` must be set.
+//   - When `type = "patch"`: `patch_software_title_id` and `team_id` are required.
+//   - `patch_software_title_id` is only meaningful when `type = "patch"`.
+//   - Team-only fields (`script_id`, `software_title_id`, calendar/CA toggles)
+//     require `team_id` to be set.
+//
+// Catching these at plan time (instead of letting the API reject them at
+// apply time) saves users a wasted apply cycle and produces clearer errors.
 func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var data PolicyResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -291,13 +297,54 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		)
 	}
 
-	if data.Type.ValueString() == "patch" {
-		if data.PatchSoftwareTitleID.IsNull() || data.PatchSoftwareTitleID.IsUnknown() {
+	teamSet := !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueInt64() > 0
+	patchTitleSet := !data.PatchSoftwareTitleID.IsNull() && !data.PatchSoftwareTitleID.IsUnknown()
+	isPatchType := data.Type.ValueString() == "patch"
+
+	if isPatchType {
+		if !patchTitleSet {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("patch_software_title_id"),
 				"Missing required value",
 				"patch_software_title_id is required when type = \"patch\".",
 			)
+		}
+		if !teamSet {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("team_id"),
+				"Missing required value",
+				"team_id is required when type = \"patch\" — patch policies are team-only.",
+			)
+		}
+	} else if patchTitleSet {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("patch_software_title_id"),
+			"Unsupported field",
+			"patch_software_title_id is only meaningful when type = \"patch\".",
+		)
+	}
+
+	// Team-only fields. Each pair: (model attribute, schema path, "set" predicate).
+	type teamOnly struct {
+		attrPath string
+		isSet    bool
+	}
+	checks := []teamOnly{
+		{"script_id", !data.ScriptID.IsNull() && !data.ScriptID.IsUnknown()},
+		{"software_title_id", !data.SoftwareTitleID.IsNull() && !data.SoftwareTitleID.IsUnknown()},
+		{"calendar_events_enabled", !data.CalendarEventsEnabled.IsNull() && !data.CalendarEventsEnabled.IsUnknown() && data.CalendarEventsEnabled.ValueBool()},
+		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown() && data.ConditionalAccessEnabled.ValueBool()},
+		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
+	}
+	if !teamSet {
+		for _, c := range checks {
+			if c.isSet {
+				resp.Diagnostics.AddAttributeError(
+					path.Root(c.attrPath),
+					"team_id required",
+					fmt.Sprintf("%s is only supported on team policies — set team_id to use it.", c.attrPath),
+				)
+			}
 		}
 	}
 }
@@ -321,8 +368,8 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		PatchSoftwareTitleID: optionalIntPtr(data.PatchSoftwareTitleID),
 		SoftwareTitleID:      optionalIntPtr(data.SoftwareTitleID),
 		ScriptID:             optionalIntPtr(data.ScriptID),
-		LabelsIncludeAny:     stringListToSlice(ctx, data.LabelsIncludeAny),
-		LabelsExcludeAny:     stringListToSlice(ctx, data.LabelsExcludeAny),
+		LabelsIncludeAny:     stringSetToSlice(ctx, data.LabelsIncludeAny),
+		LabelsExcludeAny:     stringSetToSlice(ctx, data.LabelsExcludeAny),
 	}
 
 	policy, err := r.client.CreatePolicy(ctx, optionalIntPtr(data.TeamID), createReq)
@@ -449,8 +496,8 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.TeamID = intPtrToInt64(policy.TeamID)
 
 	data.Type = types.StringValue(policy.Type)
-	data.LabelsIncludeAny = policyLabelsToList(policy.LabelsIncludeAny)
-	data.LabelsExcludeAny = policyLabelsToList(policy.LabelsExcludeAny)
+	data.LabelsIncludeAny = policyLabelsToSet(policy.LabelsIncludeAny)
+	data.LabelsExcludeAny = policyLabelsToSet(policy.LabelsExcludeAny)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
 	// Fleet doesn't echo conditional_access_bypass_enabled in the response;
@@ -459,39 +506,41 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.FleetMaintained = types.BoolValue(policy.FleetMaintained)
 	data.CreatedAt = types.StringValue(policy.CreatedAt)
 	data.UpdatedAt = types.StringValue(policy.UpdatedAt)
-	data.HostCountUpdatedAt = types.StringValue(policy.HostCountUpdatedAt)
+	data.HostCountUpdatedAt = stringPtrToString(policy.HostCountUpdatedAt)
 
 	data.SoftwareTitleID, data.InstallSoftware = mapInstallSoftware(policy.InstallSoftware, diags)
 	data.ScriptID, data.RunScript = mapRunScript(policy.RunScript, diags)
 	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy.PatchSoftware, diags)
 }
 
-// stringListToSlice converts a types.List of strings to a []string, returning
-// nil when the list is null/unknown. nil is significant here: it lets the
-// JSON marshaler emit `null` for the no-omitempty Update fields when the
-// user has cleared a labels list.
-func stringListToSlice(ctx context.Context, list types.List) []string {
-	if list.IsNull() || list.IsUnknown() {
-		return nil
+// stringSetToSlice converts a types.Set of strings to a []string. Always
+// returns a non-nil slice (empty when the set is null/unknown) so the JSON
+// marshaler emits `[]` rather than `null` on the no-omitempty Update fields
+// — Fleet treats an explicit empty array as "clear", whereas `null` is
+// interpreted as "no change" for label fields.
+func stringSetToSlice(ctx context.Context, set types.Set) []string {
+	if set.IsNull() || set.IsUnknown() {
+		return []string{}
 	}
-	out := make([]string, 0, len(list.Elements()))
-	list.ElementsAs(ctx, &out, false)
+	out := make([]string, 0, len(set.Elements()))
+	set.ElementsAs(ctx, &out, false)
 	return out
 }
 
-// policyLabelsToList flattens Fleet's per-label response objects (id+name)
-// into a types.List of label names — what the user-facing schema exposes.
-// Returns ListNull on empty input so a missing-from-HCL field doesn't
-// diff against the API's empty array.
-func policyLabelsToList(labels []fleetdm.PolicyLabel) types.List {
+// policyLabelsToSet flattens Fleet's per-label response objects (id+name)
+// into a types.Set of label names — what the user-facing schema exposes.
+// Sets are used (instead of Lists) because Fleet returns labels in
+// nondeterministic order; a List would surface false drift on order
+// differences. Returns SetNull on empty input.
+func policyLabelsToSet(labels []fleetdm.PolicyLabel) types.Set {
 	if len(labels) == 0 {
-		return types.ListNull(types.StringType)
+		return types.SetNull(types.StringType)
 	}
 	values := make([]attr.Value, 0, len(labels))
 	for _, l := range labels {
 		values = append(values, types.StringValue(l.Name))
 	}
-	return types.ListValueMust(types.StringType, values)
+	return types.SetValueMust(types.StringType, values)
 }
 
 // isTeamPolicy returns true if the model's team_id is set to a positive value.
@@ -533,8 +582,8 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel) fle
 		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
 		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
-		LabelsIncludeAny:               stringListToSlice(ctx, data.LabelsIncludeAny),
-		LabelsExcludeAny:               stringListToSlice(ctx, data.LabelsExcludeAny),
+		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny),
+		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny),
 	}
 }
 

@@ -37,8 +37,8 @@ type PolicyDataSourceModel struct {
 	PatchSoftwareTitleID     types.Int64  `tfsdk:"patch_software_title_id"`
 	SoftwareTitleID          types.Int64  `tfsdk:"software_title_id"`
 	ScriptID                 types.Int64  `tfsdk:"script_id"`
-	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAny         types.Set    `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         types.Set    `tfsdk:"labels_exclude_any"`
 	CalendarEventsEnabled    types.Bool   `tfsdk:"calendar_events_enabled"`
 	ConditionalAccessEnabled types.Bool   `tfsdk:"conditional_access_enabled"`
 	AuthorID                 types.Int64  `tfsdk:"author_id"`
@@ -113,12 +113,12 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 				Computed:            true,
 				MarkdownDescription: "ID of the script to run if the policy fails (run-script automation).",
 			},
-			"labels_include_any": schema.ListAttribute{
+			"labels_include_any": schema.SetAttribute{
 				Computed:            true,
 				ElementType:         types.StringType,
 				MarkdownDescription: "Labels whose hosts are targeted by this policy (any-of semantics).",
 			},
-			"labels_exclude_any": schema.ListAttribute{
+			"labels_exclude_any": schema.SetAttribute{
 				Computed:            true,
 				ElementType:         types.StringType,
 				MarkdownDescription: "Labels whose hosts are excluded from this policy (any-of semantics).",
@@ -229,14 +229,14 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.TeamID = intPtrToInt64(policy.TeamID)
 
 	data.Type = types.StringValue(policy.Type)
-	data.LabelsIncludeAny = policyLabelsToList(policy.LabelsIncludeAny)
-	data.LabelsExcludeAny = policyLabelsToList(policy.LabelsExcludeAny)
+	data.LabelsIncludeAny = policyLabelsToSet(policy.LabelsIncludeAny)
+	data.LabelsExcludeAny = policyLabelsToSet(policy.LabelsExcludeAny)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
 	data.FleetMaintained = types.BoolValue(policy.FleetMaintained)
 	data.CreatedAt = types.StringValue(policy.CreatedAt)
 	data.UpdatedAt = types.StringValue(policy.UpdatedAt)
-	data.HostCountUpdatedAt = types.StringValue(policy.HostCountUpdatedAt)
+	data.HostCountUpdatedAt = stringPtrToString(policy.HostCountUpdatedAt)
 
 	data.SoftwareTitleID, data.InstallSoftware = mapInstallSoftware(policy.InstallSoftware, &resp.Diagnostics)
 	data.ScriptID, data.RunScript = mapRunScript(policy.RunScript, &resp.Diagnostics)

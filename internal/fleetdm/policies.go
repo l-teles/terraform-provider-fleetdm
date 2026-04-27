@@ -54,7 +54,7 @@ type Policy struct {
 	CalendarEventsEnabled    bool                           `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled bool                           `json:"conditional_access_enabled"`
 	FleetMaintained          bool                           `json:"fleet_maintained"`
-	HostCountUpdatedAt       string                         `json:"host_count_updated_at,omitempty"`
+	HostCountUpdatedAt       *string                        `json:"host_count_updated_at"`
 	CreatedAt                string                         `json:"created_at,omitempty"`
 	UpdatedAt                string                         `json:"updated_at,omitempty"`
 	InstallSoftware          *PolicyAutomationSoftware      `json:"install_software,omitempty"`
