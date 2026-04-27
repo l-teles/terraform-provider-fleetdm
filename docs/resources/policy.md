@@ -106,12 +106,16 @@ resource "fleetdm_policy" "conditional_access" {
 - `labels_exclude_any` (Set of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium._
 - `labels_include_any` (Set of String) Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium._
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title to create a patch policy for. Required when `type = "patch"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
-- `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
+- `platform` (List of String) List of platforms this policy applies to (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms.
+
+**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared or shrunk via the API. Removing entries will appear as drift on every plan and never converge — destroy and recreate the policy to change platform targeting.
 - `query` (String) The SQL query that defines the policy. The policy passes if the query returns results. Required when `type = "dynamic"` (the default). Must be omitted when `type = "patch"` — Fleet generates the query automatically for patch policies.
 - `resolution` (String) Instructions for resolving a failing policy check.
+
+**Fleet API limitation:** once set to a non-empty value, `resolution` cannot be cleared via the API. Setting it to `""` after the fact will appear as drift on every plan and never converge — destroy and recreate the policy if you need to remove the resolution.
 - `script_id` (Number) ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._
 - `software_title_id` (Number) ID of the software title to install if the policy fails. Set to `null` to clear the install-software automation. _Available in Fleet Premium, team policies only._
-- `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type` = `"patch"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.
+- `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global. Changing this field forces the policy to be destroyed and recreated — Fleet stores team and global policies under separate endpoints, so a policy cannot be moved in-place. The team-only fields below (`type` = `"patch"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.
 - `type` (String) The type of the policy. One of `dynamic` (classic policy with an editable query) or `patch` (tied to `patch_software_title_id` and automatically updated to include the newest Fleet-maintained app version). Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 
 ### Read-Only
@@ -164,10 +168,9 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Import a global policy using its ID
+# Import a global policy by its ID.
 terraform import fleetdm_policy.disk_encryption 123
 
-# For team policies, the import format is the policy ID
-# You'll need to set team_id in the resource after import
-terraform import fleetdm_policy.team_policy 456
+# Import a team policy with the format "<team_id>:<policy_id>".
+terraform import fleetdm_policy.team_policy 7:456
 ```

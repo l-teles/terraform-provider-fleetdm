@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -131,17 +133,20 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "Instructions for resolving a failing policy check.",
+				MarkdownDescription: "Instructions for resolving a failing policy check.\n\n**Fleet API limitation:** once set to a non-empty value, `resolution` cannot be cleared via the API. Setting it to `\"\"` after the fact will appear as drift on every plan and never converge — destroy and recreate the policy if you need to remove the resolution.",
 			},
 			"platform": schema.ListAttribute{
 				Optional:            true,
 				Computed:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.",
+				MarkdownDescription: "List of platforms this policy applies to (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms.\n\n**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared or shrunk via the API. Removing entries will appear as drift on every plan and never converge — destroy and recreate the policy to change platform targeting.",
 			},
 			"team_id": schema.Int64Attribute{
-				Optional:            true,
-				MarkdownDescription: "The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type` = `\"patch\"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.",
+				Optional: true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+				MarkdownDescription: "The ID of the team this policy belongs to. If not specified, the policy is global. Changing this field forces the policy to be destroyed and recreated — Fleet stores team and global policies under separate endpoints, so a policy cannot be moved in-place. The team-only fields below (`type` = `\"patch\"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.",
 			},
 			"type": schema.StringAttribute{
 				Optional: true,
@@ -544,12 +549,52 @@ func (r *PolicyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 }
 
+// ImportState supports two formats:
+//
+//   - "<policy_id>" — global policy (e.g., terraform import fleetdm_policy.foo 42).
+//   - "<team_id>:<policy_id>" — team policy (e.g., terraform import fleetdm_policy.foo 7:42).
+//
+// Without the team_id prefix, Read calls Fleet's global-policy endpoint
+// and 404s on team policies. The colon-separated form lets users import
+// either kind cleanly.
 func (r *PolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	id, ok := parseIDFromString(req.ID, "Policy", &resp.Diagnostics)
-	if !ok {
-		return
+	parts := strings.Split(req.ID, ":")
+	switch len(parts) {
+	case 1:
+		policyID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Invalid import ID",
+				fmt.Sprintf("Could not parse policy ID %q as an integer: %s", parts[0], err),
+			)
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), policyID)...)
+	case 2:
+		teamID, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Invalid import ID",
+				fmt.Sprintf("Could not parse team ID %q as an integer: %s", parts[0], err),
+			)
+			return
+		}
+		policyID, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Invalid import ID",
+				fmt.Sprintf("Could not parse policy ID %q as an integer: %s", parts[1], err),
+			)
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), policyID)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), teamID)...)
+	default:
+		resp.Diagnostics.AddError(
+			"Invalid import ID",
+			fmt.Sprintf("Expected %q for global policies or %q for team policies, got: %q", "<policy_id>", "<team_id>:<policy_id>", req.ID),
+		)
 	}
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), id)...)
 }
 
 // mapPolicyToModel copies an API Policy into the Terraform model. Pulls the
