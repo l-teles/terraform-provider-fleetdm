@@ -246,7 +246,7 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 
 	data.SoftwareTitleID, data.InstallSoftware = mapInstallSoftware(policy.InstallSoftware, &resp.Diagnostics)
 	data.ScriptID, data.RunScript = mapRunScript(policy.RunScript, &resp.Diagnostics)
-	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy.PatchSoftware, &resp.Diagnostics)
+	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

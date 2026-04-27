@@ -644,7 +644,7 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 
 	data.SoftwareTitleID, data.InstallSoftware = mapInstallSoftware(policy.InstallSoftware, diags)
 	data.ScriptID, data.RunScript = mapRunScript(policy.RunScript, diags)
-	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy.PatchSoftware, diags)
+	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy, diags)
 }
 
 // stringSetToSlice converts a types.Set of strings to a []string and
@@ -774,17 +774,29 @@ func mapRunScript(s *fleetdm.PolicyAutomationScript, diags *diag.Diagnostics) (t
 
 // mapPatchSoftware extracts the flat patch_software_title_id from the nested
 // patch_software response and builds the matching computed object.
-func mapPatchSoftware(s *fleetdm.PolicyAutomationPatchSoftware, diags *diag.Diagnostics) (types.Int64, types.Object) {
-	if s == nil {
-		return types.Int64Null(), types.ObjectNull(policyPatchSoftwareAttrTypes)
+//
+// Fleet's policy GET endpoint does not always echo `patch_software` for
+// `type = "patch"` policies even though the policy was created with a
+// patch_software_title_id. It does always echo `install_software` — Fleet
+// auto-creates an install-software automation pointing at the patch
+// target, so the two software_title_ids are equal for patch policies. We
+// fall back to that here so import (and any subsequent Read) doesn't end
+// up with a null patch_software_title_id, which would otherwise force a
+// destroy/recreate via the RequiresReplace plan modifier.
+func mapPatchSoftware(policy *fleetdm.Policy, diags *diag.Diagnostics) (types.Int64, types.Object) {
+	if s := policy.PatchSoftware; s != nil {
+		obj, dd := types.ObjectValue(policyPatchSoftwareAttrTypes, map[string]attr.Value{
+			"name":              types.StringValue(s.Name),
+			"display_name":      types.StringValue(s.DisplayName),
+			"software_title_id": types.Int64Value(int64(s.SoftwareTitleID)),
+		})
+		diags.Append(dd...)
+		return types.Int64Value(int64(s.SoftwareTitleID)), obj
 	}
-	obj, dd := types.ObjectValue(policyPatchSoftwareAttrTypes, map[string]attr.Value{
-		"name":              types.StringValue(s.Name),
-		"display_name":      types.StringValue(s.DisplayName),
-		"software_title_id": types.Int64Value(int64(s.SoftwareTitleID)),
-	})
-	diags.Append(dd...)
-	return types.Int64Value(int64(s.SoftwareTitleID)), obj
+	if policy.Type == "patch" && policy.InstallSoftware != nil {
+		return types.Int64Value(int64(policy.InstallSoftware.SoftwareTitleID)), types.ObjectNull(policyPatchSoftwareAttrTypes)
+	}
+	return types.Int64Null(), types.ObjectNull(policyPatchSoftwareAttrTypes)
 }
 
 // optionalBoolPtr converts an optional types.Bool to a *bool, returning nil

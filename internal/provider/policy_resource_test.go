@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -604,5 +605,100 @@ func setPolicyScriptIDOutOfBand(t *testing.T, policyName, scriptName string) {
 		ScriptID: &scriptID,
 	}); err != nil {
 		t.Fatalf("failed to attach script %d to policy %d out-of-band: %v", scriptID, policyID, err)
+	}
+}
+
+// TestMapPatchSoftware_fallsBackToInstallSoftware guards against the import
+// regression where a `type = "patch"` policy whose Fleet response omits
+// patch_software (but echoes install_software) ended up with a null
+// patch_software_title_id in state, triggering a destroy/recreate on the
+// next plan because of the RequiresReplace plan modifier.
+func TestMapPatchSoftware_fallsBackToInstallSoftware(t *testing.T) {
+	tests := []struct {
+		name             string
+		policy           *fleetdm.Policy
+		wantTitleID      int64
+		wantTitleIDIsSet bool
+		wantObjectIsNull bool
+	}{
+		{
+			name: "patch_software echoed — use it directly",
+			policy: &fleetdm.Policy{
+				Type: "patch",
+				PatchSoftware: &fleetdm.PolicyAutomationPatchSoftware{
+					Name:            "Notepad++",
+					DisplayName:     "Notepad++",
+					SoftwareTitleID: 9694,
+				},
+				InstallSoftware: &fleetdm.PolicyAutomationSoftware{
+					Name:            "Notepad++",
+					SoftwareTitleID: 9694,
+				},
+			},
+			wantTitleID:      9694,
+			wantTitleIDIsSet: true,
+			wantObjectIsNull: false,
+		},
+		{
+			name: "patch_software missing but install_software present — fall back",
+			policy: &fleetdm.Policy{
+				Type:          "patch",
+				PatchSoftware: nil,
+				InstallSoftware: &fleetdm.PolicyAutomationSoftware{
+					Name:            "Notepad++",
+					SoftwareTitleID: 9694,
+				},
+			},
+			wantTitleID:      9694,
+			wantTitleIDIsSet: true,
+			wantObjectIsNull: true,
+		},
+		{
+			name: "dynamic policy with install_software — no fallback",
+			policy: &fleetdm.Policy{
+				Type:          "dynamic",
+				PatchSoftware: nil,
+				InstallSoftware: &fleetdm.PolicyAutomationSoftware{
+					Name:            "Notepad++",
+					SoftwareTitleID: 9694,
+				},
+			},
+			wantTitleIDIsSet: false,
+			wantObjectIsNull: true,
+		},
+		{
+			name: "patch policy with neither — null/null",
+			policy: &fleetdm.Policy{
+				Type: "patch",
+			},
+			wantTitleIDIsSet: false,
+			wantObjectIsNull: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			titleID, obj := mapPatchSoftware(tc.policy, &diags)
+			if diags.HasError() {
+				t.Fatalf("unexpected diagnostics: %v", diags)
+			}
+			if tc.wantTitleIDIsSet {
+				if titleID.IsNull() || titleID.IsUnknown() {
+					t.Fatalf("expected patch_software_title_id %d, got null/unknown", tc.wantTitleID)
+				}
+				if got := titleID.ValueInt64(); got != tc.wantTitleID {
+					t.Fatalf("expected patch_software_title_id %d, got %d", tc.wantTitleID, got)
+				}
+			} else if !titleID.IsNull() {
+				t.Fatalf("expected patch_software_title_id null, got %v", titleID)
+			}
+			if tc.wantObjectIsNull && !obj.IsNull() {
+				t.Fatalf("expected patch_software object null, got %v", obj)
+			}
+			if !tc.wantObjectIsNull && obj.IsNull() {
+				t.Fatal("expected patch_software object populated, got null")
+			}
+		})
 	}
 }
