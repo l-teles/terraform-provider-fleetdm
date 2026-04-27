@@ -74,10 +74,13 @@ type GetPolicyResponse struct {
 }
 
 // CreatePolicyRequest represents the request to create a policy.
+//
+// Query uses omitempty so it can be left unset for patch policies
+// (Fleet rejects `query` together with `type=patch`).
 type CreatePolicyRequest struct {
 	Name                 string   `json:"name"`
 	Description          string   `json:"description,omitempty"`
-	Query                string   `json:"query"`
+	Query                string   `json:"query,omitempty"`
 	Critical             bool     `json:"critical"`
 	Resolution           string   `json:"resolution,omitempty"`
 	Platform             string   `json:"platform,omitempty"`

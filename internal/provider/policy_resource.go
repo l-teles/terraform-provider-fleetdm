@@ -114,8 +114,12 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "A description of the policy.",
 			},
 			"query": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "The SQL query that defines the policy. The policy passes if the query returns results.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				MarkdownDescription: "The SQL query that defines the policy. The policy passes if the query returns results. Required when `type = \"dynamic\"` (the default). Must be omitted when `type = \"patch\"` — Fleet generates the query automatically for patch policies.",
 			},
 			"critical": schema.BoolAttribute{
 				Optional:            true,
@@ -297,6 +301,25 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		)
 	}
 
+	// Reject explicit empty sets — Fleet's API maps "no labels" to a null
+	// response, which we surface as SetNull. An explicit empty set in HCL
+	// would never converge with that null state. Tell users to omit the
+	// attribute (or set it to null) instead.
+	if !data.LabelsIncludeAny.IsNull() && !data.LabelsIncludeAny.IsUnknown() && len(data.LabelsIncludeAny.Elements()) == 0 {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("labels_include_any"),
+			"Empty set not allowed",
+			"To clear labels_include_any, omit the attribute or set it to null. An explicit empty set causes perpetual drift.",
+		)
+	}
+	if !data.LabelsExcludeAny.IsNull() && !data.LabelsExcludeAny.IsUnknown() && len(data.LabelsExcludeAny.Elements()) == 0 {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("labels_exclude_any"),
+			"Empty set not allowed",
+			"To clear labels_exclude_any, omit the attribute or set it to null. An explicit empty set causes perpetual drift.",
+		)
+	}
+
 	// team_id often references a not-yet-created fleetdm_fleet resource,
 	// so it can be Unknown at plan time. We can only enforce team-only
 	// constraints when team_id is fully known: Null means "definitely a
@@ -308,8 +331,14 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	// Same rationale for type: only enforce patch-vs-dynamic constraints
 	// when type is known. An Unknown type (e.g., referenced from another
 	// computed value) might still resolve to "patch" at apply time.
-	typeKnown := !data.Type.IsNull() && !data.Type.IsUnknown()
+	// Treating Null as "known dynamic" — when the user omits type, the
+	// schema default of "dynamic" kicks in at apply time, so we can
+	// enforce dynamic-policy constraints already at plan time.
+	typeKnown := !data.Type.IsUnknown()
 	isPatchType := typeKnown && data.Type.ValueString() == "patch"
+
+	queryKnown := !data.Query.IsNull() && !data.Query.IsUnknown()
+	querySet := queryKnown && data.Query.ValueString() != ""
 
 	if isPatchType {
 		if !patchTitleSet {
@@ -326,12 +355,31 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 				"team_id is required when type = \"patch\" — patch policies are team-only.",
 			)
 		}
-	} else if typeKnown && patchTitleSet {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("patch_software_title_id"),
-			"Unsupported field",
-			"patch_software_title_id is only meaningful when type = \"patch\".",
-		)
+		if querySet {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("query"),
+				"Unsupported field",
+				"query is not supported when type = \"patch\" — Fleet generates the query automatically for patch policies. Omit the attribute.",
+			)
+		}
+	} else {
+		if typeKnown && patchTitleSet {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("patch_software_title_id"),
+				"Unsupported field",
+				"patch_software_title_id is only meaningful when type = \"patch\".",
+			)
+		}
+		// For dynamic (default) policies, query is required. Only flag
+		// when query is fully known to be empty/null — Unknown values
+		// defer to the API.
+		if typeKnown && queryKnown && !querySet {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("query"),
+				"Missing required value",
+				"query is required for type = \"dynamic\" policies (the default).",
+			)
+		}
 	}
 
 	// Team-only fields. Each pair: (model attribute, schema path, "set" predicate).
@@ -370,7 +418,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 	createReq := fleetdm.CreatePolicyRequest{
 		Name:                 data.Name.ValueString(),
 		Description:          data.Description.ValueString(),
-		Query:                data.Query.ValueString(),
+		Query:                policyQueryForRequest(data),
 		Critical:             data.Critical.ValueBool(),
 		Resolution:           data.Resolution.ValueString(),
 		Platform:             platformListToString(ctx, data.Platform),
@@ -602,6 +650,17 @@ func policyNeedsAutomationFollowup(data PolicyResourceModel) bool {
 	return false
 }
 
+// policyQueryForRequest returns the query value to send in a Create or
+// Update request — empty string for patch policies so the omitempty JSON
+// tag drops the field entirely. Fleet rejects `query` together with
+// `type = "patch"` and generates the query itself for patch policies.
+func policyQueryForRequest(data PolicyResourceModel) string {
+	if data.Type.ValueString() == "patch" {
+		return ""
+	}
+	return data.Query.ValueString()
+}
+
 // buildPolicyUpdateRequest builds an UpdatePolicyRequest from the planned
 // model. Fields that the API treats as "send null to clear" use pointers
 // without omitempty (see UpdatePolicyRequest doc comment). Element
@@ -611,7 +670,7 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, dia
 	return fleetdm.UpdatePolicyRequest{
 		Name:                           data.Name.ValueString(),
 		Description:                    data.Description.ValueString(),
-		Query:                          data.Query.ValueString(),
+		Query:                          policyQueryForRequest(data),
 		Critical:                       data.Critical.ValueBool(),
 		Resolution:                     data.Resolution.ValueString(),
 		Platform:                       platformListToString(ctx, data.Platform),

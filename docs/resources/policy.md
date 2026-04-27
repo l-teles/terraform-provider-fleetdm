@@ -95,7 +95,6 @@ resource "fleetdm_policy" "conditional_access" {
 ### Required
 
 - `name` (String) The name of the policy. Must be unique.
-- `query` (String) The SQL query that defines the policy. The policy passes if the query returns results.
 
 ### Optional
 
@@ -108,6 +107,7 @@ resource "fleetdm_policy" "conditional_access" {
 - `labels_include_any` (Set of String) Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium._
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title to create a patch policy for. Required when `type = "patch"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 - `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
+- `query` (String) The SQL query that defines the policy. The policy passes if the query returns results. Required when `type = "dynamic"` (the default). Must be omitted when `type = "patch"` — Fleet generates the query automatically for patch policies.
 - `resolution` (String) Instructions for resolving a failing policy check.
 - `script_id` (Number) ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._
 - `software_title_id` (Number) ID of the software title to install if the policy fails. Set to `null` to clear the install-software automation. _Available in Fleet Premium, team policies only._

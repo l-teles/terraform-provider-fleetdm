@@ -78,7 +78,7 @@ output "compliance_rate" {
 - `patch_software` (Attributes) Echo of the patch-software target for `type = "patch"` policies. (see [below for nested schema](#nestedatt--patch_software))
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title for `type = "patch"` policies.
 - `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
-- `query` (String) The SQL query that defines the policy.
+- `query` (String) The SQL query that defines the policy. For patch policies, this is the query Fleet generates from the linked software title.
 - `resolution` (String) Instructions for resolving a failing policy.
 - `run_script` (Attributes) Echo of the run-script automation attached to this policy. (see [below for nested schema](#nestedatt--run_script))
 - `script_id` (Number) ID of the script to run if the policy fails (run-script automation).

@@ -82,7 +82,7 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 			},
 			"query": schema.StringAttribute{
 				Computed:            true,
-				MarkdownDescription: "The SQL query that defines the policy.",
+				MarkdownDescription: "The SQL query that defines the policy. For patch policies, this is the query Fleet generates from the linked software title.",
 			},
 			"critical": schema.BoolAttribute{
 				Computed:            true,

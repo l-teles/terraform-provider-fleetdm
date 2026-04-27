@@ -314,6 +314,44 @@ func TestAccPolicyResource_calendarAndCA(t *testing.T) {
 	})
 }
 
+// TestAccPolicyResource_typePatch verifies the patch-policy path:
+// type = "patch" plus patch_software_title_id, with Fleet generating
+// the query server-side. Skipped when no Fleet-maintained software
+// title is available — Fleet's --dev mode in CI doesn't seed any.
+//
+// To run locally against a Fleet instance with a Fleet-maintained app:
+//
+//	FLEETDM_TEST_PATCH_SOFTWARE_TITLE_ID=<id> TF_ACC=1 \
+//	  go test -run TestAccPolicyResource_typePatch ./internal/provider/...
+func TestAccPolicyResource_typePatch(t *testing.T) {
+	patchSoftwareTitleID := os.Getenv("FLEETDM_TEST_PATCH_SOFTWARE_TITLE_ID")
+	if patchSoftwareTitleID == "" {
+		t.Skip("skipping patch policy acceptance test; FLEETDM_TEST_PATCH_SOFTWARE_TITLE_ID is not set")
+	}
+
+	policyName := "tf-acc-test-patch-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	teamName := "tf-acc-team-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccPolicyResourceConfigPatch(policyName, teamName, patchSoftwareTitleID),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "type", "patch"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "patch_software_title_id", patchSoftwareTitleID),
+					resource.TestCheckResourceAttrSet("fleetdm_policy.test", "query"),
+				),
+			},
+			{
+				Config:   testAccPolicyResourceConfigPatch(policyName, teamName, patchSoftwareTitleID),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
 // TestAccPolicyResource_outOfBandAutomationDrift is the upgrade-behavior
 // guard. It mirrors the existing _outOfBandDeletion pattern: applies a
 // minimal config, then mutates state via a direct API call (simulating a
@@ -421,6 +459,22 @@ resource "fleetdm_policy" "test" {
   conditional_access_enabled = %[4]t
 }
 `, policyName, teamName, calendar, ca)
+}
+
+func testAccPolicyResourceConfigPatch(policyName, teamName, patchSoftwareTitleID string) string {
+	return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name        = %[2]q
+  description = "team for patch policy test"
+}
+
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = fleetdm_fleet.test.id
+  type                    = "patch"
+  patch_software_title_id = %[3]s
+}
+`, policyName, teamName, patchSoftwareTitleID)
 }
 
 func testAccPolicyResourceConfigTeamNoAutomation(policyName, teamName, scriptName string) string {

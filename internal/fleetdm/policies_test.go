@@ -719,6 +719,46 @@ func TestClient_CreateTeamPolicy_WithType(t *testing.T) {
 	}
 }
 
+// TestClient_CreateTeamPolicy_PatchOmitsQuery is the regression guard for
+// patch-policy creation: Fleet rejects `query` together with `type=patch`,
+// so an empty Query string on the request struct must serialize as an
+// omitted field (via the `omitempty` JSON tag) rather than `"query": ""`.
+func TestClient_CreateTeamPolicy_PatchOmitsQuery(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		rawBody = string(body)
+
+		teamID := 1
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreatePolicyResponse{
+			Policy: Policy{ID: 200, Name: "Patch Acrobat", TeamID: &teamID, Type: "patch"},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	patchID := 99
+	if _, err := client.CreateTeamPolicy(context.Background(), 1, CreatePolicyRequest{
+		Name:                 "Patch Acrobat",
+		Type:                 "patch",
+		PatchSoftwareTitleID: &patchID,
+		// Query intentionally left empty.
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if strings.Contains(rawBody, `"query"`) {
+		t.Errorf("expected request body to omit query for patch policy, body was: %s", rawBody)
+	}
+	if !strings.Contains(rawBody, `"type":"patch"`) {
+		t.Errorf("expected request body to include type=patch, body was: %s", rawBody)
+	}
+}
+
 // TestClient_UpdateTeamPolicy_ClearsAutomations is the regression guard for
 // the no-omitempty decision on UpdatePolicyRequest's pointer fields. Setting
 // these to nil in Go must serialize as explicit JSON null so Fleet clears
