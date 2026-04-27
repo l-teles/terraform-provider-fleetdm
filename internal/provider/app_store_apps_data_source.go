@@ -25,7 +25,7 @@ type AppStoreAppsDataSource struct {
 
 // AppStoreAppsDataSourceModel describes the data source data model.
 type AppStoreAppsDataSourceModel struct {
-	TeamID       types.Int64         `tfsdk:"team_id"`
+	TeamID       types.Int64        `tfsdk:"team_id"`
 	AppStoreApps []AppStoreAppModel `tfsdk:"app_store_apps"`
 }
 

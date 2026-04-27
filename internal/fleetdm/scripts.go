@@ -142,4 +142,3 @@ func (c *Client) DeleteScript(ctx context.Context, id int) error {
 	}
 	return nil
 }
-

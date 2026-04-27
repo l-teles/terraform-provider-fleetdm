@@ -275,4 +275,3 @@ func (d *UsersDataSource) mapUsersToList(ctx context.Context, users []fleetdm.Us
 
 	return userList
 }
-

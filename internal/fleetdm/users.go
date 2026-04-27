@@ -128,4 +128,3 @@ func (c *Client) DeleteUser(ctx context.Context, id int64) error {
 	}
 	return nil
 }
-

@@ -4,11 +4,14 @@ page_title: "fleetdm_policy Resource - fleetdm"
 subcategory: ""
 description: |-
   Manages a FleetDM policy. Policies are yes/no questions that define compliance checks for hosts.
+  Note for users upgrading from older provider versions: if you have a policy whose script_id, software_title_id, labels, or calendar/conditional-access settings were configured directly in the Fleet UI before this provider supported them, the next terraform plan after upgrading will show a diff that proposes to clear those values. Add the relevant fields to your HCL before applying if you want to preserve them.
 ---
 
 # fleetdm_policy (Resource)
 
 Manages a FleetDM policy. Policies are yes/no questions that define compliance checks for hosts.
+
+**Note for users upgrading from older provider versions:** if you have a policy whose `script_id`, `software_title_id`, labels, or calendar/conditional-access settings were configured directly in the Fleet UI before this provider supported them, the next `terraform plan` after upgrading will show a diff that proposes to clear those values. Add the relevant fields to your HCL before applying if you want to preserve them.
 
 ## Example Usage
 
@@ -20,7 +23,7 @@ resource "fleetdm_policy" "disk_encryption" {
   query       = "SELECT 1 FROM disk_encryption WHERE encrypted = 1"
   critical    = true
   resolution  = "Enable FileVault on macOS or BitLocker on Windows"
-  platform    = "darwin,windows"
+  platform    = ["darwin", "windows"]
 }
 
 # Create a policy for firewall status
@@ -29,7 +32,7 @@ resource "fleetdm_policy" "firewall_enabled" {
   description = "Verifies that the firewall is enabled"
   query       = "SELECT 1 FROM alf WHERE global_state >= 1"
   resolution  = "Enable the firewall in System Preferences > Security & Privacy > Firewall"
-  platform    = "darwin"
+  platform    = ["darwin"]
 }
 
 # Create a team-specific policy
@@ -37,7 +40,7 @@ resource "fleetdm_policy" "team_policy" {
   name        = "Team Security Check"
   description = "A team-specific security policy"
   query       = "SELECT 1 FROM os_version WHERE major >= 12"
-  team_id     = fleetdm_team.workstations.id
+  team_id     = fleetdm_fleet.workstations.id
   critical    = false
   resolution  = "Update to the latest macOS version"
 }
@@ -49,6 +52,40 @@ resource "fleetdm_policy" "password_policy" {
   query       = "SELECT 1 FROM password_policy WHERE min_length >= 12"
   critical    = true
   resolution  = "Configure password policy to require at least 12 characters"
+}
+
+# Team policy with a run-script automation: when the policy fails on a host,
+# Fleet runs the linked script to remediate.
+resource "fleetdm_policy" "auto_remediate" {
+  name      = "Gatekeeper Enabled"
+  query     = "SELECT 1 FROM gatekeeper WHERE assessments_enabled = 1;"
+  team_id   = fleetdm_fleet.workstations.id
+  platform  = ["darwin"]
+  script_id = fleetdm_script.enable_gatekeeper.id
+
+  # Restrict the policy to hosts that carry any of these labels.
+  labels_include_any = ["Macs on Sonoma"]
+}
+
+# Patch policy: tied to a Fleet-maintained software title and automatically
+# updated as new versions ship. type and patch_software_title_id are
+# immutable after create.
+resource "fleetdm_policy" "patch_acrobat" {
+  name                    = "Adobe Acrobat up to date"
+  query                   = "SELECT 1;" # Fleet replaces this on save for patch policies
+  team_id                 = fleetdm_fleet.workstations.id
+  type                    = "patch"
+  patch_software_title_id = data.fleetdm_software_title.adobe_acrobat.id
+}
+
+# Team policy with conditional access: failing hosts are blocked from SSO
+# until they remediate. Only applies to team policies.
+resource "fleetdm_policy" "conditional_access" {
+  name                       = "Disk encryption required for SSO"
+  query                      = "SELECT 1 FROM disk_encryption WHERE encrypted = 1;"
+  team_id                    = fleetdm_fleet.workstations.id
+  conditional_access_enabled = true
+  calendar_events_enabled    = true
 }
 ```
 
@@ -62,20 +99,63 @@ resource "fleetdm_policy" "password_policy" {
 
 ### Optional
 
-- `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI.
+- `calendar_events_enabled` (Boolean) Whether to trigger calendar events when the policy is failing. Only applies to team policies; setting this is a no-op on global policies. _Available in Fleet Premium._
+- `conditional_access_bypass_enabled` (Boolean) Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. _Available in Fleet Premium._
+- `conditional_access_enabled` (Boolean) Whether to block single sign-on for end users whose hosts fail this policy. Only applies to team policies. _Available in Fleet Premium._
+- `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._
 - `description` (String) A description of the policy.
+- `labels_exclude_any` (List of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. _Available in Fleet Premium._
+- `labels_include_any` (List of String) Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. _Available in Fleet Premium._
+- `patch_software_title_id` (Number) ID of the Fleet-maintained software title to create a patch policy for. Required when `type = "patch"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 - `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
 - `resolution` (String) Instructions for resolving a failing policy check.
-- `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global.
+- `script_id` (Number) ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._
+- `software_title_id` (Number) ID of the software title to install if the policy fails. Set to `null` to clear the install-software automation. _Available in Fleet Premium, team policies only._
+- `team_id` (Number) The ID of the team this policy belongs to. If not specified, the policy is global. The team-only fields below (`type`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.
+- `type` (String) The type of the policy. One of `dynamic` (classic policy with an editable query) or `patch` (tied to `patch_software_title_id` and automatically updated to include the newest Fleet-maintained app version). Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 
 ### Read-Only
 
 - `author_email` (String) The email of the user who created the policy.
 - `author_id` (Number) The ID of the user who created the policy.
 - `author_name` (String) The name of the user who created the policy.
+- `created_at` (String) Timestamp when the policy was created.
 - `failing_host_count` (Number) The number of hosts failing this policy.
+- `fleet_maintained` (Boolean) Whether the policy is maintained by Fleet (Fleet-maintained policies cannot be edited).
+- `host_count_updated_at` (String) Timestamp when the passing/failing host counts were last refreshed.
 - `id` (Number) The unique identifier of the policy.
+- `install_software` (Attributes) Echo of the install-software automation attached to this policy. Populated by the Fleet API; mirror of `software_title_id` with the human-readable software name. (see [below for nested schema](#nestedatt--install_software))
 - `passing_host_count` (Number) The number of hosts passing this policy.
+- `patch_software` (Attributes) Echo of the patch-software target for `type = "patch"` policies. Populated by the Fleet API. (see [below for nested schema](#nestedatt--patch_software))
+- `run_script` (Attributes) Echo of the run-script automation attached to this policy. Populated by the Fleet API; mirror of `script_id` with the human-readable script name. (see [below for nested schema](#nestedatt--run_script))
+- `updated_at` (String) Timestamp when the policy was last updated.
+
+<a id="nestedatt--install_software"></a>
+### Nested Schema for `install_software`
+
+Read-Only:
+
+- `name` (String)
+- `software_title_id` (Number)
+
+
+<a id="nestedatt--patch_software"></a>
+### Nested Schema for `patch_software`
+
+Read-Only:
+
+- `display_name` (String)
+- `name` (String)
+- `software_title_id` (Number)
+
+
+<a id="nestedatt--run_script"></a>
+### Nested Schema for `run_script`
+
+Read-Only:
+
+- `id` (Number)
+- `name` (String)
 
 ## Import
 

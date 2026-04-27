@@ -318,4 +318,3 @@ func TestClient_GetScriptContent_Error(t *testing.T) {
 		t.Fatal("expected error for 404 response, got nil")
 	}
 }
-

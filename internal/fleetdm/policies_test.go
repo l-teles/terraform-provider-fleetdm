@@ -3,8 +3,10 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -644,5 +646,201 @@ func TestClient_ListPolicies_Team(t *testing.T) {
 	}
 	if len(policies) != 1 {
 		t.Errorf("expected 1 policy, got: %d", len(policies))
+	}
+}
+
+// TestClient_CreateTeamPolicy_WithType verifies that the new fleet-only
+// fields (type, patch_software_title_id, software_title_id, script_id,
+// labels_*) round-trip through the Create endpoint.
+func TestClient_CreateTeamPolicy_WithType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CreatePolicyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		if req.Type != "patch" {
+			t.Errorf("expected type 'patch', got: %q", req.Type)
+		}
+		if req.PatchSoftwareTitleID == nil || *req.PatchSoftwareTitleID != 99 {
+			t.Errorf("expected patch_software_title_id 99, got: %v", req.PatchSoftwareTitleID)
+		}
+		if req.ScriptID == nil || *req.ScriptID != 7 {
+			t.Errorf("expected script_id 7, got: %v", req.ScriptID)
+		}
+		if len(req.LabelsIncludeAny) != 1 || req.LabelsIncludeAny[0] != "Macs on Sonoma" {
+			t.Errorf("expected labels_include_any [Macs on Sonoma], got: %v", req.LabelsIncludeAny)
+		}
+
+		teamID := 1
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreatePolicyResponse{
+			Policy: Policy{
+				ID:               100,
+				Name:             req.Name,
+				Query:            req.Query,
+				Type:             req.Type,
+				LabelsIncludeAny: req.LabelsIncludeAny,
+				TeamID:           &teamID,
+				RunScript:        &PolicyAutomationScript{Name: "do-thing", ID: *req.ScriptID},
+				PatchSoftware:    &PolicyAutomationPatchSoftware{Name: "Adobe Acrobat.app", SoftwareTitleID: *req.PatchSoftwareTitleID},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	patchID := 99
+	scriptID := 7
+	policy, err := client.CreateTeamPolicy(context.Background(), 1, CreatePolicyRequest{
+		Name:                 "Patch Acrobat",
+		Query:                "SELECT 1",
+		Type:                 "patch",
+		PatchSoftwareTitleID: &patchID,
+		ScriptID:             &scriptID,
+		LabelsIncludeAny:     []string{"Macs on Sonoma"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if policy.Type != "patch" {
+		t.Errorf("expected response type 'patch', got: %q", policy.Type)
+	}
+	if policy.PatchSoftware == nil || policy.PatchSoftware.SoftwareTitleID != 99 {
+		t.Errorf("expected patch_software echo with id 99, got: %+v", policy.PatchSoftware)
+	}
+	if policy.RunScript == nil || policy.RunScript.ID != 7 {
+		t.Errorf("expected run_script echo with id 7, got: %+v", policy.RunScript)
+	}
+}
+
+// TestClient_UpdateTeamPolicy_ClearsAutomations is the regression guard for
+// the no-omitempty decision on UpdatePolicyRequest's pointer fields. Setting
+// these to nil in Go must serialize as explicit JSON null so Fleet clears
+// the automation. omitempty would suppress the null and silently leave the
+// prior value in place.
+func TestClient_UpdateTeamPolicy_ClearsAutomations(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		rawBody = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: Policy{ID: 5, Name: "Cleared"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:                           "Cleared",
+		Query:                          "SELECT 1",
+		SoftwareTitleID:                nil,
+		ScriptID:                       nil,
+		CalendarEventsEnabled:          nil,
+		ConditionalAccessEnabled:       nil,
+		ConditionalAccessBypassEnabled: nil,
+		LabelsIncludeAny:               nil,
+		LabelsExcludeAny:               nil,
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	for _, want := range []string{
+		`"software_title_id":null`,
+		`"script_id":null`,
+		`"calendar_events_enabled":null`,
+		`"conditional_access_enabled":null`,
+		`"conditional_access_bypass_enabled":null`,
+		`"labels_include_any":null`,
+		`"labels_exclude_any":null`,
+	} {
+		if !strings.Contains(rawBody, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
+		}
+	}
+}
+
+// TestClient_GetTeamPolicy_FullResponse decodes a fixture that mirrors the
+// Get fleet policy example in the upstream REST API docs (rest-api.md
+// lines 8362-8401) and asserts every new field flows through.
+func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
+	body := `{
+	  "policy": {
+	    "id": 43,
+	    "name": "Gatekeeper enabled",
+	    "query": "SELECT 1 FROM gatekeeper WHERE assessments_enabled = 1;",
+	    "description": "Checks if gatekeeper is enabled on macOS devices",
+	    "critical": true,
+	    "type": "dynamic",
+	    "author_id": 42,
+	    "author_name": "John",
+	    "author_email": "john@example.com",
+	    "team_id": 1,
+	    "resolution": "Resolution steps",
+	    "platform": "darwin",
+	    "created_at": "2021-12-16T14:37:37Z",
+	    "updated_at": "2021-12-16T16:39:00Z",
+	    "passing_host_count": 0,
+	    "failing_host_count": 0,
+	    "host_count_updated_at": null,
+	    "calendar_events_enabled": true,
+	    "conditional_access_enabled": false,
+	    "fleet_maintained": false,
+	    "labels_include_any": ["Macs on Sonoma"],
+	    "patch_software": {
+	      "display_name": "",
+	      "name": "Adobe Acrobat.app",
+	      "software_title_id": 1234
+	    },
+	    "install_software": {
+	      "name": "Adobe Acrobat.app",
+	      "software_title_id": 1234
+	    },
+	    "run_script": {
+	      "name": "Enable gatekeeper",
+	      "id": 1337
+	    }
+	  }
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	policy, err := client.GetTeamPolicy(context.Background(), 1, 43)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if policy.Type != "dynamic" {
+		t.Errorf("expected type 'dynamic', got: %q", policy.Type)
+	}
+	if !policy.CalendarEventsEnabled {
+		t.Error("expected calendar_events_enabled true")
+	}
+	if policy.ConditionalAccessEnabled {
+		t.Error("expected conditional_access_enabled false")
+	}
+	if policy.FleetMaintained {
+		t.Error("expected fleet_maintained false")
+	}
+	if len(policy.LabelsIncludeAny) != 1 || policy.LabelsIncludeAny[0] != "Macs on Sonoma" {
+		t.Errorf("expected labels_include_any [Macs on Sonoma], got: %v", policy.LabelsIncludeAny)
+	}
+	if policy.InstallSoftware == nil || policy.InstallSoftware.SoftwareTitleID != 1234 {
+		t.Errorf("expected install_software.software_title_id 1234, got: %+v", policy.InstallSoftware)
+	}
+	if policy.RunScript == nil || policy.RunScript.ID != 1337 {
+		t.Errorf("expected run_script.id 1337, got: %+v", policy.RunScript)
+	}
+	if policy.PatchSoftware == nil || policy.PatchSoftware.SoftwareTitleID != 1234 {
+		t.Errorf("expected patch_software.software_title_id 1234, got: %+v", policy.PatchSoftware)
 	}
 }

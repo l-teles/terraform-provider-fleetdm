@@ -209,7 +209,7 @@ func (p *FleetDMProvider) Configure(ctx context.Context, req provider.ConfigureR
 func (p *FleetDMProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewFleetResource,
-		NewTeamResource,  // deprecated alias for NewFleetResource
+		NewTeamResource, // deprecated alias for NewFleetResource
 		NewLabelResource,
 		NewReportResource,
 		NewQueryResource, // deprecated alias for NewReportResource
@@ -229,13 +229,13 @@ func (p *FleetDMProvider) Resources(ctx context.Context) []func() resource.Resou
 func (p *FleetDMProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewFleetDataSource,
-		NewTeamDataSource,    // deprecated alias for NewFleetDataSource
+		NewTeamDataSource, // deprecated alias for NewFleetDataSource
 		NewFleetsDataSource,
-		NewTeamsDataSource,   // deprecated alias for NewFleetsDataSource
+		NewTeamsDataSource, // deprecated alias for NewFleetsDataSource
 		NewLabelDataSource,
 		NewLabelsDataSource,
 		NewReportDataSource,
-		NewQueryDataSource,   // deprecated alias for NewReportDataSource
+		NewQueryDataSource, // deprecated alias for NewReportDataSource
 		NewReportsDataSource,
 		NewQueriesDataSource, // deprecated alias for NewReportsDataSource
 		NewPolicyDataSource,

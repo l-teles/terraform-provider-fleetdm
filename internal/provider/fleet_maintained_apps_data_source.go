@@ -25,7 +25,7 @@ type FleetMaintainedAppsDataSource struct {
 
 // FleetMaintainedAppsDataSourceModel describes the data source data model.
 type FleetMaintainedAppsDataSourceModel struct {
-	TeamID              types.Int64                  `tfsdk:"team_id"`
+	TeamID              types.Int64               `tfsdk:"team_id"`
 	FleetMaintainedApps []FleetMaintainedAppModel `tfsdk:"fleet_maintained_apps"`
 }
 
