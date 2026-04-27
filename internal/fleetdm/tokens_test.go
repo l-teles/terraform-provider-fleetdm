@@ -106,4 +106,3 @@ func TestListVPPTokens(t *testing.T) {
 		t.Errorf("Expected location 'EU', got '%s'", tokens[1].Location)
 	}
 }
-

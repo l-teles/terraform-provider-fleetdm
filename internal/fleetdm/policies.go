@@ -5,24 +5,61 @@ import (
 	"fmt"
 )
 
+// PolicyAutomationSoftware echoes the install_software automation attached to a policy.
+type PolicyAutomationSoftware struct {
+	Name            string `json:"name,omitempty"`
+	SoftwareTitleID int    `json:"software_title_id"`
+}
+
+// PolicyAutomationPatchSoftware echoes the patch_software target of a patch policy.
+type PolicyAutomationPatchSoftware struct {
+	Name            string `json:"name,omitempty"`
+	DisplayName     string `json:"display_name,omitempty"`
+	SoftwareTitleID int    `json:"software_title_id"`
+}
+
+// PolicyAutomationScript echoes the run_script automation attached to a policy.
+type PolicyAutomationScript struct {
+	Name string `json:"name,omitempty"`
+	ID   int    `json:"id"`
+}
+
+// PolicyLabel is the per-label echo Fleet returns inside labels_include_any
+// and labels_exclude_any on policy responses. Note the request side uses
+// `[]string` of label names — the API is asymmetric here, so this struct
+// is response-only.
+type PolicyLabel struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 // Policy represents a FleetDM policy.
 type Policy struct {
-	ID                    int    `json:"id,omitempty"`
-	Name                  string `json:"name"`
-	Description           string `json:"description,omitempty"`
-	Query                 string `json:"query"`
-	Critical              bool   `json:"critical"`
-	Resolution            string `json:"resolution,omitempty"`
-	Platform              string `json:"platform,omitempty"`
-	TeamID                *int   `json:"team_id,omitempty"`
-	AuthorID              int    `json:"author_id,omitempty"`
-	AuthorName            string `json:"author_name,omitempty"`
-	AuthorEmail           string `json:"author_email,omitempty"`
-	PassingHostCount      int    `json:"passing_host_count,omitempty"`
-	FailingHostCount      int    `json:"failing_host_count,omitempty"`
-	CalendarEventsEnabled bool   `json:"calendar_events_enabled"`
-	CreatedAt             string `json:"created_at,omitempty"`
-	UpdatedAt             string `json:"updated_at,omitempty"`
+	ID                       int                            `json:"id,omitempty"`
+	Name                     string                         `json:"name"`
+	Description              string                         `json:"description,omitempty"`
+	Query                    string                         `json:"query"`
+	Critical                 bool                           `json:"critical"`
+	Resolution               string                         `json:"resolution,omitempty"`
+	Platform                 string                         `json:"platform,omitempty"`
+	TeamID                   *int                           `json:"team_id,omitempty"`
+	AuthorID                 int                            `json:"author_id,omitempty"`
+	AuthorName               string                         `json:"author_name,omitempty"`
+	AuthorEmail              string                         `json:"author_email,omitempty"`
+	PassingHostCount         int                            `json:"passing_host_count,omitempty"`
+	FailingHostCount         int                            `json:"failing_host_count,omitempty"`
+	Type                     string                         `json:"type,omitempty"`
+	LabelsIncludeAny         []PolicyLabel                  `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny         []PolicyLabel                  `json:"labels_exclude_any,omitempty"`
+	CalendarEventsEnabled    bool                           `json:"calendar_events_enabled"`
+	ConditionalAccessEnabled bool                           `json:"conditional_access_enabled"`
+	FleetMaintained          bool                           `json:"fleet_maintained"`
+	HostCountUpdatedAt       *string                        `json:"host_count_updated_at"`
+	CreatedAt                string                         `json:"created_at,omitempty"`
+	UpdatedAt                string                         `json:"updated_at,omitempty"`
+	InstallSoftware          *PolicyAutomationSoftware      `json:"install_software,omitempty"`
+	RunScript                *PolicyAutomationScript        `json:"run_script,omitempty"`
+	PatchSoftware            *PolicyAutomationPatchSoftware `json:"patch_software,omitempty"`
 }
 
 // ListPoliciesResponse represents the response from the list policies endpoint.
@@ -37,13 +74,22 @@ type GetPolicyResponse struct {
 }
 
 // CreatePolicyRequest represents the request to create a policy.
+//
+// Query uses omitempty so it can be left unset for patch policies
+// (Fleet rejects `query` together with `type=patch`).
 type CreatePolicyRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Query       string `json:"query"`
-	Critical    bool   `json:"critical"`
-	Resolution  string `json:"resolution,omitempty"`
-	Platform    string `json:"platform,omitempty"`
+	Name                 string   `json:"name"`
+	Description          string   `json:"description,omitempty"`
+	Query                string   `json:"query,omitempty"`
+	Critical             bool     `json:"critical"`
+	Resolution           string   `json:"resolution,omitempty"`
+	Platform             string   `json:"platform,omitempty"`
+	Type                 string   `json:"type,omitempty"`
+	PatchSoftwareTitleID *int     `json:"patch_software_title_id,omitempty"`
+	SoftwareTitleID      *int     `json:"software_title_id,omitempty"`
+	ScriptID             *int     `json:"script_id,omitempty"`
+	LabelsIncludeAny     []string `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny     []string `json:"labels_exclude_any,omitempty"`
 }
 
 // CreatePolicyResponse represents the response from the create policy endpoint.
@@ -52,13 +98,39 @@ type CreatePolicyResponse struct {
 }
 
 // UpdatePolicyRequest represents the request to update a policy.
+//
+// Fields here intentionally drop `omitempty` and use pointers (or, for
+// labels, slices) so the wire format can faithfully express the user's
+// intent. Two distinct conventions apply per Fleet's API:
+//
+//   - Pointer fields (script_id, software_title_id, calendar_events_enabled,
+//     conditional_access_enabled, conditional_access_bypass_enabled): a Go
+//     `nil` serializes as JSON `null`, which Fleet treats as "clear /
+//     reset to default". A non-nil pointer is sent as the value.
+//
+//   - Label slice fields (labels_include_any, labels_exclude_any): a `nil`
+//     slice serializes as JSON `null`, which Fleet treats as "no change"
+//     (preserve the existing labels). An empty slice (`[]string{}`)
+//     serializes as JSON `[]`, which Fleet treats as "clear all labels".
+//     Use the empty slice to clear; never use nil if the user has asked
+//     for labels to be removed.
+//
+// `omitempty` would suppress null/empty values entirely, breaking both
+// conventions.
 type UpdatePolicyRequest struct {
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	Query       string `json:"query,omitempty"`
-	Critical    bool   `json:"critical"`
-	Resolution  string `json:"resolution,omitempty"`
-	Platform    string `json:"platform,omitempty"`
+	Name                           string   `json:"name,omitempty"`
+	Description                    string   `json:"description,omitempty"`
+	Query                          string   `json:"query,omitempty"`
+	Critical                       bool     `json:"critical"`
+	Resolution                     string   `json:"resolution,omitempty"`
+	Platform                       string   `json:"platform,omitempty"`
+	SoftwareTitleID                *int     `json:"software_title_id"`
+	ScriptID                       *int     `json:"script_id"`
+	CalendarEventsEnabled          *bool    `json:"calendar_events_enabled"`
+	ConditionalAccessEnabled       *bool    `json:"conditional_access_enabled"`
+	ConditionalAccessBypassEnabled *bool    `json:"conditional_access_bypass_enabled"`
+	LabelsIncludeAny               []string `json:"labels_include_any"`
+	LabelsExcludeAny               []string `json:"labels_exclude_any"`
 }
 
 // UpdatePolicyResponse represents the response from the update policy endpoint.
@@ -255,4 +327,3 @@ func (c *Client) ListPolicies(ctx context.Context, teamID *int) ([]Policy, error
 	}
 	return c.ListGlobalPolicies(ctx)
 }
-

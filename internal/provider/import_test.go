@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 // TestAccLabelResource_import tests importing a label resource.
@@ -105,6 +107,56 @@ func TestAccPolicyResource_import(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccPolicyResource_importTeam tests the "<team_id>:<policy_id>"
+// import format for team-scoped policies. Without the team_id prefix,
+// Read would call the global-policy endpoint and 404.
+func TestAccPolicyResource_importTeam(t *testing.T) {
+	policyName := "tf-acc-import-team-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	teamName := "tf-acc-team-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + testAccPolicyResourceConfig_forImportTeam(policyName, teamName),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.import_test", "name", policyName),
+					resource.TestCheckResourceAttrSet("fleetdm_policy.import_test", "id"),
+					resource.TestCheckResourceAttrSet("fleetdm_policy.import_test", "team_id"),
+				),
+			},
+			{
+				ResourceName: "fleetdm_policy.import_test",
+				ImportState:  true,
+				ImportStateIdFunc: func(state *terraform.State) (string, error) {
+					rs, ok := state.RootModule().Resources["fleetdm_policy.import_test"]
+					if !ok {
+						return "", fmt.Errorf("resource fleetdm_policy.import_test not found in state")
+					}
+					return rs.Primary.Attributes["team_id"] + ":" + rs.Primary.Attributes["id"], nil
+				},
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func testAccPolicyResourceConfig_forImportTeam(policyName, teamName string) string {
+	return fmt.Sprintf(`
+resource "fleetdm_fleet" "import_test_team" {
+  name        = %[2]q
+  description = "team for policy import test"
+}
+
+resource "fleetdm_policy" "import_test" {
+  name    = %[1]q
+  query   = "SELECT 1;"
+  team_id = fleetdm_fleet.import_test_team.id
+}
+`, policyName, teamName)
 }
 
 func testAccPolicyResourceConfig_forImport(name string) string {

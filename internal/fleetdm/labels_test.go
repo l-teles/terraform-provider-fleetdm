@@ -224,4 +224,3 @@ func TestClient_DeleteLabel(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
-

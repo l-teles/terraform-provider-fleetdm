@@ -107,4 +107,3 @@ func (c *Client) DeleteLabel(ctx context.Context, id int) error {
 	}
 	return nil
 }
-

@@ -179,4 +179,3 @@ func (ds *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &config)...)
 }
-

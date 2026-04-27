@@ -347,4 +347,3 @@ func (c *Client) GetHostByIdentifier(ctx context.Context, identifier string) (*H
 
 	return &response.Host, nil
 }
-

@@ -39,3 +39,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# PR drafts (kept locally as a body source for `gh pr create --body-file`)
+PR_DESCRIPTION.md

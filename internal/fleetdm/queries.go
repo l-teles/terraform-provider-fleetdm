@@ -16,8 +16,8 @@ type Query struct {
 	ID                 int    `json:"id,omitempty"`
 	Name               string `json:"name"`
 	Description        string `json:"description,omitempty"`
-	Report             string `json:"report,omitempty"`  // new name for the SQL field
-	Query              string `json:"query,omitempty"`   // legacy name for the SQL field
+	Report             string `json:"report,omitempty"` // new name for the SQL field
+	Query              string `json:"query,omitempty"`  // legacy name for the SQL field
 	Platform           string `json:"platform,omitempty"`
 	MinOsqueryVersion  string `json:"min_osquery_version,omitempty"`
 	Interval           int    `json:"interval,omitempty"`

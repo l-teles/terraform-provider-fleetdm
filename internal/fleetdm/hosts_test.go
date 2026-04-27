@@ -248,4 +248,3 @@ func TestGetHostByIdentifier(t *testing.T) {
 		t.Errorf("expected serial C02ABC123456, got %s", host.HardwareSerial)
 	}
 }
-

@@ -62,11 +62,53 @@ output "compliance_rate" {
 - `author_email` (String) The email of the user who created the policy.
 - `author_id` (Number) The ID of the user who created the policy.
 - `author_name` (String) The name of the user who created the policy.
+- `calendar_events_enabled` (Boolean) Whether calendar events are triggered when the policy fails.
+- `conditional_access_enabled` (Boolean) Whether conditional access (SSO blocking) is enabled for failing hosts.
+- `created_at` (String) Timestamp when the policy was created.
 - `critical` (Boolean) Whether the policy is critical.
 - `description` (String) A description of the policy.
 - `failing_host_count` (Number) The number of hosts failing this policy.
+- `fleet_maintained` (Boolean) Whether the policy is maintained by Fleet.
+- `host_count_updated_at` (String) Timestamp when the passing/failing host counts were last refreshed.
+- `install_software` (Attributes) Echo of the install-software automation attached to this policy. (see [below for nested schema](#nestedatt--install_software))
+- `labels_exclude_any` (Set of String) Labels whose hosts are excluded from this policy (any-of semantics).
+- `labels_include_any` (Set of String) Labels whose hosts are targeted by this policy (any-of semantics).
 - `name` (String) The name of the policy.
 - `passing_host_count` (Number) The number of hosts passing this policy.
+- `patch_software` (Attributes) Echo of the patch-software target for `type = "patch"` policies. (see [below for nested schema](#nestedatt--patch_software))
+- `patch_software_title_id` (Number) ID of the Fleet-maintained software title for `type = "patch"` policies.
 - `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
-- `query` (String) The SQL query that defines the policy.
+- `query` (String) The SQL query that defines the policy. For patch policies, this is the query Fleet generates from the linked software title.
 - `resolution` (String) Instructions for resolving a failing policy.
+- `run_script` (Attributes) Echo of the run-script automation attached to this policy. (see [below for nested schema](#nestedatt--run_script))
+- `script_id` (Number) ID of the script to run if the policy fails (run-script automation).
+- `software_title_id` (Number) ID of the software title to install if the policy fails (install-software automation).
+- `type` (String) The type of the policy (`dynamic` or `patch`).
+- `updated_at` (String) Timestamp when the policy was last updated.
+
+<a id="nestedatt--install_software"></a>
+### Nested Schema for `install_software`
+
+Read-Only:
+
+- `name` (String)
+- `software_title_id` (Number)
+
+
+<a id="nestedatt--patch_software"></a>
+### Nested Schema for `patch_software`
+
+Read-Only:
+
+- `display_name` (String)
+- `name` (String)
+- `software_title_id` (Number)
+
+
+<a id="nestedatt--run_script"></a>
+### Nested Schema for `run_script`
+
+Read-Only:
+
+- `id` (Number)
+- `name` (String)

@@ -3,8 +3,10 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -644,5 +646,290 @@ func TestClient_ListPolicies_Team(t *testing.T) {
 	}
 	if len(policies) != 1 {
 		t.Errorf("expected 1 policy, got: %d", len(policies))
+	}
+}
+
+// TestClient_CreateTeamPolicy_WithType verifies that the new fleet-only
+// fields (type, patch_software_title_id, software_title_id, script_id,
+// labels_*) round-trip through the Create endpoint.
+func TestClient_CreateTeamPolicy_WithType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CreatePolicyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		if req.Type != "patch" {
+			t.Errorf("expected type 'patch', got: %q", req.Type)
+		}
+		if req.PatchSoftwareTitleID == nil || *req.PatchSoftwareTitleID != 99 {
+			t.Errorf("expected patch_software_title_id 99, got: %v", req.PatchSoftwareTitleID)
+		}
+		if req.ScriptID == nil || *req.ScriptID != 7 {
+			t.Errorf("expected script_id 7, got: %v", req.ScriptID)
+		}
+		if len(req.LabelsIncludeAny) != 1 || req.LabelsIncludeAny[0] != "Macs on Sonoma" {
+			t.Errorf("expected labels_include_any [Macs on Sonoma], got: %v", req.LabelsIncludeAny)
+		}
+
+		teamID := 1
+		echoLabels := make([]PolicyLabel, 0, len(req.LabelsIncludeAny))
+		for i, n := range req.LabelsIncludeAny {
+			echoLabels = append(echoLabels, PolicyLabel{ID: i + 1, Name: n})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreatePolicyResponse{
+			Policy: Policy{
+				ID:               100,
+				Name:             req.Name,
+				Query:            req.Query,
+				Type:             req.Type,
+				LabelsIncludeAny: echoLabels,
+				TeamID:           &teamID,
+				RunScript:        &PolicyAutomationScript{Name: "do-thing", ID: *req.ScriptID},
+				PatchSoftware:    &PolicyAutomationPatchSoftware{Name: "Adobe Acrobat.app", SoftwareTitleID: *req.PatchSoftwareTitleID},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	patchID := 99
+	scriptID := 7
+	// Query intentionally left empty — Fleet rejects query together with
+	// type=patch. The dedicated TestClient_CreateTeamPolicy_PatchOmitsQuery
+	// test asserts the wire-level omission.
+	policy, err := client.CreateTeamPolicy(context.Background(), 1, CreatePolicyRequest{
+		Name:                 "Patch Acrobat",
+		Type:                 "patch",
+		PatchSoftwareTitleID: &patchID,
+		ScriptID:             &scriptID,
+		LabelsIncludeAny:     []string{"Macs on Sonoma"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if policy.Type != "patch" {
+		t.Errorf("expected response type 'patch', got: %q", policy.Type)
+	}
+	if policy.PatchSoftware == nil || policy.PatchSoftware.SoftwareTitleID != 99 {
+		t.Errorf("expected patch_software echo with id 99, got: %+v", policy.PatchSoftware)
+	}
+	if policy.RunScript == nil || policy.RunScript.ID != 7 {
+		t.Errorf("expected run_script echo with id 7, got: %+v", policy.RunScript)
+	}
+}
+
+// TestClient_CreateTeamPolicy_PatchOmitsQuery is the regression guard for
+// patch-policy creation: Fleet rejects `query` together with `type=patch`,
+// so an empty Query string on the request struct must serialize as an
+// omitted field (via the `omitempty` JSON tag) rather than `"query": ""`.
+func TestClient_CreateTeamPolicy_PatchOmitsQuery(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		rawBody = string(body)
+
+		teamID := 1
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreatePolicyResponse{
+			Policy: Policy{ID: 200, Name: "Patch Acrobat", TeamID: &teamID, Type: "patch"},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	patchID := 99
+	if _, err := client.CreateTeamPolicy(context.Background(), 1, CreatePolicyRequest{
+		Name:                 "Patch Acrobat",
+		Type:                 "patch",
+		PatchSoftwareTitleID: &patchID,
+		// Query intentionally left empty.
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if strings.Contains(rawBody, `"query"`) {
+		t.Errorf("expected request body to omit query for patch policy, body was: %s", rawBody)
+	}
+	if !strings.Contains(rawBody, `"type":"patch"`) {
+		t.Errorf("expected request body to include type=patch, body was: %s", rawBody)
+	}
+}
+
+// TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear is the
+// regression guard for the no-omitempty decision on the *pointer* fields
+// of UpdatePolicyRequest (script_id, software_title_id, the calendar/CA
+// bools). Fleet treats JSON null on these fields as "clear / reset to
+// default"; omitempty would suppress the null and silently leave the
+// previous server-side value in place. Label slice fields use a different
+// convention (null = no change, [] = clear) and are tested separately.
+func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read request body: %v", err)
+		}
+		rawBody = string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: Policy{ID: 5, Name: "Cleared"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:                           "Cleared",
+		Query:                          "SELECT 1",
+		SoftwareTitleID:                nil,
+		ScriptID:                       nil,
+		CalendarEventsEnabled:          nil,
+		ConditionalAccessEnabled:       nil,
+		ConditionalAccessBypassEnabled: nil,
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	for _, want := range []string{
+		`"software_title_id":null`,
+		`"script_id":null`,
+		`"calendar_events_enabled":null`,
+		`"conditional_access_enabled":null`,
+		`"conditional_access_bypass_enabled":null`,
+	} {
+		if !strings.Contains(rawBody, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
+		}
+	}
+}
+
+// TestClient_UpdateTeamPolicy_LabelClearVsNoChange documents and asserts
+// the asymmetric label semantics: a nil slice serializes as JSON null
+// (Fleet treats this as "no change" — keep existing labels), while an
+// empty slice serializes as JSON [] (Fleet clears the labels). The
+// provider relies on this distinction to preserve UI-set labels when a
+// label set is Unknown at plan time, and to actually clear labels when
+// the user removes them from HCL.
+func TestClient_UpdateTeamPolicy_LabelClearVsNoChange(t *testing.T) {
+	captured := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: Policy{ID: 5, Name: "ok"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	// nil slice => null (no change semantics).
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:             "ok",
+		LabelsIncludeAny: nil,
+	}); err != nil {
+		t.Fatalf("nil-labels update failed: %v", err)
+	}
+	body := <-captured
+	if !strings.Contains(body, `"labels_include_any":null`) {
+		t.Errorf("nil slice should serialize as JSON null; got: %s", body)
+	}
+
+	// Empty slice => [] (clear semantics).
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:             "ok",
+		LabelsIncludeAny: []string{},
+	}); err != nil {
+		t.Fatalf("empty-labels update failed: %v", err)
+	}
+	body = <-captured
+	if !strings.Contains(body, `"labels_include_any":[]`) {
+		t.Errorf("empty slice should serialize as JSON []; got: %s", body)
+	}
+}
+
+// TestClient_GetTeamPolicy_FullResponse decodes a fixture that mirrors the
+// Get fleet policy example in the upstream REST API docs (rest-api.md
+// lines 8362-8401) and asserts every new field flows through.
+func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
+	body := `{
+	  "policy": {
+	    "id": 43,
+	    "name": "Gatekeeper enabled",
+	    "query": "SELECT 1 FROM gatekeeper WHERE assessments_enabled = 1;",
+	    "description": "Checks if gatekeeper is enabled on macOS devices",
+	    "critical": true,
+	    "type": "dynamic",
+	    "author_id": 42,
+	    "author_name": "John",
+	    "author_email": "john@example.com",
+	    "team_id": 1,
+	    "resolution": "Resolution steps",
+	    "platform": "darwin",
+	    "created_at": "2021-12-16T14:37:37Z",
+	    "updated_at": "2021-12-16T16:39:00Z",
+	    "passing_host_count": 0,
+	    "failing_host_count": 0,
+	    "host_count_updated_at": null,
+	    "calendar_events_enabled": true,
+	    "conditional_access_enabled": false,
+	    "fleet_maintained": false,
+	    "labels_include_any": [{"id": 11, "name": "Macs on Sonoma"}],
+	    "patch_software": {
+	      "display_name": "",
+	      "name": "Adobe Acrobat.app",
+	      "software_title_id": 1234
+	    },
+	    "install_software": {
+	      "name": "Adobe Acrobat.app",
+	      "software_title_id": 1234
+	    },
+	    "run_script": {
+	      "name": "Enable gatekeeper",
+	      "id": 1337
+	    }
+	  }
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	policy, err := client.GetTeamPolicy(context.Background(), 1, 43)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if policy.Type != "dynamic" {
+		t.Errorf("expected type 'dynamic', got: %q", policy.Type)
+	}
+	if !policy.CalendarEventsEnabled {
+		t.Error("expected calendar_events_enabled true")
+	}
+	if policy.ConditionalAccessEnabled {
+		t.Error("expected conditional_access_enabled false")
+	}
+	if policy.FleetMaintained {
+		t.Error("expected fleet_maintained false")
+	}
+	if len(policy.LabelsIncludeAny) != 1 || policy.LabelsIncludeAny[0].Name != "Macs on Sonoma" || policy.LabelsIncludeAny[0].ID != 11 {
+		t.Errorf("expected labels_include_any [{id:11,name:\"Macs on Sonoma\"}], got: %+v", policy.LabelsIncludeAny)
+	}
+	if policy.InstallSoftware == nil || policy.InstallSoftware.SoftwareTitleID != 1234 {
+		t.Errorf("expected install_software.software_title_id 1234, got: %+v", policy.InstallSoftware)
+	}
+	if policy.RunScript == nil || policy.RunScript.ID != 1337 {
+		t.Errorf("expected run_script.id 1337, got: %+v", policy.RunScript)
+	}
+	if policy.PatchSoftware == nil || policy.PatchSoftware.SoftwareTitleID != 1234 {
+		t.Errorf("expected patch_software.software_title_id 1234, got: %+v", policy.PatchSoftware)
 	}
 }
