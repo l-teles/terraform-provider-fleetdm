@@ -277,12 +277,12 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 
 	if !data.Type.IsNull() && !data.Type.IsUnknown() {
 		switch data.Type.ValueString() {
-		case "", "dynamic", "patch":
+		case "dynamic", "patch":
 		default:
 			resp.Diagnostics.AddAttributeError(
 				path.Root("type"),
 				"Invalid type",
-				fmt.Sprintf("type must be one of \"dynamic\" or \"patch\", got: %q", data.Type.ValueString()),
+				fmt.Sprintf("type must be one of \"dynamic\" or \"patch\", got: %q. Omit the attribute to use the default (\"dynamic\").", data.Type.ValueString()),
 			)
 		}
 	}
@@ -374,8 +374,11 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		PatchSoftwareTitleID: optionalIntPtr(data.PatchSoftwareTitleID),
 		SoftwareTitleID:      optionalIntPtr(data.SoftwareTitleID),
 		ScriptID:             optionalIntPtr(data.ScriptID),
-		LabelsIncludeAny:     stringSetToSlice(ctx, data.LabelsIncludeAny),
-		LabelsExcludeAny:     stringSetToSlice(ctx, data.LabelsExcludeAny),
+		LabelsIncludeAny:     stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
+		LabelsExcludeAny:     stringSetToSlice(ctx, data.LabelsExcludeAny, &resp.Diagnostics),
+	}
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	policy, err := r.client.CreatePolicy(ctx, optionalIntPtr(data.TeamID), createReq)
@@ -392,7 +395,11 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 	// single apply.
 	if isTeamPolicy(data.TeamID) && policyNeedsAutomationFollowup(data) {
 		createdID := policy.ID
-		updated, updateErr := r.client.UpdatePolicy(ctx, createdID, optionalIntPtr(data.TeamID), buildPolicyUpdateRequest(ctx, data))
+		updateReq := buildPolicyUpdateRequest(ctx, data, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		updated, updateErr := r.client.UpdatePolicy(ctx, createdID, optionalIntPtr(data.TeamID), updateReq)
 		if updateErr != nil {
 			resp.Diagnostics.AddError("Error Applying Policy Automation Settings",
 				fmt.Sprintf("Policy was created (id=%d) but applying calendar/conditional-access settings via PATCH failed: %s", createdID, updateErr))
@@ -443,7 +450,11 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	policy, err := r.client.UpdatePolicy(ctx, int(data.ID.ValueInt64()), optionalIntPtr(data.TeamID), buildPolicyUpdateRequest(ctx, data))
+	updateReq := buildPolicyUpdateRequest(ctx, data, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	policy, err := r.client.UpdatePolicy(ctx, int(data.ID.ValueInt64()), optionalIntPtr(data.TeamID), updateReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Error Updating FleetDM Policy", fmt.Sprintf("Unable to update policy: %s", err))
 		return
@@ -501,7 +512,15 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.FailingHostCount = types.Int64Value(int64(policy.FailingHostCount))
 	data.TeamID = intPtrToInt64(policy.TeamID)
 
-	data.Type = types.StringValue(policy.Type)
+	// Fleet's API returns an empty string for `type` on legacy policies and
+	// occasionally on global policies. Normalize to the schema default so
+	// state matches the planner's "dynamic" default and we don't see
+	// perpetual diffs.
+	policyType := policy.Type
+	if policyType == "" {
+		policyType = "dynamic"
+	}
+	data.Type = types.StringValue(policyType)
 	data.LabelsIncludeAny = policyLabelsToSet(policy.LabelsIncludeAny)
 	data.LabelsExcludeAny = policyLabelsToSet(policy.LabelsExcludeAny)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
@@ -519,17 +538,18 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy.PatchSoftware, diags)
 }
 
-// stringSetToSlice converts a types.Set of strings to a []string. Always
-// returns a non-nil slice (empty when the set is null/unknown) so the JSON
-// marshaler emits `[]` rather than `null` on the no-omitempty Update fields
-// — Fleet treats an explicit empty array as "clear", whereas `null` is
+// stringSetToSlice converts a types.Set of strings to a []string and
+// appends any element-conversion diagnostics. Always returns a non-nil
+// slice (empty when the set is null/unknown) so the JSON marshaler emits
+// `[]` rather than `null` on the no-omitempty Update fields — Fleet
+// treats an explicit empty array as "clear", whereas `null` is
 // interpreted as "no change" for label fields.
-func stringSetToSlice(ctx context.Context, set types.Set) []string {
+func stringSetToSlice(ctx context.Context, set types.Set, diags *diag.Diagnostics) []string {
 	if set.IsNull() || set.IsUnknown() {
 		return []string{}
 	}
 	out := make([]string, 0, len(set.Elements()))
-	set.ElementsAs(ctx, &out, false)
+	diags.Append(set.ElementsAs(ctx, &out, false)...)
 	return out
 }
 
@@ -574,8 +594,10 @@ func policyNeedsAutomationFollowup(data PolicyResourceModel) bool {
 
 // buildPolicyUpdateRequest builds an UpdatePolicyRequest from the planned
 // model. Fields that the API treats as "send null to clear" use pointers
-// without omitempty (see UpdatePolicyRequest doc comment).
-func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel) fleetdm.UpdatePolicyRequest {
+// without omitempty (see UpdatePolicyRequest doc comment). Element
+// conversion diagnostics from the label sets are appended to diags;
+// callers must check diags.HasError() before using the result.
+func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, diags *diag.Diagnostics) fleetdm.UpdatePolicyRequest {
 	return fleetdm.UpdatePolicyRequest{
 		Name:                           data.Name.ValueString(),
 		Description:                    data.Description.ValueString(),
@@ -588,8 +610,8 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel) fle
 		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
 		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
-		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny),
-		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny),
+		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny, diags),
+		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny, diags),
 	}
 }
 

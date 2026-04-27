@@ -228,7 +228,13 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.FailingHostCount = types.Int64Value(int64(policy.FailingHostCount))
 	data.TeamID = intPtrToInt64(policy.TeamID)
 
-	data.Type = types.StringValue(policy.Type)
+	// Empty `type` from the API normalizes to "dynamic" — see the resource
+	// for context.
+	policyType := policy.Type
+	if policyType == "" {
+		policyType = "dynamic"
+	}
+	data.Type = types.StringValue(policyType)
 	data.LabelsIncludeAny = policyLabelsToSet(policy.LabelsIncludeAny)
 	data.LabelsExcludeAny = policyLabelsToSet(policy.LabelsExcludeAny)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
