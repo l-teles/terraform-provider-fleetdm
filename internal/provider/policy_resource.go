@@ -297,7 +297,13 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		)
 	}
 
-	teamSet := !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueInt64() > 0
+	// team_id often references a not-yet-created fleetdm_fleet resource,
+	// so it can be Unknown at plan time. We can only enforce team-only
+	// constraints when team_id is fully known: Null means "definitely a
+	// global policy", a known positive int means "definitely a team
+	// policy". Unknown values defer to the API's runtime check.
+	teamKnown := !data.TeamID.IsUnknown()
+	teamSet := teamKnown && !data.TeamID.IsNull() && data.TeamID.ValueInt64() > 0
 	patchTitleSet := !data.PatchSoftwareTitleID.IsNull() && !data.PatchSoftwareTitleID.IsUnknown()
 	isPatchType := data.Type.ValueString() == "patch"
 
@@ -309,7 +315,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 				"patch_software_title_id is required when type = \"patch\".",
 			)
 		}
-		if !teamSet {
+		if teamKnown && !teamSet {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("team_id"),
 				"Missing required value",
@@ -336,7 +342,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown() && data.ConditionalAccessEnabled.ValueBool()},
 		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
 	}
-	if !teamSet {
+	if teamKnown && !teamSet {
 		for _, c := range checks {
 			if c.isSet {
 				resp.Diagnostics.AddAttributeError(
