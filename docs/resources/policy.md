@@ -69,10 +69,10 @@ resource "fleetdm_policy" "auto_remediate" {
 
 # Patch policy: tied to a Fleet-maintained software title and automatically
 # updated as new versions ship. type and patch_software_title_id are
-# immutable after create.
+# immutable after create. Note that `query` must be omitted — Fleet
+# generates the query from the linked software title.
 resource "fleetdm_policy" "patch_acrobat" {
   name                    = "Adobe Acrobat up to date"
-  query                   = "SELECT 1;" # Fleet replaces this on save for patch policies
   team_id                 = fleetdm_fleet.workstations.id
   type                    = "patch"
   patch_software_title_id = data.fleetdm_software_title.adobe_acrobat.id

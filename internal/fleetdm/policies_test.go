@@ -697,9 +697,11 @@ func TestClient_CreateTeamPolicy_WithType(t *testing.T) {
 
 	patchID := 99
 	scriptID := 7
+	// Query intentionally left empty — Fleet rejects query together with
+	// type=patch. The dedicated TestClient_CreateTeamPolicy_PatchOmitsQuery
+	// test asserts the wire-level omission.
 	policy, err := client.CreateTeamPolicy(context.Background(), 1, CreatePolicyRequest{
 		Name:                 "Patch Acrobat",
-		Query:                "SELECT 1",
 		Type:                 "patch",
 		PatchSoftwareTitleID: &patchID,
 		ScriptID:             &scriptID,

@@ -337,8 +337,10 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	typeKnown := !data.Type.IsUnknown()
 	isPatchType := typeKnown && data.Type.ValueString() == "patch"
 
-	queryKnown := !data.Query.IsNull() && !data.Query.IsUnknown()
-	querySet := queryKnown && data.Query.ValueString() != ""
+	// Null counts as "definitely missing" for query. Only Unknown defers
+	// to apply-time resolution.
+	queryDecided := !data.Query.IsUnknown()
+	querySet := queryDecided && !data.Query.IsNull() && data.Query.ValueString() != ""
 
 	if isPatchType {
 		if !patchTitleSet {
@@ -373,7 +375,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		// For dynamic (default) policies, query is required. Only flag
 		// when query is fully known to be empty/null — Unknown values
 		// defer to the API.
-		if typeKnown && queryKnown && !querySet {
+		if typeKnown && queryDecided && !querySet {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("query"),
 				"Missing required value",
