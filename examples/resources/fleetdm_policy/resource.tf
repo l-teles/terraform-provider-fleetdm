@@ -54,10 +54,12 @@ resource "fleetdm_policy" "auto_remediate" {
 # immutable after create. Note that `query` must be omitted — Fleet
 # generates the query from the linked software title.
 resource "fleetdm_policy" "patch_acrobat" {
-  name                    = "Adobe Acrobat up to date"
-  team_id                 = fleetdm_fleet.workstations.id
-  type                    = "patch"
-  patch_software_title_id = data.fleetdm_software_title.adobe_acrobat.id
+  name    = "Adobe Acrobat up to date"
+  team_id = fleetdm_fleet.workstations.id
+  type    = "patch"
+  # The fleetdm_software_title data source exposes id as a string;
+  # patch_software_title_id expects a number, so cast with tonumber.
+  patch_software_title_id = tonumber(data.fleetdm_software_title.adobe_acrobat.id)
 }
 
 # Team policy with conditional access: failing hosts are blocked from SSO
