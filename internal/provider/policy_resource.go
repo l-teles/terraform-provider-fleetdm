@@ -342,10 +342,15 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	typeKnown := !data.Type.IsUnknown()
 	isPatchType := typeKnown && data.Type.ValueString() == "patch"
 
-	// Null counts as "definitely missing" for query. Only Unknown defers
-	// to apply-time resolution.
+	// Three predicates capture the states we care about for query:
+	//   - queryDecided: not Unknown (Null counts as "decided to be missing")
+	//   - queryConfigured: user wrote query in HCL with any value, including ""
+	//   - querySet: user wrote query in HCL with a non-empty value
+	// Patch policies must have query absent entirely (querySet OR query="");
+	// dynamic policies must have it set to a non-empty value.
 	queryDecided := !data.Query.IsUnknown()
-	querySet := queryDecided && !data.Query.IsNull() && data.Query.ValueString() != ""
+	queryConfigured := queryDecided && !data.Query.IsNull()
+	querySet := queryConfigured && data.Query.ValueString() != ""
 
 	if isPatchType {
 		if !patchTitleSet {
@@ -362,11 +367,11 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 				"team_id is required when type = \"patch\" — patch policies are team-only.",
 			)
 		}
-		if querySet {
+		if queryConfigured {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("query"),
 				"Unsupported field",
-				"query is not supported when type = \"patch\" — Fleet generates the query automatically for patch policies. Omit the attribute.",
+				"query is not supported when type = \"patch\" — Fleet generates the query automatically for patch policies. Omit the attribute (or set it to null); explicit empty strings cause perpetual drift because Fleet returns its generated query.",
 			)
 		}
 	} else {

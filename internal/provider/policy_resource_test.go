@@ -195,6 +195,34 @@ resource "fleetdm_policy" "test" {
 `, name)
 }
 
+// TestAccPolicyResource_patchRejectsConfiguredQuery verifies that
+// ValidateConfig rejects any user-configured query (including the empty
+// string) when type = "patch". An empty-string query would otherwise pass
+// validation but cause perpetual drift because Fleet returns its
+// auto-generated query in the response.
+func TestAccPolicyResource_patchRejectsConfiguredQuery(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  query                   = ""
+}
+`, policyName),
+				ExpectError: regexp.MustCompile("query is not supported when type"),
+			},
+		},
+	})
+}
+
 // TestAccPolicyResource_labelsMutualExclusion verifies the ValidateConfig
 // guard that rejects setting both labels_include_any and labels_exclude_any.
 func TestAccPolicyResource_labelsMutualExclusion(t *testing.T) {
