@@ -673,6 +673,10 @@ func TestClient_CreateTeamPolicy_WithType(t *testing.T) {
 		}
 
 		teamID := 1
+		echoLabels := make([]PolicyLabel, 0, len(req.LabelsIncludeAny))
+		for i, n := range req.LabelsIncludeAny {
+			echoLabels = append(echoLabels, PolicyLabel{ID: i + 1, Name: n})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(CreatePolicyResponse{
 			Policy: Policy{
@@ -680,7 +684,7 @@ func TestClient_CreateTeamPolicy_WithType(t *testing.T) {
 				Name:             req.Name,
 				Query:            req.Query,
 				Type:             req.Type,
-				LabelsIncludeAny: req.LabelsIncludeAny,
+				LabelsIncludeAny: echoLabels,
 				TeamID:           &teamID,
 				RunScript:        &PolicyAutomationScript{Name: "do-thing", ID: *req.ScriptID},
 				PatchSoftware:    &PolicyAutomationPatchSoftware{Name: "Adobe Acrobat.app", SoftwareTitleID: *req.PatchSoftwareTitleID},
@@ -790,7 +794,7 @@ func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
 	    "calendar_events_enabled": true,
 	    "conditional_access_enabled": false,
 	    "fleet_maintained": false,
-	    "labels_include_any": ["Macs on Sonoma"],
+	    "labels_include_any": [{"id": 11, "name": "Macs on Sonoma"}],
 	    "patch_software": {
 	      "display_name": "",
 	      "name": "Adobe Acrobat.app",
@@ -831,8 +835,8 @@ func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
 	if policy.FleetMaintained {
 		t.Error("expected fleet_maintained false")
 	}
-	if len(policy.LabelsIncludeAny) != 1 || policy.LabelsIncludeAny[0] != "Macs on Sonoma" {
-		t.Errorf("expected labels_include_any [Macs on Sonoma], got: %v", policy.LabelsIncludeAny)
+	if len(policy.LabelsIncludeAny) != 1 || policy.LabelsIncludeAny[0].Name != "Macs on Sonoma" || policy.LabelsIncludeAny[0].ID != 11 {
+		t.Errorf("expected labels_include_any [{id:11,name:\"Macs on Sonoma\"}], got: %+v", policy.LabelsIncludeAny)
 	}
 	if policy.InstallSoftware == nil || policy.InstallSoftware.SoftwareTitleID != 1234 {
 		t.Errorf("expected install_software.software_title_id 1234, got: %+v", policy.InstallSoftware)

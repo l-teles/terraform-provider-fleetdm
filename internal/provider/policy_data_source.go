@@ -229,8 +229,8 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.TeamID = intPtrToInt64(policy.TeamID)
 
 	data.Type = types.StringValue(policy.Type)
-	data.LabelsIncludeAny = stringSliceToList(policy.LabelsIncludeAny)
-	data.LabelsExcludeAny = stringSliceToList(policy.LabelsExcludeAny)
+	data.LabelsIncludeAny = policyLabelsToList(policy.LabelsIncludeAny)
+	data.LabelsExcludeAny = policyLabelsToList(policy.LabelsExcludeAny)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
 	data.FleetMaintained = types.BoolValue(policy.FleetMaintained)

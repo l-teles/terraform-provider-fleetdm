@@ -187,9 +187,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"conditional_access_bypass_enabled": schema.BoolAttribute{
 				Optional:            true,
-				Computed:            true,
-				Default:             booldefault.StaticBool(true),
-				MarkdownDescription: "Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. _Available in Fleet Premium._",
+				MarkdownDescription: "Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. _Available in Fleet Premium._",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -451,8 +449,8 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.TeamID = intPtrToInt64(policy.TeamID)
 
 	data.Type = types.StringValue(policy.Type)
-	data.LabelsIncludeAny = stringSliceToList(policy.LabelsIncludeAny)
-	data.LabelsExcludeAny = stringSliceToList(policy.LabelsExcludeAny)
+	data.LabelsIncludeAny = policyLabelsToList(policy.LabelsIncludeAny)
+	data.LabelsExcludeAny = policyLabelsToList(policy.LabelsExcludeAny)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
 	// Fleet doesn't echo conditional_access_bypass_enabled in the response;
@@ -481,16 +479,17 @@ func stringListToSlice(ctx context.Context, list types.List) []string {
 	return out
 }
 
-// stringSliceToList converts a []string from the API into a types.List,
-// returning ListNull when the slice is empty/nil so HCL omitting the field
-// produces no diff against the API's "no labels" response.
-func stringSliceToList(s []string) types.List {
-	if len(s) == 0 {
+// policyLabelsToList flattens Fleet's per-label response objects (id+name)
+// into a types.List of label names — what the user-facing schema exposes.
+// Returns ListNull on empty input so a missing-from-HCL field doesn't
+// diff against the API's empty array.
+func policyLabelsToList(labels []fleetdm.PolicyLabel) types.List {
+	if len(labels) == 0 {
 		return types.ListNull(types.StringType)
 	}
-	values := make([]attr.Value, 0, len(s))
-	for _, v := range s {
-		values = append(values, types.StringValue(v))
+	values := make([]attr.Value, 0, len(labels))
+	for _, l := range labels {
+		values = append(values, types.StringValue(l.Name))
 	}
 	return types.ListValueMust(types.StringType, values)
 }

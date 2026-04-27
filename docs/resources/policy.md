@@ -100,7 +100,7 @@ resource "fleetdm_policy" "conditional_access" {
 ### Optional
 
 - `calendar_events_enabled` (Boolean) Whether to trigger calendar events when the policy is failing. Only applies to team policies; setting this is a no-op on global policies. _Available in Fleet Premium._
-- `conditional_access_bypass_enabled` (Boolean) Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. _Available in Fleet Premium._
+- `conditional_access_bypass_enabled` (Boolean) Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. _Available in Fleet Premium._
 - `conditional_access_enabled` (Boolean) Whether to block single sign-on for end users whose hosts fail this policy. Only applies to team policies. _Available in Fleet Premium._
 - `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._
 - `description` (String) A description of the policy.

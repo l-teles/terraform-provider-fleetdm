@@ -24,6 +24,15 @@ type PolicyAutomationScript struct {
 	ID   int    `json:"id"`
 }
 
+// PolicyLabel is the per-label echo Fleet returns inside labels_include_any
+// and labels_exclude_any on policy responses. Note the request side uses
+// `[]string` of label names — the API is asymmetric here, so this struct
+// is response-only.
+type PolicyLabel struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 // Policy represents a FleetDM policy.
 type Policy struct {
 	ID                       int                            `json:"id,omitempty"`
@@ -40,8 +49,8 @@ type Policy struct {
 	PassingHostCount         int                            `json:"passing_host_count,omitempty"`
 	FailingHostCount         int                            `json:"failing_host_count,omitempty"`
 	Type                     string                         `json:"type,omitempty"`
-	LabelsIncludeAny         []string                       `json:"labels_include_any,omitempty"`
-	LabelsExcludeAny         []string                       `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAny         []PolicyLabel                  `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny         []PolicyLabel                  `json:"labels_exclude_any,omitempty"`
 	CalendarEventsEnabled    bool                           `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled bool                           `json:"conditional_access_enabled"`
 	FleetMaintained          bool                           `json:"fleet_maintained"`
