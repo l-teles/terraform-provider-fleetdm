@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -219,6 +221,49 @@ resource "fleetdm_policy" "test" {
 }
 `, policyName),
 				ExpectError: regexp.MustCompile("query is not supported when type"),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_patchRejectsConfiguredPlatform verifies that
+// ValidateConfig rejects any user-configured platform when type = "patch" —
+// both a non-empty list and an explicit empty list. Fleet (4.84+) returns
+// 400 "If the 'type' is 'patch', the 'platform' field is not supported" if
+// the request sends platform; an explicit empty list would also cause
+// perpetual drift because Fleet returns its derived platform in the
+// response. We catch both at plan time instead so users don't burn a
+// failed apply or chase a non-converging diff.
+func TestAccPolicyResource_patchRejectsConfiguredPlatform(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  platform                = ["darwin"]
+}
+`, policyName),
+				ExpectError: regexp.MustCompile("platform is not supported when type"),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  platform                = []
+}
+`, policyName),
+				ExpectError: regexp.MustCompile("platform is not supported when type"),
 			},
 		},
 	})
@@ -698,6 +743,77 @@ func TestMapPatchSoftware_fallsBackToInstallSoftware(t *testing.T) {
 			}
 			if !tc.wantObjectIsNull && obj.IsNull() {
 				t.Fatal("expected patch_software object populated, got null")
+			}
+		})
+	}
+}
+
+// TestPolicyPlatformForRequest guards the wire-level strip of `platform` for
+// type = "patch" policies. Fleet 4.84+ rejects platform on patch policies;
+// ValidateConfig catches user-configured platform up front, but this helper
+// is the last line of defense so a state-derived value (e.g. from a stale
+// computed read) can never leak into the request body.
+func TestPolicyPlatformForRequest(t *testing.T) {
+	platformList := func(values ...string) types.List {
+		elems := make([]attr.Value, 0, len(values))
+		for _, v := range values {
+			elems = append(elems, types.StringValue(v))
+		}
+		return types.ListValueMust(types.StringType, elems)
+	}
+
+	tests := []struct {
+		name     string
+		policy   PolicyResourceModel
+		expected string
+	}{
+		{
+			name: "dynamic policy with platforms — joined",
+			policy: PolicyResourceModel{
+				Type:     types.StringValue("dynamic"),
+				Platform: platformList("darwin", "linux"),
+			},
+			expected: "darwin,linux",
+		},
+		{
+			name: "dynamic policy with empty platform list — empty string",
+			policy: PolicyResourceModel{
+				Type:     types.StringValue("dynamic"),
+				Platform: platformList(),
+			},
+			expected: "",
+		},
+		{
+			name: "dynamic policy with null platform — empty string",
+			policy: PolicyResourceModel{
+				Type:     types.StringValue("dynamic"),
+				Platform: types.ListNull(types.StringType),
+			},
+			expected: "",
+		},
+		{
+			name: "patch policy with platforms — stripped to empty string",
+			policy: PolicyResourceModel{
+				Type:     types.StringValue("patch"),
+				Platform: platformList("darwin"),
+			},
+			expected: "",
+		},
+		{
+			name: "patch policy with null platform — empty string",
+			policy: PolicyResourceModel{
+				Type:     types.StringValue("patch"),
+				Platform: types.ListNull(types.StringType),
+			},
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := policyPlatformForRequest(context.Background(), tc.policy)
+			if got != tc.expected {
+				t.Fatalf("expected %q, got %q", tc.expected, got)
 			}
 		})
 	}

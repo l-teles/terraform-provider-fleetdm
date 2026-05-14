@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -168,11 +169,14 @@ terraform import fleetdm_user.admin 123
 				Default:             booldefault.StaticBool(false),
 			},
 			"api_only": schema.BoolAttribute{
-				Description:         "Whether this user is API-only (cannot use web UI).",
-				MarkdownDescription: "Whether this user is API-only (cannot use web UI).",
+				Description:         "Whether this user is API-only (cannot use web UI). Immutable after create — Fleet's user-update endpoint rejects api_only, so changing this value forces the user to be destroyed and recreated.",
+				MarkdownDescription: "Whether this user is API-only (cannot use web UI). Immutable after create — Fleet's user-update endpoint rejects `api_only`, so changing this value forces the user to be destroyed and recreated.",
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+				},
 			},
 			"force_password_reset": schema.BoolAttribute{
 				Description:         "Whether the user is required to reset their password on next login.",
@@ -360,8 +364,11 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	mfaEnabled := plan.MFAEnabled.ValueBool()
 	updateReq.MFAEnabled = &mfaEnabled
 
-	apiOnly := plan.APIOnly.ValueBool()
-	updateReq.APIOnly = &apiOnly
+	// `api_only` is intentionally NOT sent on update: Fleet's user-update
+	// endpoint rejects the field with a 422 ("api_endpoints: This endpoint
+	// does not accept API endpoint values"). Toggling the flag requires a
+	// resource replacement, enforced by the RequiresReplace plan modifier
+	// on the `api_only` schema attribute.
 
 	// Set global role if provided
 	if !plan.GlobalRole.IsNull() && !plan.GlobalRole.IsUnknown() {

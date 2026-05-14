@@ -62,13 +62,19 @@ type CreateUserResponse struct {
 }
 
 // UpdateUserRequest represents the request to update a user.
+//
+// `api_only` is intentionally absent: Fleet's PATCH /users/{id} endpoint
+// rejects the field outright (422 "api_endpoints: This endpoint does not
+// accept API endpoint values"). The api-only flag can only be set at user
+// creation. Callers that need to toggle it must destroy and recreate the
+// user — the provider enforces this via a RequiresReplace plan modifier on
+// the `api_only` schema attribute.
 type UpdateUserRequest struct {
 	Name        string     `json:"name,omitempty"`
 	Email       string     `json:"email,omitempty"`
 	Position    string     `json:"position,omitempty"`
 	SSOEnabled  *bool      `json:"sso_enabled,omitempty"`
 	MFAEnabled  *bool      `json:"mfa_enabled,omitempty"`
-	APIOnly     *bool      `json:"api_only,omitempty"`
 	GlobalRole  *string    `json:"global_role,omitempty"`
 	Teams       []UserTeam `json:"teams,omitempty"`
 	Password    string     `json:"password,omitempty"`     // Current password (required for email/password changes)

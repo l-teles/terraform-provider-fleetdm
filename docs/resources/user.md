@@ -214,7 +214,7 @@ output "api_user_id" {
 
 ### Optional
 
-- `api_only` (Boolean) Whether this user is API-only (cannot use web UI).
+- `api_only` (Boolean) Whether this user is API-only (cannot use web UI). Immutable after create — Fleet's user-update endpoint rejects `api_only`, so changing this value forces the user to be destroyed and recreated.
 - `force_password_reset` (Boolean) Whether the user is required to reset their password on next login.
 - `global_role` (String) The global role assigned to the user. Options: `admin`, `maintainer`, `observer`, `observer_plus`, `gitops`. Mutually exclusive with `teams`.
 - `mfa_enabled` (Boolean) Whether MFA is enabled for this user (Fleet Premium). Incompatible with SSO and API-only users.
