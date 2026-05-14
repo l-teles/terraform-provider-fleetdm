@@ -227,10 +227,13 @@ resource "fleetdm_policy" "test" {
 }
 
 // TestAccPolicyResource_patchRejectsConfiguredPlatform verifies that
-// ValidateConfig rejects any user-configured platform when type = "patch".
-// Fleet (4.84+) returns 400 "If the 'type' is 'patch', the 'platform' field
-// is not supported" if the request sends platform. We catch it at plan time
-// instead so users don't burn a failed apply.
+// ValidateConfig rejects any user-configured platform when type = "patch" —
+// both a non-empty list and an explicit empty list. Fleet (4.84+) returns
+// 400 "If the 'type' is 'patch', the 'platform' field is not supported" if
+// the request sends platform; an explicit empty list would also cause
+// perpetual drift because Fleet returns its derived platform in the
+// response. We catch both at plan time instead so users don't burn a
+// failed apply or chase a non-converging diff.
 func TestAccPolicyResource_patchRejectsConfiguredPlatform(t *testing.T) {
 	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
 
@@ -246,6 +249,18 @@ resource "fleetdm_policy" "test" {
   type                    = "patch"
   patch_software_title_id = 999
   platform                = ["darwin"]
+}
+`, policyName),
+				ExpectError: regexp.MustCompile("platform is not supported when type"),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  platform                = []
 }
 `, policyName),
 				ExpectError: regexp.MustCompile("platform is not supported when type"),
