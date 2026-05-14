@@ -353,6 +353,12 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	queryConfigured := queryDecided && !data.Query.IsNull()
 	querySet := queryConfigured && data.Query.ValueString() != ""
 
+	// Same null/unknown semantics as query: "configured" means the user
+	// wrote the attribute in HCL (with any value, including an empty list).
+	// An empty list still causes perpetual drift on patch policies because
+	// Fleet returns its derived platform in the response.
+	platformConfigured := !data.Platform.IsUnknown() && !data.Platform.IsNull()
+
 	if isPatchType {
 		if !patchTitleSet {
 			resp.Diagnostics.AddAttributeError(
@@ -373,6 +379,13 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 				path.Root("query"),
 				"Unsupported field",
 				"query is not supported when type = \"patch\" — Fleet generates the query automatically for patch policies. Omit the attribute (or set it to null); explicit empty strings cause perpetual drift because Fleet returns its generated query.",
+			)
+		}
+		if platformConfigured {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("platform"),
+				"Unsupported field",
+				"platform is not supported when type = \"patch\" — Fleet (4.84+) rejects `platform` on patch policies and derives the effective platform from the patch target. Omit the attribute (or set it to null).",
 			)
 		}
 	} else {
@@ -438,7 +451,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		Query:                policyQueryForRequest(data),
 		Critical:             data.Critical.ValueBool(),
 		Resolution:           data.Resolution.ValueString(),
-		Platform:             platformListToString(ctx, data.Platform),
+		Platform:             policyPlatformForRequest(ctx, data),
 		Type:                 data.Type.ValueString(),
 		PatchSoftwareTitleID: optionalIntPtr(data.PatchSoftwareTitleID),
 		SoftwareTitleID:      optionalIntPtr(data.SoftwareTitleID),
@@ -721,6 +734,19 @@ func policyQueryForRequest(data PolicyResourceModel) string {
 	return data.Query.ValueString()
 }
 
+// policyPlatformForRequest returns the platform value to send in a Create or
+// Update request — empty string for patch policies so the omitempty JSON tag
+// drops the field entirely. Fleet (4.84+) rejects `platform` together with
+// `type = "patch"` (status 400: "If the 'type' is 'patch', the 'platform'
+// field is not supported"). Fleet derives the effective platform from the
+// patch target, so dropping the field is safe.
+func policyPlatformForRequest(ctx context.Context, data PolicyResourceModel) string {
+	if data.Type.ValueString() == "patch" {
+		return ""
+	}
+	return platformListToString(ctx, data.Platform)
+}
+
 // buildPolicyUpdateRequest builds an UpdatePolicyRequest from the planned
 // model. Fields that the API treats as "send null to clear" use pointers
 // without omitempty (see UpdatePolicyRequest doc comment). Element
@@ -733,7 +759,7 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, dia
 		Query:                          policyQueryForRequest(data),
 		Critical:                       data.Critical.ValueBool(),
 		Resolution:                     data.Resolution.ValueString(),
-		Platform:                       platformListToString(ctx, data.Platform),
+		Platform:                       policyPlatformForRequest(ctx, data),
 		SoftwareTitleID:                optionalIntPtr(data.SoftwareTitleID),
 		ScriptID:                       optionalIntPtr(data.ScriptID),
 		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
