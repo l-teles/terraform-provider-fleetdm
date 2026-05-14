@@ -235,6 +235,52 @@ func TestClient_UpdateUser(t *testing.T) {
 	}
 }
 
+// TestClient_UpdateUserOmitsAPIOnly guards the wire format of UpdateUser
+// requests. Fleet's PATCH /users/{id} endpoint rejects any presence of the
+// `api_only` field with a 422 ("api_endpoints: This endpoint does not
+// accept API endpoint values"), so the field is intentionally absent from
+// UpdateUserRequest. This test parses the actual JSON body to assert
+// `api_only` never appears — a stronger guarantee than relying on struct
+// shape, because anyone adding the field back to UpdateUserRequest (or
+// embedding it indirectly) would break this test.
+func TestClient_UpdateUserOmitsAPIOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Failed to decode request body: %v", err)
+		}
+		if _, present := body["api_only"]; present {
+			t.Errorf("UpdateUser request body must not contain api_only; got body: %v", body)
+		}
+
+		response := UpdateUserResponse{
+			User: User{ID: 1, Name: "Updated", Email: "user@example.com"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{
+		ServerAddress: server.URL,
+		APIKey:        "test-key",
+	})
+
+	ssoEnabled := false
+	mfaEnabled := false
+	globalRole := "observer"
+	req := UpdateUserRequest{
+		Name:       "Updated",
+		Email:      "user@example.com",
+		SSOEnabled: &ssoEnabled,
+		MFAEnabled: &mfaEnabled,
+		GlobalRole: &globalRole,
+	}
+	if _, err := client.UpdateUser(context.Background(), 1, req); err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+}
+
 func TestClient_DeleteUser(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/fleet/users/1" {
