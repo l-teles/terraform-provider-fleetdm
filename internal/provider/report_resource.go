@@ -86,7 +86,10 @@ func (r *ReportResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 				Computed:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of platforms this report is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.",
+				MarkdownDescription: "List of platforms this report is compatible with (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms.\n\n**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared via the API. The provider will plan a destroy+recreate when a previously-set list is changed back to an empty list — subset shrinks and value swaps (e.g. `[\"darwin\",\"linux\"]` → `[\"darwin\"]`, `[\"darwin\"]` → `[\"linux\"]`) stay in-place.",
+				PlanModifiers: []planmodifier.List{
+					requireReplaceOnPlatformShrink(),
+				},
 			},
 			"min_osquery_version": schema.StringAttribute{
 				Optional:            true,

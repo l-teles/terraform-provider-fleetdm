@@ -139,7 +139,10 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 				Computed:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "List of platforms this policy applies to (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms. Must be omitted when `type = \"patch\"` — Fleet (4.84+) derives the effective platform from the patch target and rejects an explicit `platform`.\n\n**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared or shrunk via the API. Removing entries will appear as drift on every plan and never converge — destroy and recreate the policy to change platform targeting.",
+				MarkdownDescription: "List of platforms this policy applies to (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms. Must be omitted when `type = \"patch\"` — Fleet (4.84+) derives the effective platform from the patch target and rejects an explicit `platform`.\n\n**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared via the API. The provider will plan a destroy+recreate when a previously-set list is changed back to an empty list — subset shrinks and value swaps (e.g. `[\"darwin\",\"linux\"]` → `[\"darwin\"]`, `[\"darwin\"]` → `[\"linux\"]`) stay in-place.",
+				PlanModifiers: []planmodifier.List{
+					requireReplaceOnPlatformShrink(),
+				},
 			},
 			"team_id": schema.Int64Attribute{
 				Optional: true,

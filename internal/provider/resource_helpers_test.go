@@ -119,6 +119,100 @@ func TestPlatformListToString(t *testing.T) {
 	}
 }
 
+func TestPlatformPlanClears(t *testing.T) {
+	ctx := context.Background()
+
+	makeList := func(platforms ...string) types.List {
+		vals := make([]attr.Value, len(platforms))
+		for i, p := range platforms {
+			vals[i] = types.StringValue(p)
+		}
+		return types.ListValueMust(types.StringType, vals)
+	}
+
+	tests := []struct {
+		name  string
+		state types.List
+		plan  types.List
+		want  bool
+	}{
+		{
+			name:  "null state, empty plan: not a clear",
+			state: types.ListNull(types.StringType),
+			plan:  types.ListValueMust(types.StringType, []attr.Value{}),
+			want:  false,
+		},
+		{
+			name:  "empty state, empty plan: not a clear",
+			state: types.ListValueMust(types.StringType, []attr.Value{}),
+			plan:  types.ListValueMust(types.StringType, []attr.Value{}),
+			want:  false,
+		},
+		{
+			name:  "empty state grows: not a clear",
+			state: types.ListValueMust(types.StringType, []attr.Value{}),
+			plan:  makeList("darwin"),
+			want:  false,
+		},
+		{
+			name:  "non-empty state cleared to empty list: clear",
+			state: makeList("windows"),
+			plan:  types.ListValueMust(types.StringType, []attr.Value{}),
+			want:  true,
+		},
+		{
+			name:  "non-empty state cleared to null: clear",
+			state: makeList("windows"),
+			plan:  types.ListNull(types.StringType),
+			want:  true,
+		},
+		{
+			// Fleet honors subset shrinks because a non-empty platform
+			// string still goes on the wire and overwrites stored value.
+			name:  "subset of state retained: not a clear",
+			state: makeList("darwin", "linux"),
+			plan:  makeList("darwin"),
+			want:  false,
+		},
+		{
+			name:  "growth only: not a clear",
+			state: makeList("darwin"),
+			plan:  makeList("darwin", "linux"),
+			want:  false,
+		},
+		{
+			name:  "reorder same elements: not a clear",
+			state: makeList("darwin", "linux"),
+			plan:  makeList("linux", "darwin"),
+			want:  false,
+		},
+		{
+			name:  "swap one element: not a clear (non-empty plan)",
+			state: makeList("darwin"),
+			plan:  makeList("linux"),
+			want:  false,
+		},
+		{
+			name:  "unknown plan: cannot evaluate, not a clear",
+			state: makeList("darwin"),
+			plan:  types.ListUnknown(types.StringType),
+			want:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, diags := platformPlanClears(ctx, tc.state, tc.plan)
+			if diags.HasError() {
+				t.Fatalf("unexpected diagnostics: %v", diags)
+			}
+			if got != tc.want {
+				t.Errorf("expected %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
 func TestExtractLabels(t *testing.T) {
 	ctx := context.Background()
 

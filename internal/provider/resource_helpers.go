@@ -9,6 +9,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -107,6 +109,70 @@ func platformStringToList(s string) types.List {
 		return types.ListValueMust(types.StringType, []attr.Value{})
 	}
 	return types.ListValueMust(types.StringType, values)
+}
+
+// platformPlanClears reports whether the planned platform list goes from a
+// non-empty state to an empty (or null) plan. This is the exact case Fleet's
+// PATCH endpoints cannot honor: the request marshals to `platform: ""` which
+// the `omitempty` JSON tag drops, leaving Fleet's stored value unchanged and
+// producing a "Provider produced inconsistent result after apply" error.
+//
+// Subset shrinks (e.g. `["darwin","linux"] -> ["darwin"]`) and swaps
+// (`["darwin"] -> ["linux"]`) are NOT considered clears — Fleet honors those
+// in-place because a non-empty platform string is sent and overwrites the
+// stored value.
+//
+// Null/unknown plan values short-circuit to false because we can't evaluate
+// the change yet.
+func platformPlanClears(ctx context.Context, state, plan types.List) (bool, diag.Diagnostics) {
+	if plan.IsUnknown() {
+		return false, nil
+	}
+
+	stateEmpty := state.IsNull() || state.IsUnknown() || len(state.Elements()) == 0
+	planEmpty := plan.IsNull() || len(plan.Elements()) == 0
+	if stateEmpty || !planEmpty {
+		return false, nil
+	}
+
+	// Sanity-check we can actually read the state list — surfaces conversion
+	// errors instead of silently swallowing them.
+	var entries []string
+	d := state.ElementsAs(ctx, &entries, false)
+	if d.HasError() {
+		return false, d
+	}
+	return len(entries) > 0, nil
+}
+
+// requireReplaceOnPlatformShrink returns a list plan modifier that forces
+// resource replacement when the user clears a previously-set platform list
+// (non-empty -> empty/null). Fleet's PATCH endpoints for queries/reports and
+// policies cannot clear `platform` once it has been set to a non-empty value —
+// the request body omits the field via `omitempty`, Fleet treats that as
+// "no change", and Terraform aborts with a
+// "Provider produced inconsistent result after apply" error.
+//
+// Subset shrinks and swaps are left in-place because Fleet honors any
+// non-empty platform value sent in PATCH.
+//
+// Name kept as "...PlatformShrink" rather than "...PlatformClear" because
+// "shrink" is the user-facing operation (removing entries) that ends up
+// triggering replacement; the implementation-level trigger happens to be the
+// total clear specifically.
+func requireReplaceOnPlatformShrink() planmodifier.List {
+	return listplanmodifier.RequiresReplaceIf(
+		func(ctx context.Context, req planmodifier.ListRequest, resp *listplanmodifier.RequiresReplaceIfFuncResponse) {
+			clears, d := platformPlanClears(ctx, req.StateValue, req.PlanValue)
+			resp.Diagnostics.Append(d...)
+			if d.HasError() {
+				return
+			}
+			resp.RequiresReplace = clears
+		},
+		"Replace the resource if the planned platform list clears a previously-set non-empty value.",
+		"Replace the resource if the planned `platform` list clears a previously-set non-empty value. Fleet's API drops empty `platform` from PATCH requests (`omitempty`), so an in-place clear would silently leave the stored value unchanged.",
+	)
 }
 
 // userTeamAttrTypes defines the Terraform object type for user team assignments.

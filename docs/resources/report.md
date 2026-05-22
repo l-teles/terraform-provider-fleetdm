@@ -73,7 +73,9 @@ resource "fleetdm_report" "comprehensive" {
 - `logging` (String) The logging type for this report (snapshot, differential, differential_ignore_removals).
 - `min_osquery_version` (String) The minimum osquery version required to run this report.
 - `observer_can_run` (Boolean) Whether observers can run this report.
-- `platform` (List of String) List of platforms this report is compatible with (darwin, linux, windows, chrome). Empty list means all platforms.
+- `platform` (List of String) List of platforms this report is compatible with (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms.
+
+**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared via the API. The provider will plan a destroy+recreate when a previously-set list is changed back to an empty list — subset shrinks and value swaps (e.g. `["darwin","linux"]` → `["darwin"]`, `["darwin"]` → `["linux"]`) stay in-place.
 
 ### Read-Only
 
