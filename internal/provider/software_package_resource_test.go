@@ -2,6 +2,7 @@ package provider
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -219,48 +222,113 @@ resource "fleetdm_software_package" "fma_test" {
 `, serverURL)
 }
 
-func TestAccSoftwarePackageResource_s3(t *testing.T) {
-	fleetdm.ResetS3ClientCache()
-	contentV1 := []byte("FAKES3PKG")
-	contentV2 := []byte("FAKES3PKGv2")
-	v1Hash := sha256.Sum256(contentV1)
-	shaV1 := hex.EncodeToString(v1Hash[:])
-	v2Hash := sha256.Sum256(contentV2)
-	shaV2 := hex.EncodeToString(v2Hash[:])
+// s3MockMode controls what HEAD response the mock S3 server emits.
+type s3MockMode int
 
-	// Mutex-protected state shared between test goroutine and httptest handlers.
-	var mu sync.Mutex
-	currentS3Content := contentV1
-	currentFleetSHA := shaV1
+const (
+	// s3ModeChecksumFullObject — return server-managed full-object SHA256.
+	// This is the "fast path" supported scenario.
+	s3ModeChecksumFullObject s3MockMode = iota
+	// s3ModeChecksumComposite — return composite multipart checksum, which
+	// the provider must reject.
+	s3ModeChecksumComposite
+	// s3ModeMetadataOnly — return only x-amz-meta-sha256, no server checksum.
+	s3ModeMetadataOnly
+	// s3ModeNoChecksum — return neither, exercising the download fallback.
+	s3ModeNoChecksum
+)
 
-	// Mock S3 server that serves the package content via path-style requests.
-	s3Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/test-bucket/test.pkg" {
-			mu.Lock()
-			data := currentS3Content
-			mu.Unlock()
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Write(data)
+// s3Mock is a reusable HTTP mock for an S3 bucket with one object. It tracks
+// HEAD and GET counts so tests can assert exactly which network operations
+// happened. Update `content` to simulate a changed installer; update `mode` to
+// switch checksum behavior. All access is mutex-protected for the testing
+// terraform-plugin harness which runs handlers from separate goroutines.
+type s3Mock struct {
+	mu        sync.Mutex
+	content   []byte
+	mode      s3MockMode
+	headCount int
+	getCount  int
+}
+
+func (m *s3Mock) handler(t *testing.T, bucketKey string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/"+bucketKey {
+			http.NotFound(w, r)
 			return
 		}
-		http.NotFound(w, r)
-	}))
-	defer s3Server.Close()
+		m.mu.Lock()
+		content := m.content
+		mode := m.mode
+		switch r.Method {
+		case http.MethodHead:
+			m.headCount++
+		case http.MethodGet:
+			m.getCount++
+		}
+		m.mu.Unlock()
 
-	// Set dummy AWS credentials so the S3 SDK does not fail.
-	t.Setenv("AWS_ACCESS_KEY_ID", "test")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+		switch r.Method {
+		case http.MethodHead:
+			switch mode {
+			case s3ModeChecksumFullObject:
+				sum := sha256.Sum256(content)
+				w.Header().Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString(sum[:]))
+				w.Header().Set("x-amz-checksum-type", "FULL_OBJECT")
+			case s3ModeChecksumComposite:
+				w.Header().Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString([]byte("hash-of-hashes-irrelevant-32-byt")))
+				w.Header().Set("x-amz-checksum-type", "COMPOSITE")
+			case s3ModeMetadataOnly:
+				sum := sha256.Sum256(content)
+				w.Header().Set("x-amz-meta-sha256", hex.EncodeToString(sum[:]))
+			case s3ModeNoChecksum:
+				// nothing
+			}
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(content)
+		default:
+			t.Errorf("unexpected method %s on %s", r.Method, r.URL.Path)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+}
 
-	// Track Fleet API calls to verify the re-upload lifecycle.
-	var uploadCount, deleteCount int
+func (m *s3Mock) setContent(b []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.content = b
+}
 
-	// Mock Fleet server that accepts the upload and returns title metadata.
-	fleetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func (m *s3Mock) snapshot() (head, get int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.headCount, m.getCount
+}
+
+// fleetSWMockState tracks Fleet API calls during software-package tests.
+type fleetSWMockState struct {
+	mu           sync.Mutex
+	currentSHA   string
+	uploadCount  int
+	deleteCount  int
+	titleID      int
+	titleName    string
+	displayName  string
+	titleVersion string
+}
+
+// fleetSoftwareHandler returns an http.HandlerFunc that emulates the subset of
+// the Fleet software API exercised by these tests (upload, title get, patch,
+// delete).
+func fleetSoftwareHandler(t *testing.T, state *fleetSWMockState) http.HandlerFunc {
+	titleIDPath := fmt.Sprintf("/api/v1/fleet/software/titles/%d", state.titleID)
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == "POST":
-			// Parse the multipart upload and compute SHA from the uploaded content,
-			// simulating what Fleet does when it receives a package.
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				t.Errorf("failed to parse multipart form: %v", err)
 				http.Error(w, "bad request", http.StatusBadRequest)
@@ -280,50 +348,74 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 				return
 			}
 			h := sha256.Sum256(uploaded)
-			mu.Lock()
-			currentFleetSHA = hex.EncodeToString(h[:])
-			uploadCount++
-			mu.Unlock()
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			state.mu.Lock()
+			state.currentSHA = hex.EncodeToString(h[:])
+			state.uploadCount++
+			state.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"software_package": map[string]interface{}{
-					"title_id": 55,
+					"title_id": state.titleID,
 					"team_id":  0,
 				},
 			})
-		case r.URL.Path == "/api/v1/fleet/software/titles/55/package" && r.Method == "PATCH":
+		case r.URL.Path == titleIDPath+"/package" && r.Method == "PATCH":
 			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/api/v1/fleet/software/titles/55" && r.Method == "GET":
-			mu.Lock()
-			sha := currentFleetSHA
-			mu.Unlock()
-			json.NewEncoder(w).Encode(map[string]interface{}{
+		case r.URL.Path == titleIDPath && r.Method == "GET":
+			state.mu.Lock()
+			sha := state.currentSHA
+			state.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"software_title": map[string]interface{}{
-					"id":             55,
-					"name":           "test.pkg",
-					"display_name":   "Test S3 Package",
+					"id":             state.titleID,
+					"name":           state.titleName,
+					"display_name":   state.displayName,
 					"source":         "pkg",
 					"hosts_count":    0,
 					"versions_count": 1,
 					"software_package": map[string]interface{}{
-						"title_id":    55,
+						"title_id":    state.titleID,
 						"platform":    "darwin",
 						"hash_sha256": sha,
 					},
 					"versions": []map[string]interface{}{
-						{"id": 1, "version": "1.0.0", "hosts_count": 0},
+						{"id": 1, "version": state.titleVersion, "hosts_count": 0},
 					},
 				},
 			})
-		case r.URL.Path == "/api/v1/fleet/software/titles/55/available_for_install" && r.Method == "DELETE":
-			mu.Lock()
-			deleteCount++
-			mu.Unlock()
+		case r.URL.Path == titleIDPath+"/available_for_install" && r.Method == "DELETE":
+			state.mu.Lock()
+			state.deleteCount++
+			state.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	}
+}
+
+func snapshotFleet(state *fleetSWMockState) (uploads, deletes int) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.uploadCount, state.deleteCount
+}
+
+func TestAccSoftwarePackageResource_s3(t *testing.T) {
+	fleetdm.ResetS3ClientCache()
+	contentV1 := []byte("FAKES3PKG")
+	contentV2 := []byte("FAKES3PKGv2")
+	shaV1 := hex.EncodeToString(sumOf(contentV1))
+	shaV2 := hex.EncodeToString(sumOf(contentV2))
+
+	s3 := &s3Mock{content: contentV1, mode: s3ModeChecksumFullObject}
+	fleet := &fleetSWMockState{currentSHA: shaV1, titleID: 55, titleName: "test.pkg", displayName: "Test S3 Package", titleVersion: "1.0.0"}
+
+	s3Server := httptest.NewServer(s3.handler(t, "test-bucket/test.pkg"))
+	defer s3Server.Close()
+	fleetServer := httptest.NewServer(fleetSoftwareHandler(t, fleet))
 	defer fleetServer.Close()
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -337,29 +429,59 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaV1),
 				),
 			},
-			// Step 2: S3 content changes → update should detect SHA mismatch and re-upload.
+			// Step 2: No-op apply — content unchanged, SHA matches Fleet. The
+			// fast path must skip the body download and skip the re-upload.
 			{
 				PreConfig: func() {
-					mu.Lock()
-					// Only change S3 content. Fleet SHA stays at v1 until re-upload.
-					currentS3Content = contentV2
-					mu.Unlock()
+					// Snapshot counts before the no-op step so we can assert
+					// what happens *during* it.
+					headBefore, getBefore := s3.snapshot()
+					uploadsBefore, deletesBefore := snapshotFleet(fleet)
+					t.Logf("Before no-op step: head=%d get=%d uploads=%d deletes=%d", headBefore, getBefore, uploadsBefore, deletesBefore)
+					t.Setenv("__test_s3_head_before", fmt.Sprintf("%d", headBefore))
+					t.Setenv("__test_s3_get_before", fmt.Sprintf("%d", getBefore))
+					t.Setenv("__test_fleet_uploads_before", fmt.Sprintf("%d", uploadsBefore))
+					t.Setenv("__test_fleet_deletes_before", fmt.Sprintf("%d", deletesBefore))
+				},
+				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaV1),
+					func(s *terraform.State) error {
+						_, getNow := s3.snapshot()
+						uploadsNow, deletesNow := snapshotFleet(fleet)
+						getBefore, _ := strconv.Atoi(os.Getenv("__test_s3_get_before"))
+						uploadsBefore, _ := strconv.Atoi(os.Getenv("__test_fleet_uploads_before"))
+						deletesBefore, _ := strconv.Atoi(os.Getenv("__test_fleet_deletes_before"))
+						if getNow != getBefore {
+							return fmt.Errorf("no-op step downloaded the body: get count %d -> %d", getBefore, getNow)
+						}
+						if uploadsNow != uploadsBefore {
+							return fmt.Errorf("no-op step uploaded: upload count %d -> %d", uploadsBefore, uploadsNow)
+						}
+						if deletesNow != deletesBefore {
+							return fmt.Errorf("no-op step deleted: delete count %d -> %d", deletesBefore, deletesNow)
+						}
+						return nil
+					},
+				),
+			},
+			// Step 3: S3 content changes → update should detect SHA mismatch and re-upload.
+			{
+				PreConfig: func() {
+					s3.setContent(contentV2)
 				},
 				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "title_id", "55"),
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaV2),
 					func(s *terraform.State) error {
-						mu.Lock()
-						uploads := uploadCount
-						deletes := deleteCount
-						mu.Unlock()
-						// Step 1 does 1 upload (create). Step 2 should do 1 delete + 1 upload (re-upload).
-						if uploads != 2 {
-							return fmt.Errorf("expected 2 total uploads (create + re-upload), got %d", uploads)
+						uploadsNow, deletesNow := snapshotFleet(fleet)
+						// Step 1: create (1 upload). Step 2: no-op (0 uploads, 0 deletes). Step 3: re-upload (1 delete + 1 upload).
+						if uploadsNow != 2 {
+							return fmt.Errorf("expected 2 total uploads (create + re-upload), got %d", uploadsNow)
 						}
-						if deletes != 1 {
-							return fmt.Errorf("expected 1 delete (before re-upload), got %d", deletes)
+						if deletesNow != 1 {
+							return fmt.Errorf("expected 1 delete (before re-upload), got %d", deletesNow)
 						}
 						return nil
 					},
@@ -367,6 +489,12 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 			},
 		},
 	})
+}
+
+// sumOf returns the raw 32-byte SHA256 of b.
+func sumOf(b []byte) []byte {
+	sum := sha256.Sum256(b)
+	return sum[:]
 }
 
 func testAccSoftwarePackageResourceConfig_s3(fleetURL, s3URL string) string {
@@ -387,6 +515,253 @@ resource "fleetdm_software_package" "s3_test" {
   }
 }
 `, fleetURL, s3URL)
+}
+
+func testAccSoftwarePackageResourceConfig_s3WithExpected(fleetURL, s3URL, expectedSHA string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "s3_test" {
+  filename = "test.pkg"
+
+  package_s3 = {
+    bucket          = "test-bucket"
+    key             = "test.pkg"
+    region          = "us-east-1"
+    endpoint_url    = %[2]q
+    expected_sha256 = %[3]q
+  }
+}
+`, fleetURL, s3URL, expectedSHA)
+}
+
+// TestAccSoftwarePackageResource_s3_compositeChecksum confirms apply fails
+// with the documented error when S3 only exposes a multipart composite
+// checksum (which doesn't equal sha256(content)).
+func TestAccSoftwarePackageResource_s3_compositeChecksum(t *testing.T) {
+	fleetdm.ResetS3ClientCache()
+	content := []byte("doesnt-matter")
+	s3 := &s3Mock{content: content, mode: s3ModeChecksumComposite}
+	fleet := &fleetSWMockState{titleID: 56, titleName: "test.pkg", displayName: "Composite", titleVersion: "1.0.0"}
+
+	s3Server := httptest.NewServer(s3.handler(t, "test-bucket/test.pkg"))
+	defer s3Server.Close()
+	fleetServer := httptest.NewServer(fleetSoftwareHandler(t, fleet))
+	defer fleetServer.Close()
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				ExpectError: regexp.MustCompile(`composite \(multipart\) SHA256 checksum`),
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_s3_metadataSHA confirms the fast path also
+// works when the SHA256 only comes from the x-amz-meta-sha256 header.
+func TestAccSoftwarePackageResource_s3_metadataSHA(t *testing.T) {
+	fleetdm.ResetS3ClientCache()
+	content := []byte("metadata-only-content")
+	shaHex := hex.EncodeToString(sumOf(content))
+	s3 := &s3Mock{content: content, mode: s3ModeMetadataOnly}
+	fleet := &fleetSWMockState{currentSHA: shaHex, titleID: 57, titleName: "test.pkg", displayName: "MetadataOnly", titleVersion: "1.0.0"}
+
+	s3Server := httptest.NewServer(s3.handler(t, "test-bucket/test.pkg"))
+	defer s3Server.Close()
+	fleetServer := httptest.NewServer(fleetSoftwareHandler(t, fleet))
+	defer fleetServer.Close()
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create.
+			{
+				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				Check:  resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaHex),
+			},
+			// Step 2: No-op apply must not download the body or re-upload.
+			{
+				PreConfig: func() {
+					_, getBefore := s3.snapshot()
+					uploadsBefore, _ := snapshotFleet(fleet)
+					t.Setenv("__metaonly_get_before", fmt.Sprintf("%d", getBefore))
+					t.Setenv("__metaonly_uploads_before", fmt.Sprintf("%d", uploadsBefore))
+				},
+				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					func(s *terraform.State) error {
+						_, getNow := s3.snapshot()
+						uploadsNow, _ := snapshotFleet(fleet)
+						getBefore, _ := strconv.Atoi(os.Getenv("__metaonly_get_before"))
+						uploadsBefore, _ := strconv.Atoi(os.Getenv("__metaonly_uploads_before"))
+						if getNow != getBefore {
+							return fmt.Errorf("metadata-SHA path triggered a body download: get %d -> %d", getBefore, getNow)
+						}
+						if uploadsNow != uploadsBefore {
+							return fmt.Errorf("metadata-SHA path triggered an upload: %d -> %d", uploadsBefore, uploadsNow)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_s3_noChecksum_fallsBackToDownload confirms the
+// warn-and-download fallback for objects with no usable SHA256.
+func TestAccSoftwarePackageResource_s3_noChecksum_fallsBackToDownload(t *testing.T) {
+	fleetdm.ResetS3ClientCache()
+	content := []byte("no-checksum-content")
+	shaHex := hex.EncodeToString(sumOf(content))
+	s3 := &s3Mock{content: content, mode: s3ModeNoChecksum}
+	fleet := &fleetSWMockState{currentSHA: shaHex, titleID: 58, titleName: "test.pkg", displayName: "NoChecksum", titleVersion: "1.0.0"}
+
+	s3Server := httptest.NewServer(s3.handler(t, "test-bucket/test.pkg"))
+	defer s3Server.Close()
+	fleetServer := httptest.NewServer(fleetSoftwareHandler(t, fleet))
+	defer fleetServer.Close()
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create succeeds even without a checksum (downloads body).
+			{
+				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				Check:  resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaHex),
+			},
+			// Step 2: Re-apply with unchanged content. We expect the body to
+			// be downloaded again (since we can't shortcut without a SHA),
+			// but the SHA still matches so no delete/upload should happen.
+			{
+				PreConfig: func() {
+					_, getBefore := s3.snapshot()
+					uploadsBefore, deletesBefore := snapshotFleet(fleet)
+					t.Setenv("__nocs_get_before", fmt.Sprintf("%d", getBefore))
+					t.Setenv("__nocs_uploads_before", fmt.Sprintf("%d", uploadsBefore))
+					t.Setenv("__nocs_deletes_before", fmt.Sprintf("%d", deletesBefore))
+				},
+				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					func(s *terraform.State) error {
+						_, getNow := s3.snapshot()
+						uploadsNow, deletesNow := snapshotFleet(fleet)
+						getBefore, _ := strconv.Atoi(os.Getenv("__nocs_get_before"))
+						uploadsBefore, _ := strconv.Atoi(os.Getenv("__nocs_uploads_before"))
+						deletesBefore, _ := strconv.Atoi(os.Getenv("__nocs_deletes_before"))
+						if getNow == getBefore {
+							return fmt.Errorf("fallback path should have downloaded the body, but get count didn't change: %d -> %d", getBefore, getNow)
+						}
+						if uploadsNow != uploadsBefore {
+							return fmt.Errorf("fallback no-op should not re-upload: uploads %d -> %d", uploadsBefore, uploadsNow)
+						}
+						if deletesNow != deletesBefore {
+							return fmt.Errorf("fallback no-op should not delete: deletes %d -> %d", deletesBefore, deletesNow)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_s3_expectedSHA confirms expected_sha256 bypasses
+// HeadObject and lets users opt-in even when their bucket has no checksum.
+func TestAccSoftwarePackageResource_s3_expectedSHA(t *testing.T) {
+	fleetdm.ResetS3ClientCache()
+	content := []byte("expected-sha-content")
+	shaHex := hex.EncodeToString(sumOf(content))
+	// Use a mode that returns NOTHING — proves we don't even look at HeadObject.
+	s3 := &s3Mock{content: content, mode: s3ModeNoChecksum}
+	fleet := &fleetSWMockState{currentSHA: shaHex, titleID: 59, titleName: "test.pkg", displayName: "ExpectedSHA", titleVersion: "1.0.0"}
+
+	s3Server := httptest.NewServer(s3.handler(t, "test-bucket/test.pkg"))
+	defer s3Server.Close()
+	fleetServer := httptest.NewServer(fleetSoftwareHandler(t, fleet))
+	defer fleetServer.Close()
+
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: Create — Create always downloads the body (it has to upload
+			// it to Fleet), but the cheap-SHA path is still honored everywhere else.
+			{
+				Config: testAccSoftwarePackageResourceConfig_s3WithExpected(fleetServer.URL, s3Server.URL, shaHex),
+				Check:  resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaHex),
+			},
+			// Step 2: No-op apply — neither HEAD nor GET should be touched
+			// for the cheap path (we trust expected_sha256).
+			{
+				PreConfig: func() {
+					headBefore, getBefore := s3.snapshot()
+					t.Setenv("__exp_head_before", fmt.Sprintf("%d", headBefore))
+					t.Setenv("__exp_get_before", fmt.Sprintf("%d", getBefore))
+				},
+				Config: testAccSoftwarePackageResourceConfig_s3WithExpected(fleetServer.URL, s3Server.URL, shaHex),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					func(s *terraform.State) error {
+						headNow, getNow := s3.snapshot()
+						headBefore, _ := strconv.Atoi(os.Getenv("__exp_head_before"))
+						getBefore, _ := strconv.Atoi(os.Getenv("__exp_get_before"))
+						if headNow != headBefore {
+							return fmt.Errorf("expected_sha256 path should NOT HEAD the object: head %d -> %d", headBefore, headNow)
+						}
+						if getNow != getBefore {
+							return fmt.Errorf("expected_sha256 path should NOT GET the object: get %d -> %d", getBefore, getNow)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_s3_expectedSHA_malformed confirms validation
+// rejects a non-hex expected_sha256 at plan time, before any network call.
+func TestAccSoftwarePackageResource_s3_expectedSHA_malformed(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "fleetdm" {
+  server_address = "http://invalid.test"
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "s3_test" {
+  filename = "test.pkg"
+  package_s3 = {
+    bucket          = "b"
+    key             = "k"
+    expected_sha256 = "nope-not-a-sha"
+  }
+}
+`,
+				ExpectError: regexp.MustCompile(`expected_sha256 must be 64 lowercase hexadecimal characters`),
+			},
+		},
+	})
 }
 
 func testAccSoftwarePackageResourceConfig(serverURL, pkgPath string) string {

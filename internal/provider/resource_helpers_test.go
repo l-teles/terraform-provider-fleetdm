@@ -195,7 +195,7 @@ func TestReadPackageContent(t *testing.T) {
 		model := &softwarePackageResourceModel{
 			PackagePath: types.StringValue(tmpFile),
 		}
-		got, sha, err := readPackageContent(context.Background(), model)
+		got, sha, err := readPackageContentForUpload(context.Background(), model)
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
@@ -217,8 +217,8 @@ func TestReadPackageContent(t *testing.T) {
 		modelA := &softwarePackageResourceModel{PackagePath: types.StringValue(fileA)}
 		modelB := &softwarePackageResourceModel{PackagePath: types.StringValue(fileB)}
 
-		_, shaA, _ := readPackageContent(context.Background(), modelA)
-		_, shaB, _ := readPackageContent(context.Background(), modelB)
+		_, shaA, _ := readPackageContentForUpload(context.Background(), modelA)
+		_, shaB, _ := readPackageContentForUpload(context.Background(), modelB)
 		if shaA == shaB {
 			t.Error("expected different SHAs for different content")
 		}
@@ -228,7 +228,7 @@ func TestReadPackageContent(t *testing.T) {
 		model := &softwarePackageResourceModel{
 			PackagePath: types.StringValue("/nonexistent/path/pkg.pkg"),
 		}
-		_, _, err := readPackageContent(context.Background(), model)
+		_, _, err := readPackageContentForUpload(context.Background(), model)
 		if err == nil {
 			t.Fatal("expected error for missing file, got nil")
 		}
@@ -236,7 +236,7 @@ func TestReadPackageContent(t *testing.T) {
 
 	t.Run("no source returns nil content", func(t *testing.T) {
 		model := &softwarePackageResourceModel{}
-		got, sha, err := readPackageContent(context.Background(), model)
+		got, sha, err := readPackageContentForUpload(context.Background(), model)
 		if err != nil {
 			t.Fatalf("expected no error, got: %v", err)
 		}
