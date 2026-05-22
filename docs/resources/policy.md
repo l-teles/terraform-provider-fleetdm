@@ -110,7 +110,7 @@ resource "fleetdm_policy" "conditional_access" {
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title to create a patch policy for. Required when `type = "patch"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
 - `platform` (List of String) List of platforms this policy applies to (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms. Must be omitted when `type = "patch"` — Fleet (4.84+) derives the effective platform from the patch target and rejects an explicit `platform`.
 
-**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared or shrunk via the API. Removing entries will appear as drift on every plan and never converge — destroy and recreate the policy to change platform targeting.
+**Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared via the API. The provider will plan a destroy+recreate when a previously-set list is changed back to an empty list — subset shrinks and value swaps (e.g. `["darwin","linux"]` → `["darwin"]`, `["darwin"]` → `["linux"]`) stay in-place.
 - `query` (String) The SQL query that defines the policy. The policy passes if the query returns results. Required when `type = "dynamic"` (the default). Must be omitted when `type = "patch"` — Fleet generates the query automatically for patch policies.
 - `resolution` (String) Instructions for resolving a failing policy check.
 

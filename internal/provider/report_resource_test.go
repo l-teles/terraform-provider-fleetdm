@@ -67,6 +67,82 @@ func TestAccReportResource_basic(t *testing.T) {
 	})
 }
 
+// TestAccReportResource_platformClearForcesReplace exercises the
+// requireReplaceOnPlatformShrink plan modifier. Fleet's PATCH /reports/{id}
+// endpoint silently drops empty `platform` (it gets stripped by `omitempty`),
+// so the provider must turn a non-empty -> empty change into a destroy+recreate
+// rather than letting Terraform produce an inconsistent post-apply state error.
+// Subset shrinks and swaps stay in-place because Fleet honors any non-empty
+// platform value sent.
+func TestAccReportResource_platformClearForcesReplace(t *testing.T) {
+	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: create with platform = ["windows", "darwin"].
+			{
+				Config: testAccReportResourceConfigMultiPlatform(reportName, `["windows", "darwin"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "platform.#", "2"),
+				),
+			},
+			// Step 2: grow the list — in-place update.
+			{
+				Config: testAccReportResourceConfigMultiPlatform(reportName, `["windows", "darwin", "linux"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("fleetdm_report.test", plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "platform.#", "3"),
+				),
+			},
+			// Step 3: subset shrink — also in-place, because a non-empty
+			// platform string still goes on the wire and Fleet overwrites
+			// the stored value.
+			{
+				Config: testAccReportResourceConfigMultiPlatform(reportName, `["darwin"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("fleetdm_report.test", plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "platform.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_report.test", "platform.0", "darwin"),
+				),
+			},
+			// Step 4: clear the list entirely — MUST replace, because the
+			// PATCH body would otherwise drop platform via omitempty and
+			// Fleet would silently keep the previous value.
+			{
+				Config: testAccReportResourceConfigMultiPlatform(reportName, `[]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("fleetdm_report.test", plancheck.ResourceActionReplace),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "platform.#", "0"),
+				),
+			},
+		},
+	})
+}
+
+func testAccReportResourceConfigMultiPlatform(name, platformsHCL string) string {
+	return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_report" "test" {
+  name     = %[1]q
+  query    = "SELECT 1;"
+  platform = %[2]s
+}
+`, name, platformsHCL)
+}
+
 func TestAccReportResource_withOptions(t *testing.T) {
 	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
 

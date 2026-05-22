@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	gopath "path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -24,6 +26,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
+
+// hexSHA256Re matches a lowercase hex-encoded SHA256.
+var hexSHA256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// fetchS3SHA256 is the function used to resolve the SHA256 of an S3 object via
+// HeadObject. It is a package-level variable so tests can stub it without
+// needing real S3 / httptest plumbing for every unit-style assertion.
+var fetchS3SHA256 = fleetdm.FetchS3ObjectSHA256
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
@@ -71,10 +81,11 @@ type softwarePackageResourceModel struct {
 
 // packageS3Model maps the nested package_s3 attribute.
 type packageS3Model struct {
-	Bucket      types.String `tfsdk:"bucket"`
-	Key         types.String `tfsdk:"key"`
-	Region      types.String `tfsdk:"region"`
-	EndpointURL types.String `tfsdk:"endpoint_url"`
+	Bucket         types.String `tfsdk:"bucket"`
+	Key            types.String `tfsdk:"key"`
+	Region         types.String `tfsdk:"region"`
+	EndpointURL    types.String `tfsdk:"endpoint_url"`
+	ExpectedSHA256 types.String `tfsdk:"expected_sha256"`
 }
 
 // Metadata returns the resource type name.
@@ -162,6 +173,16 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 					"endpoint_url": schema.StringAttribute{
 						Description: "Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.",
 						Optional:    true,
+					},
+					"expected_sha256": schema.StringAttribute{
+						Description: "Lowercase hex SHA256 of the S3 object's content, asserted out-of-band. " +
+							"When set, the provider skips HeadObject and trusts this value as the remote SHA. " +
+							"Use this when the bucket is read-only to your runner and you cannot add a SHA256 " +
+							"checksum or `x-amz-meta-sha256` metadata to the object. You are responsible for " +
+							"keeping this value in sync with the actual object — if it's wrong, Fleet will " +
+							"think the installer is unchanged and the package will NOT be re-uploaded. " +
+							"See the 'SHA256 verification with S3 sources' section of the documentation.",
+						Optional: true,
 					},
 				},
 			},
@@ -301,13 +322,24 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 					"package_s3.key must not be empty.",
 				)
 			}
+			if !s3Config.ExpectedSHA256.IsNull() && !s3Config.ExpectedSHA256.IsUnknown() {
+				v := s3Config.ExpectedSHA256.ValueString()
+				if !hexSHA256Re.MatchString(v) {
+					resp.Diagnostics.AddAttributeError(
+						path.Root("package_s3").AtName("expected_sha256"),
+						"Invalid Configuration",
+						"package_s3.expected_sha256 must be 64 lowercase hexadecimal characters (the hex-encoded SHA256 of the object's content).",
+					)
+				}
+			}
 		}
 	}
 }
 
 // ModifyPlan computes package_sha256 at plan time from the package source.
-// This ensures that changes to the file content (local or S3) are detected
-// even when the Terraform config itself hasn't changed.
+// For S3 sources this resolves the SHA via HeadObject when possible, falling
+// back to downloading the body only when neither a server-managed checksum nor
+// an x-amz-meta-sha256 header is available.
 func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
 	// Skip during destroy or when there's no plan (initial import).
 	if req.Plan.Raw.IsNull() {
@@ -326,24 +358,39 @@ func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.M
 		return
 	}
 
-	// Attempt to read the package and compute SHA at plan time.
-	_, computedSHA, err := readPackageContent(ctx, &plan)
-	if err != nil {
-		hasLocalPath := !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != ""
-		if hasLocalPath {
-			// Local file errors are surfaced as warnings during plan so users
-			// get early feedback. The actual error will occur during apply if
-			// the file is still missing.
-			resp.Diagnostics.AddWarning(
-				"Unable to read package file during plan",
-				fmt.Sprintf("Could not read %s: %s", plan.PackagePath.ValueString(), err.Error()),
-			)
+	// Try the cheap path first: HeadObject for S3, file hash for package_path.
+	sha, _, requiresDownload, diags := resolveRemoteSHA(ctx, &plan, true)
+
+	// Local-file errors are emitted by resolveRemoteSHA as errors. During plan
+	// we want them as warnings instead (the file may not exist yet on this
+	// machine even though it will at apply time). S3 errors stay as errors so
+	// the user sees them at plan time when they're real.
+	hasLocalPath := !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != ""
+	if diags.HasError() && hasLocalPath {
+		for _, d := range diags.Errors() {
+			resp.Diagnostics.AddWarning(d.Summary(), d.Detail())
 		}
-		// S3 errors are silently suppressed — credentials or endpoints may not be
-		// available during plan (e.g. assume-role not yet resolved).
+		// Don't append warnings on top.
 		return
 	}
-	if computedSHA == "" {
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if requiresDownload {
+		// Fall back to the body-download path. This is today's behavior for
+		// S3 objects with no SHA available.
+		_, downloadedSHA, err := readPackageContentForUpload(ctx, &plan)
+		if err != nil {
+			// S3 errors during plan can be transient (credentials not resolved
+			// yet, etc.) — silently suppress, the apply will surface them.
+			return
+		}
+		sha = downloadedSHA
+	}
+
+	if sha == "" {
 		return
 	}
 
@@ -358,7 +405,7 @@ func (r *softwarePackageResource) ModifyPlan(ctx context.Context, req resource.M
 		return
 	}
 
-	plan.PackageSHA256 = types.StringValue(computedSHA)
+	plan.PackageSHA256 = types.StringValue(sha)
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
@@ -393,8 +440,8 @@ func (r *softwarePackageResource) Create(ctx context.Context, req resource.Creat
 
 // createPackage handles creating a software package (upload).
 func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softwarePackageResourceModel, resp *resource.CreateResponse) {
-	// Read package content from local file or S3
-	packageContent, packageSHA256, err := readPackageContent(ctx, plan)
+	// Read package content from local file or S3 — Create always needs the body.
+	packageContent, packageSHA256, err := readPackageContentForUpload(ctx, plan)
 	if err != nil {
 		resp.Diagnostics.AddError("Error reading package", err.Error())
 		return
@@ -806,86 +853,70 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 }
 
 // updatePackageOrFMA handles updating a software package or Fleet Maintained App.
+//
+// Fast path: resolve the remote SHA cheaply (HeadObject for S3, file hash for
+// package_path). If it matches the SHA Fleet currently has stored (mirrored in
+// priorState.PackageSHA256), we know the binary is unchanged — skip the
+// download + delete + re-upload entirely and just PATCH metadata.
+//
+// Slow path: only when the cheap path is unavailable (S3 object has no SHA256)
+// or the SHA actually differs, we download the body, delete the old package,
+// and re-upload.
 func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, priorState *softwarePackageResourceModel, resp *resource.UpdateResponse) {
-	// Check if we have a package source (local file or S3)
-	packageContent, localSHA, err := readPackageContent(ctx, plan)
-	if err != nil {
-		resp.Diagnostics.AddError("Error reading package", err.Error())
-		return
-	}
+	hasPath := !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != ""
+	hasS3 := !plan.PackageS3.IsNull() && !plan.PackageS3.IsUnknown()
+	hasSource := hasPath || hasS3
 
-	if packageContent != nil {
-		// Compare with the SHA from the prior state (what Fleet had last time we read)
-		currentSHA := priorState.PackageSHA256.ValueString()
-		if localSHA != currentSHA {
-			// SHA differs — delete and re-upload the package
-			if err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID); err != nil {
-				if !isNotFound(err) {
-					resp.Diagnostics.AddError(
-						"Error replacing software package",
-						"Could not delete existing package before re-upload: "+err.Error(),
-					)
-					return
-				}
-			}
-
-			filename := deriveFilename(ctx, plan)
-			if filename == "" {
-				resp.Diagnostics.AddError("Missing filename", "Could not determine filename for re-upload. Set 'filename' explicitly.")
-				return
-			}
-			plan.Filename = types.StringValue(filename)
-
-			uploadReq := &fleetdm.UploadSoftwarePackageRequest{
-				TeamID:            teamID,
-				Software:          packageContent,
-				Filename:          filename,
-				InstallScript:     plan.InstallScript.ValueString(),
-				UninstallScript:   plan.UninstallScript.ValueString(),
-				PreInstallQuery:   plan.PreInstallQuery.ValueString(),
-				PostInstallScript: plan.PostInstallScript.ValueString(),
-				SelfService:       plan.SelfService.ValueBool(),
-				AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
-			}
-
-			uploadDiags := extractLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
-			resp.Diagnostics.Append(uploadDiags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			uploadDiags = extractLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
-			resp.Diagnostics.Append(uploadDiags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-
-			title, err := r.client.UploadSoftwarePackage(ctx, uploadReq)
-			if err != nil {
-				resp.Diagnostics.AddError(
-					"Error re-uploading software package",
-					"The existing package was deleted but the re-upload failed. "+
-						"The resource has been removed from state; run 'terraform apply' again to recreate it. "+
-						"Error: "+err.Error(),
-				)
-				resp.State.RemoveResource(ctx)
-				return
-			}
-
-			plan.ID = types.Int64Value(int64(title.ID))
-			plan.TitleID = types.Int64Value(int64(title.ID))
-			plan.Name = types.StringValue(title.Name)
-			if len(title.Versions) > 0 {
-				plan.Version = types.StringValue(title.Versions[0].Version)
-			}
-			if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
-				plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
-			}
-			plan.PackageSHA256 = types.StringValue(localSHA)
+	if hasSource {
+		// Try the cheap path first.
+		sha, _, requiresDownload, diags := resolveRemoteSHA(ctx, plan, true)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
 			return
 		}
 
-		// SHA matches — just update metadata below
-		plan.PackageSHA256 = types.StringValue(localSHA)
+		currentSHA := priorState.PackageSHA256.ValueString()
+
+		// Determine whether the binary actually needs to change.
+		needsUpload := false
+		var preFetched []byte
+		var resolvedSHA string
+
+		if !requiresDownload {
+			resolvedSHA = sha
+			needsUpload = sha != currentSHA || currentSHA == ""
+		} else {
+			// Cheap path unavailable — fall back to downloading and hashing.
+			content, localSHA, err := readPackageContentForUpload(ctx, plan)
+			if err != nil {
+				resp.Diagnostics.AddError("Error reading package", err.Error())
+				return
+			}
+			resolvedSHA = localSHA
+			preFetched = content
+			needsUpload = localSHA != currentSHA
+		}
+
+		if !needsUpload {
+			// Fleet already has this exact binary. Skip the heavy work and
+			// fall through to the metadata PATCH at the bottom.
+			plan.PackageSHA256 = types.StringValue(resolvedSHA)
+		} else {
+			// Need to re-upload. If we don't have the content yet (cheap path
+			// proved a difference), download it now.
+			if preFetched == nil {
+				content, localSHA, err := readPackageContentForUpload(ctx, plan)
+				if err != nil {
+					resp.Diagnostics.AddError("Error reading package", err.Error())
+					return
+				}
+				preFetched = content
+				resolvedSHA = localSHA
+			}
+			if !r.replaceSoftwarePackage(ctx, titleID, teamID, plan, preFetched, resolvedSHA, resp) {
+				return
+			}
+		}
 	}
 
 	// Update metadata only (scripts, labels, self-service, etc.)
@@ -921,9 +952,197 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 	}
 }
 
-// readPackageContent reads the package content from package_path or package_s3.
-// Returns the content, SHA256 hex digest, and any error.
-func readPackageContent(ctx context.Context, model *softwarePackageResourceModel) ([]byte, string, error) {
+// replaceSoftwarePackage deletes the existing software package in Fleet and
+// uploads the provided content as a replacement. On success it mutates `plan`
+// with the new title metadata. Returns true on success, false on failure (in
+// which case it has also appended diagnostics to resp).
+func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, content []byte, sha string, resp *resource.UpdateResponse) bool {
+	if err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID); err != nil {
+		if !isNotFound(err) {
+			resp.Diagnostics.AddError(
+				"Error replacing software package",
+				"Could not delete existing package before re-upload: "+err.Error(),
+			)
+			return false
+		}
+	}
+
+	filename := deriveFilename(ctx, plan)
+	if filename == "" {
+		resp.Diagnostics.AddError("Missing filename", "Could not determine filename for re-upload. Set 'filename' explicitly.")
+		return false
+	}
+	plan.Filename = types.StringValue(filename)
+
+	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
+		TeamID:            teamID,
+		Software:          content,
+		Filename:          filename,
+		InstallScript:     plan.InstallScript.ValueString(),
+		UninstallScript:   plan.UninstallScript.ValueString(),
+		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
+		PostInstallScript: plan.PostInstallScript.ValueString(),
+		SelfService:       plan.SelfService.ValueBool(),
+		AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
+	}
+
+	uploadDiags := extractLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
+	resp.Diagnostics.Append(uploadDiags...)
+	if resp.Diagnostics.HasError() {
+		return false
+	}
+	uploadDiags = extractLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(uploadDiags...)
+	if resp.Diagnostics.HasError() {
+		return false
+	}
+
+	title, err := r.client.UploadSoftwarePackage(ctx, uploadReq)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error re-uploading software package",
+			"The existing package was deleted but the re-upload failed. "+
+				"The resource has been removed from state; run 'terraform apply' again to recreate it. "+
+				"Error: "+err.Error(),
+		)
+		resp.State.RemoveResource(ctx)
+		return false
+	}
+
+	plan.ID = types.Int64Value(int64(title.ID))
+	plan.TitleID = types.Int64Value(int64(title.ID))
+	plan.Name = types.StringValue(title.Name)
+	if len(title.Versions) > 0 {
+		plan.Version = types.StringValue(title.Versions[0].Version)
+	}
+	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
+		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
+	}
+	plan.PackageSHA256 = types.StringValue(sha)
+	return true
+}
+
+// buildS3Source parses the package_s3 nested object into an fleetdm.S3Source and
+// the original model. It enforces bucket/key being known + non-empty.
+func buildS3Source(ctx context.Context, model *softwarePackageResourceModel) (fleetdm.S3Source, packageS3Model, error) {
+	var s3Config packageS3Model
+	diags := model.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
+	if diags.HasError() {
+		var details string
+		for _, d := range diags.Errors() {
+			details += d.Summary() + ": " + d.Detail() + "; "
+		}
+		return fleetdm.S3Source{}, s3Config, fmt.Errorf("could not parse package_s3 configuration: %s", details)
+	}
+
+	if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
+		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3 bucket and key must be known values; they cannot be derived from resources that haven't been created yet")
+	}
+	if s3Config.Bucket.ValueString() == "" {
+		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3 bucket must not be empty")
+	}
+	if s3Config.Key.ValueString() == "" {
+		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3 key must not be empty")
+	}
+
+	src := fleetdm.S3Source{
+		Bucket: s3Config.Bucket.ValueString(),
+		Key:    s3Config.Key.ValueString(),
+	}
+	if !s3Config.Region.IsNull() && !s3Config.Region.IsUnknown() {
+		src.Region = s3Config.Region.ValueString()
+	}
+	if !s3Config.EndpointURL.IsNull() && !s3Config.EndpointURL.IsUnknown() {
+		src.EndpointURL = s3Config.EndpointURL.ValueString()
+	}
+	return src, s3Config, nil
+}
+
+// resolveRemoteSHA returns the SHA256 of the configured package source without
+// downloading the body from S3. It is used by ModifyPlan and Update to decide
+// whether the installer in S3 differs from what Fleet already has stored.
+//
+// Returns:
+//   - sha: lowercase hex SHA256 of the package source (empty when no source is
+//     configured, or when requiresDownload is true).
+//   - source: human-readable label describing where the SHA came from
+//     ("local-file", "expected_sha256", "s3-checksum", "object-metadata").
+//   - requiresDownload: true when we could not get the SHA cheaply and the
+//     caller must fall back to downloading the body. Currently only happens
+//     for the S3 source when no checksum or metadata SHA is available.
+//   - diags: warnings (e.g. "falling back to download") and errors.
+//
+// allowExpected gates use of package_s3.expected_sha256. Set it true for
+// ModifyPlan / Update (where trusting the user is the whole point); false has
+// no current callers but is reserved.
+func resolveRemoteSHA(ctx context.Context, model *softwarePackageResourceModel, allowExpected bool) (string, string, bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	hasPath := !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != ""
+	s3Present := !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown()
+
+	if hasPath && s3Present {
+		diags.AddError("Conflicting Configuration", "package_path and package_s3 are mutually exclusive; set one or the other.")
+		return "", "", false, diags
+	}
+
+	switch {
+	case hasPath:
+		// Hashing a local file is cheap; just do it. We don't keep the bytes
+		// here — the caller calls readPackageContentForUpload when it actually
+		// needs to upload.
+		content, err := os.ReadFile(model.PackagePath.ValueString()) // #nosec G304 -- path comes from Terraform config
+		if err != nil {
+			diags.AddError("Unable to read package file", fmt.Sprintf("Could not read %s: %s", model.PackagePath.ValueString(), err.Error()))
+			return "", "", false, diags
+		}
+		sum := sha256.Sum256(content)
+		return hex.EncodeToString(sum[:]), "local-file", false, diags
+
+	case s3Present:
+		src, s3Config, err := buildS3Source(ctx, model)
+		if err != nil {
+			diags.AddError("Invalid package_s3", err.Error())
+			return "", "", false, diags
+		}
+
+		// User-supplied SHA wins — they're explicitly opting out of HEAD.
+		if allowExpected && !s3Config.ExpectedSHA256.IsNull() && !s3Config.ExpectedSHA256.IsUnknown() && s3Config.ExpectedSHA256.ValueString() != "" {
+			return s3Config.ExpectedSHA256.ValueString(), "expected_sha256", false, diags
+		}
+
+		sha, source, err := fetchS3SHA256(ctx, src)
+		switch {
+		case err == nil:
+			return sha, source, false, diags
+		case errors.Is(err, fleetdm.ErrUnsupportedChecksum):
+			diags.AddError("Unsupported S3 checksum", err.Error())
+			return "", "", false, diags
+		case errors.Is(err, fleetdm.ErrNoSHA256Available):
+			diags.AddWarning(
+				"S3 object has no SHA256 — falling back to download",
+				fmt.Sprintf(
+					"%s. The provider will download the object on every plan/apply to compute the SHA locally. "+
+						"To skip downloads on unchanged installers, see the 'SHA256 verification with S3 sources' section of the fleetdm_software_package documentation.",
+					err.Error(),
+				),
+			)
+			return "", "", true, diags
+		default:
+			diags.AddError("Error resolving S3 SHA256", err.Error())
+			return "", "", false, diags
+		}
+
+	default:
+		// No source configured — nothing to resolve, not an error.
+		return "", "", false, diags
+	}
+}
+
+// readPackageContentForUpload reads the full package content from package_path
+// or package_s3 (downloading from S3 when needed) and returns the content along
+// with its lowercase hex SHA256. Used by Create and by the slow path of Update.
+func readPackageContentForUpload(ctx context.Context, model *softwarePackageResourceModel) ([]byte, string, error) {
 	hasPath := !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != ""
 	s3Present := !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown()
 
@@ -934,48 +1153,22 @@ func readPackageContent(ctx context.Context, model *softwarePackageResourceModel
 	var content []byte
 	var err error
 
-	if hasPath {
+	switch {
+	case hasPath:
 		content, err = os.ReadFile(model.PackagePath.ValueString()) // #nosec G304 -- path comes from Terraform config
 		if err != nil {
 			return nil, "", fmt.Errorf("could not read package at %s: %w", model.PackagePath.ValueString(), err)
 		}
-	} else if s3Present {
-		var s3Config packageS3Model
-		diags := model.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
-		if diags.HasError() {
-			var details string
-			for _, d := range diags.Errors() {
-				details += d.Summary() + ": " + d.Detail() + "; "
-			}
-			return nil, "", fmt.Errorf("could not parse package_s3 configuration: %s", details)
+	case s3Present:
+		src, _, err := buildS3Source(ctx, model)
+		if err != nil {
+			return nil, "", err
 		}
-
-		if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
-			return nil, "", fmt.Errorf("package_s3 bucket and key must be known values; they cannot be derived from resources that haven't been created yet")
-		}
-		if s3Config.Bucket.ValueString() == "" {
-			return nil, "", fmt.Errorf("package_s3 bucket must not be empty")
-		}
-		if s3Config.Key.ValueString() == "" {
-			return nil, "", fmt.Errorf("package_s3 key must not be empty")
-		}
-
-		src := fleetdm.S3Source{
-			Bucket: s3Config.Bucket.ValueString(),
-			Key:    s3Config.Key.ValueString(),
-		}
-		if !s3Config.Region.IsNull() && !s3Config.Region.IsUnknown() {
-			src.Region = s3Config.Region.ValueString()
-		}
-		if !s3Config.EndpointURL.IsNull() && !s3Config.EndpointURL.IsUnknown() {
-			src.EndpointURL = s3Config.EndpointURL.ValueString()
-		}
-
 		content, err = fleetdm.DownloadS3Object(ctx, src)
 		if err != nil {
 			return nil, "", err
 		}
-	} else {
+	default:
 		return nil, "", nil // no source specified, that's OK for tracked-only packages
 	}
 
