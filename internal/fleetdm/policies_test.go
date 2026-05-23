@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -995,6 +996,72 @@ func TestClient_ListPoliciesByInstallSoftwareTitleID_Team(t *testing.T) {
 	}
 }
 
+// TestClient_ListPoliciesByInstallSoftwareTitleID_Paginates verifies the
+// helper walks every page of /global/policies until has_next_results=false,
+// finding matches across pages. Without pagination, Fleet's default
+// per_page=20 would cause matches on later pages to be missed and the
+// caller would hit the 409 "Policy automation uses this software" error
+// that this helper exists to prevent.
+func TestClient_ListPoliciesByInstallSoftwareTitleID_Paginates(t *testing.T) {
+	pagesServed := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/global/policies" {
+			t.Errorf("expected /global/policies, got %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("expected per_page=100, got %s", got)
+		}
+
+		pagesServed++
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "": // page 0 — first call omits the page param
+			_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+				Policies: []Policy{
+					{ID: 1, Name: "Other", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 99}},
+					{ID: 2, Name: "Match page 0", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				},
+				Meta: &PaginationMeta{HasNextResults: true},
+			})
+		case "1":
+			_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+				Policies: []Policy{
+					{ID: 3, Name: "Match page 1", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				},
+				Meta: &PaginationMeta{HasNextResults: true},
+			})
+		case "2":
+			_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+				Policies: []Policy{
+					{ID: 4, Name: "No automation"},
+					{ID: 5, Name: "Match page 2", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				},
+				Meta: &PaginationMeta{HasNextResults: false},
+			})
+		default:
+			t.Errorf("unexpected page=%s; pagination loop should have stopped", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByInstallSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if pagesServed != 3 {
+		t.Errorf("expected exactly 3 pages served, got %d", pagesServed)
+	}
+	wantIDs := []int{2, 3, 5}
+	gotIDs := make([]int, len(matches))
+	for i, p := range matches {
+		gotIDs[i] = p.ID
+	}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Errorf("expected matches %v, got %v", wantIDs, gotIDs)
+	}
+}
+
 func TestClient_ListPoliciesByInstallSoftwareTitleID_NoMatches(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1108,11 +1175,11 @@ func TestClient_SetPolicyInstallSoftwareTitleID_DetachPreservesFields(t *testing
 		t.Errorf("expected script_id 9001 to be preserved, got: %v", patchBody.ScriptID)
 	}
 	wantLabelsInc := []string{"Macs on Sonoma", "Macs in Engineering"}
-	if !equalStrings(patchBody.LabelsIncludeAny, wantLabelsInc) {
+	if !slices.Equal(patchBody.LabelsIncludeAny, wantLabelsInc) {
 		t.Errorf("expected labels_include_any %v, got: %v", wantLabelsInc, patchBody.LabelsIncludeAny)
 	}
 	wantLabelsExc := []string{"Exempt"}
-	if !equalStrings(patchBody.LabelsExcludeAny, wantLabelsExc) {
+	if !slices.Equal(patchBody.LabelsExcludeAny, wantLabelsExc) {
 		t.Errorf("expected labels_exclude_any %v, got: %v", wantLabelsExc, patchBody.LabelsExcludeAny)
 	}
 }
@@ -1163,19 +1230,7 @@ func TestPolicyLabelsToStrings(t *testing.T) {
 	in := []PolicyLabel{{ID: 1, Name: "Alpha"}, {ID: 2, Name: "Beta"}}
 	got := policyLabelsToStrings(in)
 	want := []string{"Alpha", "Beta"}
-	if !equalStrings(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("expected %v, got: %v", want, got)
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

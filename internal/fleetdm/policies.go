@@ -3,7 +3,20 @@ package fleetdm
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
+
+// maxPolicyListPages caps the pagination loop in
+// ListPoliciesByInstallSoftwareTitleID as a defense-in-depth measure against a
+// Fleet API regression that fails to flip has_next_results to false. 1000
+// pages × policyListPerPage per page is well above any realistic team size.
+const maxPolicyListPages = 1000
+
+// policyListPerPage is the per_page hint used by ListPoliciesByInstallSoftwareTitleID
+// when paginating /global/policies and /fleets/{teamID}/policies. Chosen large
+// enough that most fleets fit in a single request, but bounded so a misbehaving
+// server can't deliver an unbounded response in one shot.
+const policyListPerPage = 100
 
 // PolicyAutomationSoftware echoes the install_software automation attached to a policy.
 type PolicyAutomationSoftware struct {
@@ -330,25 +343,49 @@ func (c *Client) ListPolicies(ctx context.Context, teamID *int) ([]Policy, error
 
 // ListPoliciesByInstallSoftwareTitleID returns policies in the given scope
 // whose install_software automation references the given software title ID.
-// Fleet does not expose a server-side filter, so the implementation lists all
-// policies in the scope and filters client-side.
+// Fleet does not expose a server-side filter, so the implementation paginates
+// through all policies in the scope and filters client-side.
 //
 // Scope follows teamID: nil (or zero-pointer) selects global policies;
 // non-zero pointer selects the named team. Install_software policies can only
 // reference titles in the same scope, so callers should pass the same teamID
 // as the title being looked up.
+//
+// Pagination matters because the underlying /global/policies and
+// /fleets/{teamID}/policies endpoints default to per_page=20: without paging,
+// any team with more than 20 policies would silently miss matches and the
+// caller would then hit Fleet's "Policy automation uses this software" 409.
 func (c *Client) ListPoliciesByInstallSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
-	all, err := c.ListPolicies(ctx, teamID)
-	if err != nil {
-		return nil, err
+	endpoint := "/global/policies"
+	if isTeamScoped(teamID) {
+		endpoint = fmt.Sprintf("/fleets/%d/policies", *teamID)
 	}
+
 	var matches []Policy
-	for _, p := range all {
-		if p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID {
-			matches = append(matches, p)
+	for page := range maxPolicyListPages {
+		params := map[string]string{
+			"per_page": strconv.Itoa(policyListPerPage),
+		}
+		if page > 0 {
+			params["page"] = strconv.Itoa(page)
+		}
+
+		var resp ListPoliciesResponse
+		if err := c.Get(ctx, endpoint, params, &resp); err != nil {
+			return nil, fmt.Errorf("failed to list policies (page %d): %w", page, err)
+		}
+
+		for _, p := range resp.Policies {
+			if p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID {
+				matches = append(matches, p)
+			}
+		}
+
+		if resp.Meta == nil || !resp.Meta.HasNextResults {
+			return matches, nil
 		}
 	}
-	return matches, nil
+	return nil, fmt.Errorf("policy pagination exceeded %d pages — Fleet API may be returning has_next_results=true indefinitely", maxPolicyListPages)
 }
 
 // SetPolicyInstallSoftwareTitleID switches a policy's install_software
