@@ -15,9 +15,8 @@ data "fleetdm_fleet_maintained_app" "by_id" {
   id = 3
 }
 
-# Use the app ID to add it to a team via fleetdm_software_package
-resource "fleetdm_software_package" "chrome" {
-  type                    = "fleet_maintained"
+# Use the app ID to add it to a team via fleetdm_software_fleet_maintained_app.
+resource "fleetdm_software_fleet_maintained_app" "chrome" {
   fleet_maintained_app_id = data.fleetdm_fleet_maintained_app.chrome.id
   team_id                 = fleetdm_team.workstations.id
   self_service            = true

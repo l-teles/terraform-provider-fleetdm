@@ -30,13 +30,16 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_script`                | Manage shell/PowerShell scripts                            |
 | `fleetdm_enroll_secret`         | Manage enrollment secrets (global and fleet)               |
 | `fleetdm_user`                  | Manage Fleet users and permissions                         |
-| `fleetdm_software_package`      | Upload and manage software packages (Premium)              |
+| `fleetdm_software_custom_package`       | Upload custom installer packages — `.pkg`, `.msi`, `.deb`, `.rpm`, `.exe` (Premium) |
+| `fleetdm_software_app_store_app`        | Manage Apple Volume Purchase Program (App Store) apps (Premium)                     |
+| `fleetdm_software_fleet_maintained_app` | Add Fleet-curated apps to a team (Premium)                                          |
 | `fleetdm_bootstrap_package`     | Manage bootstrap packages for setup assistant (Premium)    |
 | `fleetdm_configuration`         | Manage global Fleet configuration                          |
 | `fleetdm_configuration_profile` | Manage MDM configuration profiles (Premium)                |
 | `fleetdm_setup_experience`      | Manage macOS setup experience settings (Premium)           |
 | `fleetdm_team` *(deprecated)*   | Deprecated alias for `fleetdm_fleet`                       |
 | `fleetdm_query` *(deprecated)*  | Deprecated alias for `fleetdm_report`                      |
+| `fleetdm_software_package` *(deprecated)* | Split into the three `fleetdm_software_*` resources above — see the migration guide |
 
 ### Data Sources (30)
 
@@ -174,7 +177,7 @@ resource "fleetdm_policy" "disk_encryption" {
 ### Upload a Software Package (Premium)
 
 ```hcl
-resource "fleetdm_software_package" "zoom" {
+resource "fleetdm_software_custom_package" "zoom" {
   team_id      = fleetdm_fleet.workstations.id
   filename     = "zoom-installer.pkg"
   package_path = "./packages/zoom-installer.pkg"
