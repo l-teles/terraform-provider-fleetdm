@@ -3,6 +3,7 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -350,14 +351,34 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
 		}
 
-		var req PatchSoftwarePackageRequest
-		json.NewDecoder(r.Body).Decode(&req)
-
-		if req.InstallScript != "new install script" {
-			t.Errorf("expected install_script 'new install script', got: %s", req.InstallScript)
+		// Fleet's PATCH /software/titles/{id}/package endpoint rejects
+		// application/json; the provider must send multipart/form-data.
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "multipart/form-data;") {
+			t.Errorf("expected Content-Type to start with multipart/form-data;, got: %s", ct)
 		}
-		if !req.SelfService {
-			t.Error("expected self_service to be true")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if got := r.FormValue("install_script"); got != "new install script" {
+			t.Errorf("expected install_script 'new install script', got: %q", got)
+		}
+		if got := r.FormValue("self_service"); got != "true" {
+			t.Errorf("expected self_service form field 'true', got: %q", got)
+		}
+		// Unset booleans must still be transmitted as "false" — Fleet treats
+		// omitted form fields as "no change", and the provider's contract is
+		// that PatchSoftwarePackage applies the caller's exact intent.
+		if got := r.FormValue("install_during_setup"); got != "false" {
+			t.Errorf("expected install_during_setup form field 'false' (unset bool), got: %q", got)
+		}
+		// nil/unset label slices must serialize as "[]" so Fleet sees an
+		// explicit "clear" rather than an absent field.
+		if got := r.FormValue("labels_include_any"); got != "[]" {
+			t.Errorf("expected labels_include_any '[]' for unset slice, got: %q", got)
+		}
+		if got := r.FormValue("labels_exclude_any"); got != "[]" {
+			t.Errorf("expected labels_exclude_any '[]' for unset slice, got: %q", got)
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -373,6 +394,72 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_EncodesLabels verifies that a populated
+// label slice is JSON-encoded into the multipart form field (mirroring
+// UploadSoftwarePackage's encoding).
+func TestClient_PatchSoftwarePackage_EncodesLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart: %v", err)
+		}
+		if got := r.FormValue("labels_include_any"); got != `["Macs on Sonoma","Engineering"]` {
+			t.Errorf("expected labels_include_any to be JSON-encoded array, got: %q", got)
+		}
+		if got := r.FormValue("labels_exclude_any"); got != `["Exempt"]` {
+			t.Errorf("expected labels_exclude_any to be JSON-encoded array, got: %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		LabelsIncludeAny: []string{"Macs on Sonoma", "Engineering"},
+		LabelsExcludeAny: []string{"Exempt"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_SurfacesError confirms the multipart helper
+// surfaces an HTTP 400 from Fleet correctly (this regression test guards
+// against ever re-introducing the application/json shape: the error message
+// would change to mention multipart parsing). It also pins the structured
+// errors[] array decode so the sendMultipart refactor cannot silently drop
+// it.
+func TestClient_PatchSoftwarePackage_SurfacesError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"validation failed","errors":[{"name":"install_script","reason":"too long"}]}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "validation failed") {
+		t.Errorf("expected error to surface Fleet message, got: %v", err)
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected error chain to contain *APIError, got: %T (%v)", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected APIError.StatusCode 400, got %d", apiErr.StatusCode)
+	}
+	if len(apiErr.Errors) != 1 {
+		t.Fatalf("expected APIError.Errors to carry 1 entry, got %d", len(apiErr.Errors))
+	}
+	if apiErr.Errors[0].Name != "install_script" || apiErr.Errors[0].Reason != "too long" {
+		t.Errorf("expected APIError.Errors[0] = {install_script, too long}, got %+v", apiErr.Errors[0])
 	}
 }
 

@@ -782,6 +782,163 @@ resource "fleetdm_software_package" "test" {
 `, serverURL, pkgPath)
 }
 
+func testAccSoftwarePackageResourceConfig_metadata(serverURL, pkgPath string, selfService bool, installScript string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  self_service   = %[3]t
+  install_script = %[4]q
+}
+`, serverURL, pkgPath, selfService, installScript)
+}
+
+// TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart drives a
+// create + metadata-only update and asserts that the PATCH that goes to
+// Fleet's /software/titles/{id}/package endpoint uses multipart/form-data —
+// not application/json. Fleet 4.x rejects the JSON shape with HTTP 400
+// ("failed to parse multipart form"), so this is the regression guard.
+//
+// It exercises two different metadata fields — `self_service` (boolean) and
+// `install_script` (string) — to make sure both wire-format encodings land
+// correctly, not just one.
+func TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type patchRecord struct {
+		contentType   string
+		selfService   string
+		installScript string
+	}
+	var (
+		mu                sync.Mutex
+		patches           []patchRecord
+		titleSelfService  bool
+		titleInstallScript string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
+		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == http.MethodPost:
+			// On create the upload itself carries the initial metadata; the
+			// multipart upload handler already validates the request shape.
+			// Parse install_script and self_service so the subsequent GETs
+			// reflect them and the test doesn't trip on a refresh-plan diff.
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("create-side ParseMultipartForm failed: %v", err)
+			} else {
+				mu.Lock()
+				titleInstallScript = r.FormValue("install_script")
+				titleSelfService = r.FormValue("self_service") == "true"
+				mu.Unlock()
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_package": map[string]interface{}{
+					"title_id": 70,
+					"team_id":  0,
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/70" && r.Method == http.MethodGet:
+			mu.Lock()
+			selfService := titleSelfService
+			installScript := titleInstallScript
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_title": map[string]interface{}{
+					"id":             70,
+					"name":           "test-app.pkg",
+					"display_name":   "Test App",
+					"source":         "pkg",
+					"hosts_count":    0,
+					"versions_count": 1,
+					"software_package": map[string]interface{}{
+						"title_id":       70,
+						"platform":       "darwin",
+						"hash_sha256":    hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
+						"self_service":   selfService,
+						"install_script": installScript,
+					},
+					"versions": []map[string]interface{}{
+						{"id": 1, "version": "1.0.0", "hosts_count": 0},
+					},
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/70/package" && r.Method == http.MethodPatch:
+			ct := r.Header.Get("Content-Type")
+			var selfService, installScript string
+			if strings.HasPrefix(ct, "multipart/form-data;") {
+				if err := r.ParseMultipartForm(1 << 20); err == nil {
+					selfService = r.FormValue("self_service")
+					installScript = r.FormValue("install_script")
+				}
+			}
+			mu.Lock()
+			patches = append(patches, patchRecord{contentType: ct, selfService: selfService, installScript: installScript})
+			titleSelfService = selfService == "true"
+			titleInstallScript = installScript
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/api/v1/fleet/software/titles/70/available_for_install" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSoftwarePackageResourceConfig_metadata(server.URL, pkgPath, false, "echo create"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "self_service", "false"),
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "install_script", "echo create"),
+				),
+			},
+			{
+				Config: testAccSoftwarePackageResourceConfig_metadata(server.URL, pkgPath, true, "echo updated"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "self_service", "true"),
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "install_script", "echo updated"),
+					func(s *terraform.State) error {
+						mu.Lock()
+						defer mu.Unlock()
+						if len(patches) == 0 {
+							return fmt.Errorf("expected at least one PATCH on /software/titles/70/package, got none")
+						}
+						for i, p := range patches {
+							if !strings.HasPrefix(p.contentType, "multipart/form-data;") {
+								return fmt.Errorf("patch #%d Content-Type must start with multipart/form-data;, got %q", i, p.contentType)
+							}
+						}
+						last := patches[len(patches)-1]
+						if last.selfService != "true" {
+							return fmt.Errorf("expected last PATCH to carry self_service=true, got %q", last.selfService)
+						}
+						if last.installScript != "echo updated" {
+							return fmt.Errorf("expected last PATCH to carry install_script=%q, got %q", "echo updated", last.installScript)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 // packageS3AttrTypes mirrors the attribute types of the package_s3 nested
 // block, used to construct types.Object values directly in tests.
 var packageS3AttrTypes = map[string]attr.Type{
