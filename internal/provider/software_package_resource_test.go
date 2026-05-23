@@ -40,28 +40,28 @@ func TestAccSoftwarePackageResource_basic(t *testing.T) {
 		switch {
 		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == "POST":
 			// Return the upload response with title_id so the client can fetch the title.
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_package": map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
+				"software_package": map[string]any{
 					"title_id": 42,
 					"team_id":  0,
 				},
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/42" && r.Method == "GET":
 			// Called by UploadSoftwarePackage after upload and by Read.
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_title": map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
 					"id":             42,
 					"name":           "test-app.pkg",
 					"display_name":   "Test App",
 					"source":         "pkg",
 					"hosts_count":    0,
 					"versions_count": 1,
-					"software_package": map[string]interface{}{
+					"software_package": map[string]any{
 						"title_id":    42,
 						"platform":    "darwin",
 						"hash_sha256": "ac7f05f70feb6201886d8a27a004bc322e7ba578262c984a213f48089e162183",
 					},
-					"versions": []map[string]interface{}{
+					"versions": []map[string]any{
 						{"id": 1, "version": "1.0.0", "hosts_count": 0},
 					},
 				},
@@ -95,26 +95,26 @@ func TestAccSoftwarePackageResource_vpp(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v1/fleet/software/app_store_apps" && r.Method == "POST":
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
 				"software_title_id": 100,
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/100" && r.Method == "GET":
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_title": map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
 					"id":             100,
 					"name":           "TestFlight",
 					"display_name":   "TestFlight",
 					"source":         "apps",
 					"hosts_count":    0,
 					"versions_count": 1,
-					"app_store_app": map[string]interface{}{
+					"app_store_app": map[string]any{
 						"app_store_id":   "899247664",
 						"platform":       "darwin",
 						"name":           "TestFlight",
 						"latest_version": "3.2.0",
 						"self_service":   true,
 					},
-					"versions": []map[string]interface{}{
+					"versions": []map[string]any{
 						{"id": 1, "version": "3.2.0", "hosts_count": 0},
 					},
 				},
@@ -150,25 +150,25 @@ func TestAccSoftwarePackageResource_fleet_maintained(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/v1/fleet/software/fleet_maintained_apps" && r.Method == "POST":
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
 				"software_title_id": 200,
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/200" && r.Method == "GET":
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_title": map[string]interface{}{
+			json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
 					"id":             200,
 					"name":           "Firefox",
 					"display_name":   "Firefox",
 					"source":         "pkg_packages",
 					"hosts_count":    0,
 					"versions_count": 1,
-					"software_package": map[string]interface{}{
+					"software_package": map[string]any{
 						"name":         "Firefox",
 						"version":      "125.0",
 						"platform":     "darwin",
 						"self_service": true,
 					},
-					"versions": []map[string]interface{}{
+					"versions": []map[string]any{
 						{"id": 1, "version": "125.0", "hosts_count": 0},
 					},
 				},
@@ -363,8 +363,8 @@ func fleetSoftwareHandler(t *testing.T, state *fleetSWMockState) http.HandlerFun
 			state.currentSHA = hex.EncodeToString(h[:])
 			state.uploadCount++
 			state.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_package": map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_package": map[string]any{
 					"title_id": state.titleID,
 					"team_id":  0,
 				},
@@ -375,20 +375,20 @@ func fleetSoftwareHandler(t *testing.T, state *fleetSWMockState) http.HandlerFun
 			state.mu.Lock()
 			sha := state.currentSHA
 			state.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_title": map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
 					"id":             state.titleID,
 					"name":           state.titleName,
 					"display_name":   state.displayName,
 					"source":         "pkg",
 					"hosts_count":    0,
 					"versions_count": 1,
-					"software_package": map[string]interface{}{
+					"software_package": map[string]any{
 						"title_id":    state.titleID,
 						"platform":    "darwin",
 						"hash_sha256": sha,
 					},
-					"versions": []map[string]interface{}{
+					"versions": []map[string]any{
 						{"id": 1, "version": state.titleVersion, "hosts_count": 0},
 					},
 				},
@@ -1232,8 +1232,8 @@ func TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart(t *testing.T
 				titleSelfService = r.FormValue("self_service") == "true"
 				mu.Unlock()
 			}
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_package": map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_package": map[string]any{
 					"title_id": 70,
 					"team_id":  0,
 				},
@@ -1243,22 +1243,22 @@ func TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart(t *testing.T
 			selfService := titleSelfService
 			installScript := titleInstallScript
 			mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"software_title": map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
 					"id":             70,
 					"name":           "test-app.pkg",
 					"display_name":   "Test App",
 					"source":         "pkg",
 					"hosts_count":    0,
 					"versions_count": 1,
-					"software_package": map[string]interface{}{
+					"software_package": map[string]any{
 						"title_id":       70,
 						"platform":       "darwin",
 						"hash_sha256":    hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
 						"self_service":   selfService,
 						"install_script": installScript,
 					},
-					"versions": []map[string]interface{}{
+					"versions": []map[string]any{
 						{"id": 1, "version": "1.0.0", "hosts_count": 0},
 					},
 				},
@@ -1548,4 +1548,297 @@ func TestResolveRemoteSHA_unknownBucketWithExpectedSHA(t *testing.T) {
 	if requiresDownload {
 		t.Error("expected requiresDownload=false")
 	}
+}
+
+// fakeFleetForLabels stands up the minimum surface (create, get-title,
+// patch, delete) the software_package resource hits during a label-focused
+// test, and records each PATCH so the test can assert on the wire shape.
+type fakeFleetForLabels struct {
+	srv *httptest.Server
+	mu  sync.Mutex
+	// state mirrored back to the provider on subsequent GETs
+	titleSelfService   bool
+	titleInstallScript string
+	// label snapshots captured on the most recent PATCH (nil means
+	// "absent in the multipart form").
+	patchIncludeLabels    []string
+	patchExcludeLabels    []string
+	patchIncludeFieldSeen bool
+	patchExcludeFieldSeen bool
+	patchCount            int
+	uploadIncludeFieldSet bool
+	uploadExcludeFieldSet bool
+}
+
+func newFakeFleetForLabels(t *testing.T) *fakeFleetForLabels {
+	t.Helper()
+	f := &fakeFleetForLabels{}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
+		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == http.MethodPost:
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm (upload): %v", err)
+			}
+			f.mu.Lock()
+			f.titleInstallScript = r.FormValue("install_script")
+			f.titleSelfService = r.FormValue("self_service") == "true"
+			_, f.uploadIncludeFieldSet = r.MultipartForm.Value["labels_include_any"]
+			_, f.uploadExcludeFieldSet = r.MultipartForm.Value["labels_exclude_any"]
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_package": map[string]any{"title_id": 71, "team_id": 0},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/71" && r.Method == http.MethodGet:
+			f.mu.Lock()
+			selfService := f.titleSelfService
+			installScript := f.titleInstallScript
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
+					"id":             71,
+					"name":           "test-app.pkg",
+					"source":         "pkg",
+					"hosts_count":    0,
+					"versions_count": 1,
+					"software_package": map[string]any{
+						"title_id":       71,
+						"platform":       "darwin",
+						"hash_sha256":    hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
+						"self_service":   selfService,
+						"install_script": installScript,
+					},
+					"versions": []map[string]any{{"id": 1, "version": "1.0.0", "hosts_count": 0}},
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/71/package" && r.Method == http.MethodPatch:
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm (patch): %v", err)
+			}
+			f.mu.Lock()
+			f.patchCount++
+			vals, incSeen := r.MultipartForm.Value["labels_include_any"]
+			f.patchIncludeFieldSeen = incSeen
+			f.patchIncludeLabels = nil
+			if incSeen && len(vals) > 0 {
+				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeLabels)
+			}
+			vals, excSeen := r.MultipartForm.Value["labels_exclude_any"]
+			f.patchExcludeFieldSeen = excSeen
+			f.patchExcludeLabels = nil
+			if excSeen && len(vals) > 0 {
+				_ = json.Unmarshal([]byte(vals[0]), &f.patchExcludeLabels)
+			}
+			f.titleInstallScript = r.FormValue("install_script")
+			f.titleSelfService = r.FormValue("self_service") == "true"
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/api/v1/fleet/software/titles/71/available_for_install" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func testAccSoftwarePackageResourceConfig_labels(serverURL, pkgPath, labelBlock string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo hi"
+%[3]s
+}
+`, serverURL, pkgPath, labelBlock)
+}
+
+// requirePatchInStep returns a Check func that fails unless an additional
+// PATCH was recorded by f between the previous step and this one. It
+// updates the captured counter via the closure so callers can chain Checks
+// without rebuilding the bookkeeping in each step. Without this guard, a
+// Check that asserts "field X was absent from the PATCH" would silently
+// pass if no PATCH ran at all in that step.
+func requirePatchInStep(f *fakeFleetForLabels, prevCount *int, inner func() error) func(*terraform.State) error {
+	return func(_ *terraform.State) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.patchCount == *prevCount {
+			return fmt.Errorf("expected step to trigger a PATCH (count still %d)", *prevCount)
+		}
+		*prevCount = f.patchCount
+		return inner()
+	}
+}
+
+// TestAccSoftwarePackageResource_metadataUpdateWithoutLabels reproduces the
+// v0.6.2 regression: a metadata-only update on a package with no labels in
+// HCL must not include labels_include_any or labels_exclude_any in the
+// PATCH multipart body. Fleet enforces "only one of …" and rejects both
+// being present with HTTP 400.
+func TestAccSoftwarePackageResource_metadataUpdateWithoutLabels(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetForLabels(t)
+	patchCount := 0
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, ""),
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if f.uploadIncludeFieldSet {
+						return fmt.Errorf("upload form must omit labels_include_any when HCL has no labels")
+					}
+					if f.uploadExcludeFieldSet {
+						return fmt.Errorf("upload form must omit labels_exclude_any when HCL has no labels")
+					}
+					return nil
+				},
+			},
+			{
+				Config: strings.Replace(
+					testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, ""),
+					`install_script = "echo hi"`,
+					`install_script = "echo updated"`, 1,
+				),
+				Check: requirePatchInStep(f, &patchCount, func() error {
+					if f.patchIncludeFieldSeen {
+						return fmt.Errorf("PATCH multipart body must omit labels_include_any when HCL has no labels, but field was present")
+					}
+					if f.patchExcludeFieldSeen {
+						return fmt.Errorf("PATCH multipart body must omit labels_exclude_any when HCL has no labels, but field was present")
+					}
+					return nil
+				}),
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_labelLifecycle drives the full lifecycle
+// of the label attribute on the multipart endpoints: set, explicit-clear
+// via empty list, switch to the other side, and remove. At each step we
+// assert which label fields land in the wire payload AND that a PATCH
+// actually ran during this step (otherwise stale state from a prior step
+// could mask a regression).
+func TestAccSoftwarePackageResource_labelLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetForLabels(t)
+	patchCount := 0
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Create with labels_include_any = ["Engineering"].
+				Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, `  labels_include_any = ["Engineering"]`),
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if !f.uploadIncludeFieldSet {
+						return fmt.Errorf("upload form must include labels_include_any when HCL set it")
+					}
+					if f.uploadExcludeFieldSet {
+						return fmt.Errorf("upload form must omit labels_exclude_any when HCL didn't set it")
+					}
+					return nil
+				},
+			},
+			{
+				// Switch sides: include → exclude. Provider must send
+				// labels_exclude_any=["Contractors"] and omit
+				// labels_include_any entirely, even though the prior
+				// state carried it. This is the most likely path to
+				// trip Fleet's "only one of …" rule if the resource
+				// ever leaked the previous side's value.
+				Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, `  labels_exclude_any = ["Contractors"]`),
+				Check: requirePatchInStep(f, &patchCount, func() error {
+					if f.patchIncludeFieldSeen {
+						return fmt.Errorf("PATCH must omit labels_include_any when HCL switched to labels_exclude_any")
+					}
+					if !f.patchExcludeFieldSeen {
+						return fmt.Errorf("PATCH must include labels_exclude_any when HCL set it")
+					}
+					if len(f.patchExcludeLabels) != 1 || f.patchExcludeLabels[0] != "Contractors" {
+						return fmt.Errorf("expected labels_exclude_any=[\"Contractors\"], got %v", f.patchExcludeLabels)
+					}
+					return nil
+				}),
+			},
+			{
+				// Explicit clear via empty list: must send labels_exclude_any="[]"
+				// and still omit labels_include_any.
+				Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, `  labels_exclude_any = []`),
+				Check: requirePatchInStep(f, &patchCount, func() error {
+					if !f.patchExcludeFieldSeen {
+						return fmt.Errorf("PATCH must include labels_exclude_any when HCL set [] for explicit clear")
+					}
+					if len(f.patchExcludeLabels) != 0 {
+						return fmt.Errorf("expected labels_exclude_any to decode as []string{}, got %v", f.patchExcludeLabels)
+					}
+					if f.patchIncludeFieldSeen {
+						return fmt.Errorf("PATCH must omit labels_include_any when HCL didn't set it")
+					}
+					return nil
+				}),
+			},
+			{
+				// Removing the attribute entirely → field absent again.
+				Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, ""),
+				Check: requirePatchInStep(f, &patchCount, func() error {
+					if f.patchIncludeFieldSeen {
+						return fmt.Errorf("PATCH must omit labels_include_any when HCL removed the attribute")
+					}
+					if f.patchExcludeFieldSeen {
+						return fmt.Errorf("PATCH must omit labels_exclude_any when HCL removed the attribute")
+					}
+					return nil
+				}),
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_conflictingLabels verifies the schema
+// validator rejects HCL that sets both labels_include_any and
+// labels_exclude_any, surfacing Fleet's "only one of …" invariant at
+// plan time instead of letting it fail at apply time.
+func TestAccSoftwarePackageResource_conflictingLabels(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetForLabels(t)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath, `
+  labels_include_any = ["A"]
+  labels_exclude_any = ["B"]`),
+				ExpectError: regexp.MustCompile(`(?i)Invalid Attribute Combination|labels_exclude_any|labels_include_any`),
+			},
+		},
+	})
 }

@@ -35,16 +35,18 @@ type SoftwareTitleVersion struct {
 
 // SoftwarePackageInfo represents software package installation info.
 type SoftwarePackageInfo struct {
-	Name               string `json:"name,omitempty"`
-	Version            string `json:"version,omitempty"`
-	Platform           string `json:"platform,omitempty"`
-	SelfService        bool   `json:"self_service,omitempty"`
-	InstallDuringSetup *bool  `json:"install_during_setup,omitempty"`
-	InstallScript      string `json:"install_script,omitempty"`
-	UninstallScript    string `json:"uninstall_script,omitempty"`
-	PreInstallQuery    string `json:"pre_install_query,omitempty"`
-	PostInstallScript  string `json:"post_install_script,omitempty"`
-	HashSHA256         string `json:"hash_sha256,omitempty"`
+	Name               string          `json:"name,omitempty"`
+	Version            string          `json:"version,omitempty"`
+	Platform           string          `json:"platform,omitempty"`
+	SelfService        bool            `json:"self_service,omitempty"`
+	InstallDuringSetup *bool           `json:"install_during_setup,omitempty"`
+	InstallScript      string          `json:"install_script,omitempty"`
+	UninstallScript    string          `json:"uninstall_script,omitempty"`
+	PreInstallQuery    string          `json:"pre_install_query,omitempty"`
+	PostInstallScript  string          `json:"post_install_script,omitempty"`
+	HashSHA256         string          `json:"hash_sha256,omitempty"`
+	LabelsIncludeAny   []SoftwareLabel `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny   []SoftwareLabel `json:"labels_exclude_any,omitempty"`
 }
 
 // AppStoreAppInfo represents App Store app info.
@@ -319,18 +321,34 @@ type SoftwareLabel struct {
 }
 
 // UploadSoftwarePackageRequest contains parameters for uploading a software package.
+//
+// LabelsIncludeAny / LabelsExcludeAny follow the same nil/empty/populated
+// semantics documented on PatchSoftwarePackageRequest:
+//
+//   - nil pointer        → field is omitted from the form entirely
+//   - pointer to empty   → field is sent as "[]"
+//   - pointer to a slice → field is sent as the JSON-encoded array
+//
+// Fleet's "Only one of labels_include_all, labels_include_any or
+// labels_exclude_any can be specified" rule applies to this endpoint too;
+// callers must not set both pointers non-nil. Note that Fleet's GET
+// response collapses "no labels" and "empty label list" into the same
+// absent/nil shape, so a subsequent Read cannot distinguish a pointer-to-
+// empty round-trip from a never-set one — the resource layer handles
+// that asymmetry by gating Read-side state refresh on prior-state being
+// non-null.
 type UploadSoftwarePackageRequest struct {
-	TeamID            *int     // Required for Premium
-	Software          []byte   // The software package file (pkg, msi, deb, rpm, exe)
-	Filename          string   // The filename of the package
-	InstallScript     string   // Script to run during install
-	UninstallScript   string   // Script to run during uninstall
-	PreInstallQuery   string   // Osquery to check before install
-	PostInstallScript string   // Script to run after install
-	SelfService       bool     // Enable self-service
-	AutomaticInstall  bool     // Automatically install on hosts
-	LabelsIncludeAny  []string // Labels to include (any match)
-	LabelsExcludeAny  []string // Labels to exclude
+	TeamID            *int      // Required for Premium
+	Software          []byte    // The software package file (pkg, msi, deb, rpm, exe)
+	Filename          string    // The filename of the package
+	InstallScript     string    // Script to run during install
+	UninstallScript   string    // Script to run during uninstall
+	PreInstallQuery   string    // Osquery to check before install
+	PostInstallScript string    // Script to run after install
+	SelfService       bool      // Enable self-service
+	AutomaticInstall  bool      // Automatically install on hosts
+	LabelsIncludeAny  *[]string // Labels to include (any match)
+	LabelsExcludeAny  *[]string // Labels to exclude
 }
 
 // uploadSoftwareResponse is the API response when uploading software.
@@ -366,15 +384,18 @@ func (c *Client) UploadSoftwarePackage(ctx context.Context, req *UploadSoftwareP
 	if req.AutomaticInstall {
 		fields["install_during_setup"] = "true"
 	}
-	if len(req.LabelsIncludeAny) > 0 {
-		labelsJSON, err := json.Marshal(req.LabelsIncludeAny)
+	// Same nil/empty/populated semantics as PatchSoftwarePackage; nil
+	// pointer omits the field, pointer-to-empty sends "[]" so a future
+	// Read can refresh state with the explicit "no labels" value.
+	if req.LabelsIncludeAny != nil {
+		labelsJSON, err := json.Marshal(*req.LabelsIncludeAny)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal labels_include_any: %w", err)
 		}
 		fields["labels_include_any"] = string(labelsJSON)
 	}
-	if len(req.LabelsExcludeAny) > 0 {
-		labelsJSON, err := json.Marshal(req.LabelsExcludeAny)
+	if req.LabelsExcludeAny != nil {
+		labelsJSON, err := json.Marshal(*req.LabelsExcludeAny)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
 		}
@@ -426,16 +447,32 @@ func (c *Client) DeleteSoftwarePackage(ctx context.Context, titleID int, teamID 
 }
 
 // PatchSoftwarePackageRequest contains fields that can be updated on an existing software package.
+//
+// Label fields use the same semantic convention as UpdatePolicyRequest in
+// policies.go: nil = "no change", empty = "clear all labels", populated =
+// "set to this exact set". Because this endpoint is multipart/form-data
+// (not JSON), an in-band representation of nil-vs-empty isn't possible for
+// a plain []string — so we use *[]string and translate at the wire layer
+// in PatchSoftwarePackage:
+//
+//   - nil pointer        → field is omitted from the form entirely
+//   - pointer to empty   → field is sent as "[]"
+//   - pointer to a slice → field is sent as the JSON-encoded array
+//
+// Fleet's API enforces "Only one of labels_include_all, labels_include_any
+// or labels_exclude_any can be specified" on this endpoint, so the caller
+// must never set both label pointers non-nil (the resource layer's schema
+// validator catches this at plan time).
 type PatchSoftwarePackageRequest struct {
-	TeamID             *int     `json:"team_id,omitempty"`
-	InstallScript      string   `json:"install_script"`
-	UninstallScript    string   `json:"uninstall_script"`
-	PreInstallQuery    string   `json:"pre_install_query"`
-	PostInstallScript  string   `json:"post_install_script"`
-	SelfService        bool     `json:"self_service"`
-	InstallDuringSetup bool     `json:"install_during_setup"`
-	LabelsIncludeAny   []string `json:"labels_include_any"`
-	LabelsExcludeAny   []string `json:"labels_exclude_any"`
+	TeamID             *int      `json:"team_id,omitempty"`
+	InstallScript      string    `json:"install_script"`
+	UninstallScript    string    `json:"uninstall_script"`
+	PreInstallQuery    string    `json:"pre_install_query"`
+	PostInstallScript  string    `json:"post_install_script"`
+	SelfService        bool      `json:"self_service"`
+	InstallDuringSetup bool      `json:"install_during_setup"`
+	LabelsIncludeAny   *[]string `json:"labels_include_any"`
+	LabelsExcludeAny   *[]string `json:"labels_exclude_any"`
 }
 
 // PatchSoftwarePackage updates the metadata of an existing software package (scripts, labels, flags).
@@ -466,25 +503,25 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 		"install_during_setup": strconv.FormatBool(req.InstallDuringSetup),
 	}
 
-	labelsInc := req.LabelsIncludeAny
-	if labelsInc == nil {
-		labelsInc = []string{}
+	// A nil label pointer means "don't touch this field". Sending both
+	// labels_include_any and labels_exclude_any (even as empty arrays)
+	// violates Fleet's "only one of …" invariant for this endpoint and
+	// gets rejected with HTTP 400. Empty (non-nil) is the explicit
+	// "clear labels" path: marshalling []string{} yields "[]".
+	if req.LabelsIncludeAny != nil {
+		labelsIncJSON, err := json.Marshal(*req.LabelsIncludeAny)
+		if err != nil {
+			return fmt.Errorf("failed to marshal labels_include_any: %w", err)
+		}
+		fields["labels_include_any"] = string(labelsIncJSON)
 	}
-	labelsIncJSON, err := json.Marshal(labelsInc)
-	if err != nil {
-		return fmt.Errorf("failed to marshal labels_include_any: %w", err)
+	if req.LabelsExcludeAny != nil {
+		labelsExcJSON, err := json.Marshal(*req.LabelsExcludeAny)
+		if err != nil {
+			return fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
+		}
+		fields["labels_exclude_any"] = string(labelsExcJSON)
 	}
-	fields["labels_include_any"] = string(labelsIncJSON)
-
-	labelsExc := req.LabelsExcludeAny
-	if labelsExc == nil {
-		labelsExc = []string{}
-	}
-	labelsExcJSON, err := json.Marshal(labelsExc)
-	if err != nil {
-		return fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
-	}
-	fields["labels_exclude_any"] = string(labelsExcJSON)
 
 	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
 		return fmt.Errorf("failed to patch software package: %w", err)
