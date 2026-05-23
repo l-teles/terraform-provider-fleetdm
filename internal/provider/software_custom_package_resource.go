@@ -50,24 +50,29 @@ type softwareCustomPackageResource struct {
 // type, app_store_id, fleet_maintained_app_id from the legacy model; the
 // resource is unambiguously a custom upload.
 type softwareCustomPackageResourceModel struct {
-	ID                types.Int64  `tfsdk:"id"`
-	TitleID           types.Int64  `tfsdk:"title_id"`
-	TeamID            types.Int64  `tfsdk:"team_id"`
-	Name              types.String `tfsdk:"name"`
-	Version           types.String `tfsdk:"version"`
-	Filename          types.String `tfsdk:"filename"`
-	PackagePath       types.String `tfsdk:"package_path"`
-	PackageS3         types.Object `tfsdk:"package_s3"`
-	PackageSHA256     types.String `tfsdk:"package_sha256"`
-	Platform          types.String `tfsdk:"platform"`
-	InstallScript     types.String `tfsdk:"install_script"`
-	UninstallScript   types.String `tfsdk:"uninstall_script"`
-	PreInstallQuery   types.String `tfsdk:"pre_install_query"`
-	PostInstallScript types.String `tfsdk:"post_install_script"`
-	SelfService       types.Bool   `tfsdk:"self_service"`
-	AutomaticInstall  types.Bool   `tfsdk:"automatic_install"`
-	LabelsIncludeAny  types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny  types.List   `tfsdk:"labels_exclude_any"`
+	ID                       types.Int64  `tfsdk:"id"`
+	TitleID                  types.Int64  `tfsdk:"title_id"`
+	TeamID                   types.Int64  `tfsdk:"team_id"`
+	Name                     types.String `tfsdk:"name"`
+	Version                  types.String `tfsdk:"version"`
+	DisplayName              types.String `tfsdk:"display_name"`
+	Filename                 types.String `tfsdk:"filename"`
+	PackagePath              types.String `tfsdk:"package_path"`
+	PackageS3                types.Object `tfsdk:"package_s3"`
+	PackageSHA256            types.String `tfsdk:"package_sha256"`
+	Platform                 types.String `tfsdk:"platform"`
+	InstallScript            types.String `tfsdk:"install_script"`
+	UninstallScript          types.String `tfsdk:"uninstall_script"`
+	PreInstallQuery          types.String `tfsdk:"pre_install_query"`
+	PostInstallScript        types.String `tfsdk:"post_install_script"`
+	SelfService              types.Bool   `tfsdk:"self_service"`
+	InstallDuringSetup       types.Bool   `tfsdk:"install_during_setup"`
+	AutomaticInstallPolicy   types.Bool   `tfsdk:"automatic_install_policy"`
+	Categories               types.List   `tfsdk:"categories"`
+	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
+	AutomaticInstallPolicies types.List   `tfsdk:"automatic_install_policies"`
 }
 
 // packageSource adapters so the shared binary-source helpers
@@ -90,6 +95,8 @@ func (r *softwareCustomPackageResource) Schema(_ context.Context, _ resource.Sch
 	for k, v := range softwareScriptAttributes() {
 		attrs[k] = v
 	}
+	attrs["categories"] = softwareCategoriesAttribute()
+	attrs["automatic_install_policy"] = softwareAutomaticInstallPolicyAttribute()
 	attrs["filename"] = schema.StringAttribute{
 		Description: "The filename of the package (e.g., 'myapp-1.0.0.pkg'). Required if the filename cannot be derived from package_path or package_s3.key.",
 		Optional:    true,
@@ -284,12 +291,16 @@ func (r *softwareCustomPackageResource) Create(ctx context.Context, req resource
 	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
 		Software:          packageContent,
 		Filename:          filename,
+		DisplayName:       plan.DisplayName.ValueString(),
 		InstallScript:     plan.InstallScript.ValueString(),
 		UninstallScript:   plan.UninstallScript.ValueString(),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
-		AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
+		// AutomaticInstall on the wire is Fleet's documented policy-based
+		// auto-install (creates a Fleet policy that installs the software
+		// on hosts missing it). Distinct from install_during_setup.
+		AutomaticInstall: plan.AutomaticInstallPolicy.ValueBool(),
 	}
 	uploadReq.TeamID = optionalIntPtr(plan.TeamID)
 
@@ -300,6 +311,16 @@ func (r *softwareCustomPackageResource) Create(ctx context.Context, req resource
 		return
 	}
 	d = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	d = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &uploadReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	d = extractLabels(ctx, plan.Categories, &uploadReq.Categories)
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -317,6 +338,7 @@ func (r *softwareCustomPackageResource) Create(ctx context.Context, req resource
 	plan.ID = types.Int64Value(int64(title.ID))
 	plan.TitleID = types.Int64Value(int64(title.ID))
 	plan.Name = types.StringValue(title.Name)
+	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
 	if len(title.Versions) > 0 {
 		plan.Version = types.StringValue(title.Versions[0].Version)
@@ -327,6 +349,40 @@ func (r *softwareCustomPackageResource) Create(ctx context.Context, req resource
 		plan.Platform = types.StringValue("")
 	}
 	plan.PackageSHA256 = types.StringValue(packageSHA256)
+	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+
+	// Persist state BEFORE attempting the setup-experience flip so a
+	// failure on that secondary call doesn't strand the just-created
+	// title outside Terraform state. Without this, a network blip or
+	// Fleet 5xx between Create and the flip leaves Fleet with the new
+	// title but the user with no way to converge via `terraform apply`
+	// (Create would re-fire). We pre-persist with InstallDuringSetup
+	// set to its plan value if true so the next plan after a flip
+	// failure shows the right diff (install_during_setup: true → still
+	// true, the flip attempt will re-run).
+	preFlipPlan := plan
+	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
+		preFlipPlan.InstallDuringSetup = types.BoolValue(false)
+	}
+	preDiags := resp.State.Set(ctx, preFlipPlan)
+	resp.Diagnostics.Append(preDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Post-create: flip install_during_setup via the separate Fleet endpoint
+	// if the user asked for it. The setup-experience helper serializes
+	// across concurrent resources on the same (team, platform).
+	if plan.InstallDuringSetup.ValueBool() {
+		if err := r.client.SetSetupExperienceSoftwareInclude(ctx, optionalIntPtr(plan.TeamID), plan.Platform.ValueString(), title.ID); err != nil {
+			resp.Diagnostics.AddError(
+				"Error setting install_during_setup",
+				"The software package was uploaded successfully but enabling install_during_setup failed: "+err.Error()+
+					". The resource is tracked in state; re-running `terraform apply` will retry the flip.",
+			)
+			return
+		}
+	}
 
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
@@ -405,16 +461,27 @@ func (r *softwareCustomPackageResource) Read(ctx context.Context, req resource.R
 	}
 	state.SelfService = types.BoolValue(pkg.SelfService)
 	if pkg.InstallDuringSetup != nil {
-		state.AutomaticInstall = types.BoolValue(*pkg.InstallDuringSetup)
+		state.InstallDuringSetup = types.BoolValue(*pkg.InstallDuringSetup)
 	}
+	// Policy-based auto-install is inferred from presence of any
+	// auto-install policies attached to the title.
+	state.AutomaticInstallPolicy = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 	if pkg.HashSHA256 != "" {
 		state.PackageSHA256 = types.StringValue(pkg.HashSHA256)
 	}
+	state.DisplayName = types.StringValue(title.DisplayName)
 	if pkg.LabelsIncludeAny != nil && !state.LabelsIncludeAny.IsNull() {
 		state.LabelsIncludeAny = labelsToStringListValue(pkg.LabelsIncludeAny)
 	}
 	if pkg.LabelsExcludeAny != nil && !state.LabelsExcludeAny.IsNull() {
 		state.LabelsExcludeAny = labelsToStringListValue(pkg.LabelsExcludeAny)
+	}
+	if pkg.LabelsIncludeAll != nil && !state.LabelsIncludeAll.IsNull() {
+		state.LabelsIncludeAll = labelsToStringListValue(pkg.LabelsIncludeAll)
+	}
+	if pkg.Categories != nil && !state.Categories.IsNull() {
+		state.Categories = stringSliceToStringList(pkg.Categories)
 	}
 
 	diags = resp.State.Set(ctx, state)
@@ -492,13 +559,13 @@ func (r *softwareCustomPackageResource) Update(ctx context.Context, req resource
 	}
 
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
-		TeamID:             teamID,
-		InstallScript:      plan.InstallScript.ValueString(),
-		UninstallScript:    plan.UninstallScript.ValueString(),
-		PreInstallQuery:    plan.PreInstallQuery.ValueString(),
-		PostInstallScript:  plan.PostInstallScript.ValueString(),
-		SelfService:        plan.SelfService.ValueBool(),
-		InstallDuringSetup: plan.AutomaticInstall.ValueBool(),
+		TeamID:            teamID,
+		InstallScript:     plan.InstallScript.ValueString(),
+		UninstallScript:   plan.UninstallScript.ValueString(),
+		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
+		PostInstallScript: plan.PostInstallScript.ValueString(),
+		SelfService:       plan.SelfService.ValueBool(),
+		DisplayName:       plan.DisplayName.ValueString(),
 	}
 
 	var d diag.Diagnostics
@@ -512,6 +579,16 @@ func (r *softwareCustomPackageResource) Update(ctx context.Context, req resource
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	d = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &patchReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	d = extractOptionalLabels(ctx, plan.Categories, &patchReq.Categories)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	if err := r.client.PatchSoftwarePackage(ctx, titleID, patchReq); err != nil {
 		resp.Diagnostics.AddError(
@@ -519,6 +596,34 @@ func (r *softwareCustomPackageResource) Update(ctx context.Context, req resource
 			"Could not update software package metadata: "+err.Error(),
 		)
 		return
+	}
+
+	// Carry over Computed attributes that the PATCH path doesn't refresh
+	// — the next Read will reconcile from Fleet. Without this, the
+	// framework treats them as Unknown after apply and errors with
+	// "Provider returned invalid result object".
+	if plan.AutomaticInstallPolicies.IsUnknown() {
+		plan.AutomaticInstallPolicies = state.AutomaticInstallPolicies
+	}
+	if plan.DisplayName.IsUnknown() {
+		plan.DisplayName = state.DisplayName
+	}
+
+	// Diff install_during_setup against prior state and call the
+	// setup-experience helper accordingly. Skip the API call when the
+	// value hasn't changed so we don't churn Fleet's set on every apply.
+	if !plan.InstallDuringSetup.Equal(state.InstallDuringSetup) {
+		if plan.InstallDuringSetup.ValueBool() {
+			if err := r.client.SetSetupExperienceSoftwareInclude(ctx, teamID, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error enabling install_during_setup", err.Error())
+				return
+			}
+		} else {
+			if err := r.client.SetSetupExperienceSoftwareExclude(ctx, teamID, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error disabling install_during_setup", err.Error())
+				return
+			}
+		}
 	}
 
 	diags = resp.State.Set(ctx, plan)
@@ -569,12 +674,13 @@ func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titl
 		TeamID:            teamID,
 		Software:          content,
 		Filename:          filename,
+		DisplayName:       plan.DisplayName.ValueString(),
 		InstallScript:     plan.InstallScript.ValueString(),
 		UninstallScript:   plan.UninstallScript.ValueString(),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
-		AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
+		AutomaticInstall:  plan.AutomaticInstallPolicy.ValueBool(),
 	}
 
 	uploadDiags := extractOptionalLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
@@ -583,6 +689,16 @@ func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titl
 		return false
 	}
 	uploadDiags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(uploadDiags...)
+	if resp.Diagnostics.HasError() {
+		return false
+	}
+	uploadDiags = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &uploadReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(uploadDiags...)
+	if resp.Diagnostics.HasError() {
+		return false
+	}
+	uploadDiags = extractLabels(ctx, plan.Categories, &uploadReq.Categories)
 	resp.Diagnostics.Append(uploadDiags...)
 	if resp.Diagnostics.HasError() {
 		return false

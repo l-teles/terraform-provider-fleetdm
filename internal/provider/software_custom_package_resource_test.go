@@ -254,3 +254,309 @@ resource "fleetdm_software_custom_package" "test" {
 		},
 	})
 }
+
+// TestAccSoftwareCustomPackageResource_installDuringSetupLifecycle drives
+// install_during_setup through Create-true, Update-false, Update-true.
+// Each transition must produce a PUT to /setup_experience/software with
+// the right title-IDs payload. Reading state after each step confirms the
+// resource correctly reflects Fleet's setup-experience set.
+func TestAccSoftwareCustomPackageResource_installDuringSetupLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 42
+
+	cfg := func(ids bool) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path         = %[2]q
+  filename             = "test-app.pkg"
+  install_script       = "echo install"
+  install_during_setup = %[3]t
+}
+`, f.srv.URL, pkgPath, ids)
+	}
+
+	priorPuts := 0
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "install_during_setup", "true"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts == priorPuts {
+							return fmt.Errorf("expected a PUT /setup_experience/software on Create-true, got none")
+						}
+						priorPuts = f.setupExperiencePuts
+						found := false
+						for _, id := range f.setupExperienceSet {
+							if id == f.titleID {
+								found = true
+							}
+						}
+						if !found {
+							return fmt.Errorf("expected title %d in setup-experience set after Create-true, got %v", f.titleID, f.setupExperienceSet)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "install_during_setup", "false"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts == priorPuts {
+							return fmt.Errorf("expected a PUT /setup_experience/software on Update-false, got none")
+						}
+						priorPuts = f.setupExperiencePuts
+						for _, id := range f.setupExperienceSet {
+							if id == f.titleID {
+								return fmt.Errorf("title %d must NOT be in setup-experience set after Update-false, got %v", f.titleID, f.setupExperienceSet)
+							}
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "install_during_setup", "true"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts == priorPuts {
+							return fmt.Errorf("expected a PUT /setup_experience/software on Update-true again, got none")
+						}
+						found := false
+						for _, id := range f.setupExperienceSet {
+							if id == f.titleID {
+								found = true
+							}
+						}
+						if !found {
+							return fmt.Errorf("expected title %d in setup-experience set after Update-true-again, got %v", f.titleID, f.setupExperienceSet)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_automaticInstallPolicyOnCreate
+// verifies that automatic_install_policy=true on Create sends Fleet's
+// `automatic_install=true` form field on the upload, and that the
+// Computed automatic_install_policies list surfaces the policies Fleet
+// reports.
+func TestAccSoftwareCustomPackageResource_automaticInstallPolicyOnCreate(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 51
+	// Simulate Fleet creating a policy in response to automatic_install=true.
+	f.titleAutomaticInstallPolicies = []map[string]any{
+		{"id": 7, "name": "Auto-install test-app.pkg"},
+	}
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path             = %[2]q
+  filename                 = "test-app.pkg"
+  install_script           = "echo install"
+  automatic_install_policy = true
+}
+`, f.srv.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policy", "true"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policies.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policies.0.id", "7"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policies.0.name", "Auto-install test-app.pkg"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.uploadAutomaticInstall != "true" {
+							return fmt.Errorf("upload form must carry automatic_install=true, got %q", f.uploadAutomaticInstall)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_displayNameAndCategoriesLifecycle
+// exercises the new display_name + categories attributes across Create
+// and Update. Verifies each transition lands on the wire and round-trips
+// through state.
+func TestAccSoftwareCustomPackageResource_displayNameAndCategoriesLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 61
+
+	cfg := func(displayName, categoriesHCL string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+  display_name   = %[3]q
+%[4]s
+}
+`, f.srv.URL, pkgPath, displayName, categoriesHCL)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("MyApp", `  categories = ["Productivity", "Security"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "display_name", "MyApp"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "categories.#", "2"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "categories.0", "Productivity"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.uploadDisplayName != "MyApp" {
+							return fmt.Errorf("upload display_name=%q, want MyApp", f.uploadDisplayName)
+						}
+						if f.uploadCategories == "" {
+							return fmt.Errorf("upload form must include categories")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg("MyApp Renamed", `  categories = ["Productivity"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "display_name", "MyApp Renamed"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "categories.#", "1"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.patchDisplayName != "MyApp Renamed" {
+							return fmt.Errorf("patch display_name=%q, want MyApp Renamed", f.patchDisplayName)
+						}
+						if f.patchCategories == "" {
+							return fmt.Errorf("patch form must include categories")
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_labelsIncludeAllLifecycle covers
+// the new labels_include_all attribute end-to-end: set, switch to
+// labels_include_any (clearing include_all via empty list), drop entirely.
+// Verifies each step's PATCH multipart body carries the right form keys.
+func TestAccSoftwareCustomPackageResource_labelsIncludeAllLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 71
+
+	cfg := func(labels string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+%[3]s
+}
+`, f.srv.URL, pkgPath, labels)
+	}
+
+	priorPatchCount := 0
+	requirePatchAt := func(check func(*fakeFleetSoftwareServer) error) func(*terraform.State) error {
+		return func(_ *terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.patchCount == priorPatchCount {
+				return fmt.Errorf("expected a PATCH at this step (count still %d)", priorPatchCount)
+			}
+			priorPatchCount = f.patchCount
+			return check(f)
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(`  labels_include_all = ["Engineering", "macOS"]`),
+			},
+			{
+				Config: cfg(`  labels_include_any = ["Engineering"]`),
+				Check: requirePatchAt(func(f *fakeFleetSoftwareServer) error {
+					if !f.patchIncludeFieldSeen {
+						return fmt.Errorf("PATCH must include labels_include_any when HCL switches to it")
+					}
+					return nil
+				}),
+			},
+			{
+				Config: cfg(``),
+				Check: requirePatchAt(func(f *fakeFleetSoftwareServer) error {
+					if f.patchIncludeFieldSeen || f.patchExcludeFieldSeen {
+						return fmt.Errorf("PATCH must omit labels when HCL drops them; got include=%v exclude=%v", f.patchIncludeFieldSeen, f.patchExcludeFieldSeen)
+					}
+					return nil
+				}),
+			},
+		},
+	})
+}

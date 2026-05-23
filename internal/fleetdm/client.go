@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,14 @@ type Client struct {
 
 	// UserAgent is the user agent string sent with each request.
 	UserAgent string
+
+	// setupExperienceMu holds a *sync.Mutex per (teamID, platform) so the
+	// read-modify-write pattern on PUT /setup_experience/software (a
+	// replace-the-whole-list endpoint) is serialized across concurrent
+	// Terraform resources within a single apply. Cross-process races
+	// against the Fleet UI remain a user-facing concern — documented on
+	// the install_during_setup attribute.
+	setupExperienceMu sync.Map
 }
 
 // ClientConfig holds configuration options for creating a new Client.

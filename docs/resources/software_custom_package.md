@@ -120,11 +120,17 @@ resource "fleetdm_software_custom_package" "example_app_s3_pinned" {
 
 ### Optional
 
-- `automatic_install` (Boolean) Whether to automatically install the software during device setup (install during setup). Defaults to false.
+- `automatic_install_policy` (Boolean) When true, Fleet automatically creates a policy that installs this software on hosts missing it. Distinct from `install_during_setup`, which flags the title for installation during the first-boot Setup Assistant flow. Forces resource replacement because Fleet only honors this flag at title creation. Computed-policy IDs are exposed via the `automatic_install_policies` attribute.
+- `categories` (List of String) Zero or more self-service categories the software appears under on the end-user's *My device* page. Supported values are documented under the `software` section at https://fleetdm.com/docs/configuration/yaml-files — at time of writing: `Browsers`, `Communication`, `Developer tools`, `Productivity`, `Security`, `Utilities`. To clear previously-set categories, set this attribute to `[]` explicitly; omitting it preserves Fleet's existing categories.
+- `display_name` (String) End-user-visible name shown for this software in Fleet's UI (e.g. on the Self Service page). Optional override for Fleet's auto-derived name (the installer's intrinsic name for custom packages, the App Store metadata for VPP, the catalog name for Fleet Maintained Apps). Computed when omitted.
 - `filename` (String) The filename of the package (e.g., 'myapp-1.0.0.pkg'). Required if the filename cannot be derived from package_path or package_s3.key.
+- `install_during_setup` (Boolean) Whether to install this software during the device's Setup Assistant / first-boot setup experience. Routes to Fleet's `PUT /setup_experience/software` endpoint, which manages a per-team-per-platform set of titles flagged for setup-time installation. Distinct from `automatic_install_policy`, which creates a Fleet policy that installs the software on hosts missing it (the policy-based path). 
+
+Multi-resource race: when two `fleetdm_software_*` resources on the same team and platform both flip `install_during_setup = true` in a single `terraform apply`, the provider serializes the updates per-(team, platform) inside the API client to avoid losing one — but cross-process race conditions (another `terraform apply` against the same team/platform at the same time, or a concurrent Fleet UI change) remain a user concern. Defaults to false.
 - `install_script` (String) Script to run during installation. Optional — Fleet picks a default for the package type when omitted.
-- `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any`; the conflict is enforced by the validator on `labels_include_any`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
-- `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels. Mutually exclusive with `labels_exclude_any` (Fleet's API rejects requests that set both). To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` and `labels_include_all`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_include_all` (List of String) List of label names. The software will be available for hosts that match *all* of these labels. Mutually exclusive with `labels_include_any` and `labels_exclude_any`; the conflict is enforced by validators on the other two. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_include_any` (List of String) List of label names. The software will be available for hosts that match *any* of these labels. Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `package_path` (String) Filesystem path to the package file. If set, the file is uploaded to Fleet whenever its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with `package_s3`.
 - `package_s3` (Attributes) S3 source for the package binary. Alternative to `package_path`. The provider reads the SHA256 via HeadObject and only downloads + re-uploads to Fleet when the hash differs from what Fleet has stored. Mutually exclusive with `package_path`. `bucket`, `key`, and `region` may reference module outputs or other resources' attributes — when their values aren't yet known at plan time, the SHA comparison is deferred to apply time. (see [below for nested schema](#nestedatt--package_s3))
 - `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed at plan time from the local file (package_path) or S3 object (package_s3), or read from Fleet's API. Can be set explicitly to avoid drift on import.
@@ -137,6 +143,7 @@ resource "fleetdm_software_custom_package" "example_app_s3_pinned" {
 
 ### Read-Only
 
+- `automatic_install_policies` (Attributes List) Computed. The list of Fleet policies that auto-install this software title on hosts that fail the policy. Populated by Fleet when `automatic_install_policy = true` is set at Create time (for resources that support it), or when an admin attaches an `install_software` policy via Fleet's UI. Each entry exposes the policy `id` and `name` so you can reference them from other Terraform resources. (see [below for nested schema](#nestedatt--automatic_install_policies))
 - `id` (Number) The unique identifier (internal, same as title_id).
 - `name` (String) The name of the software, as parsed by Fleet from the installer or App Store metadata.
 - `title_id` (Number) The software title ID.
@@ -155,3 +162,12 @@ Optional:
 - `endpoint_url` (String) Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.
 - `expected_sha256` (String) Lowercase hex SHA256 of the S3 object's content, asserted out-of-band. When set, the provider skips HeadObject and trusts this value as the remote SHA. Use this when the bucket is read-only to your runner and you cannot add a SHA256 checksum or `x-amz-meta-sha256` metadata to the object. You are responsible for keeping this value in sync with the actual object — if it's wrong, Fleet will think the installer is unchanged and the package will NOT be re-uploaded.
 - `region` (String) The AWS region. Uses AWS_REGION or default config if omitted.
+
+
+<a id="nestedatt--automatic_install_policies"></a>
+### Nested Schema for `automatic_install_policies`
+
+Read-Only:
+
+- `id` (Number) The Fleet policy ID.
+- `name` (String) The Fleet policy name.
