@@ -37,14 +37,42 @@ func (c *Client) doMultipartRequest(ctx context.Context, method, endpoint, fileF
 		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 
+	return c.sendMultipart(ctx, method, endpoint, &body, writer.FormDataContentType())
+}
+
+// doMultipartFormRequest builds a multipart/form-data request with only text
+// fields (no file part) and returns the raw response body. Use this for
+// endpoints that require multipart/form-data but where the caller has no file
+// to attach — Fleet's PATCH /software/titles/{id}/package is one such
+// endpoint, and rejects application/json bodies outright.
+func (c *Client) doMultipartFormRequest(ctx context.Context, method, endpoint string, fields map[string]string) ([]byte, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	for k, v := range fields {
+		if err := writer.WriteField(k, v); err != nil {
+			return nil, fmt.Errorf("failed to write field %s: %w", k, err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	return c.sendMultipart(ctx, method, endpoint, &body, writer.FormDataContentType())
+}
+
+// sendMultipart executes a multipart/form-data request whose body has already
+// been built and closed. Shared by doMultipartRequest and doMultipartFormRequest.
+func (c *Client) sendMultipart(ctx context.Context, method, endpoint string, body io.Reader, contentType string) ([]byte, error) {
 	reqURL := c.BaseURL + endpoint
-	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, &body)
+	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", c.UserAgent)
 
