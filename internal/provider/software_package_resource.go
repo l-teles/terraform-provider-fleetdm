@@ -1115,17 +1115,17 @@ func resolveRemoteSHA(ctx context.Context, model *softwarePackageResourceModel, 
 		return hex.EncodeToString(sum[:]), "local-file", false, diags
 
 	case s3Present:
-		// Read expected_sha256 directly before calling buildS3Source so that
-		// users who pinned the SHA out-of-band still get the fast path even
-		// when their bucket/key reference resolves only at apply time.
-		var s3Cfg packageS3Model
-		if d := model.PackageS3.As(ctx, &s3Cfg, basetypes.ObjectAsOptions{}); !d.HasError() {
-			if allowExpected && !s3Cfg.ExpectedSHA256.IsNull() && !s3Cfg.ExpectedSHA256.IsUnknown() && s3Cfg.ExpectedSHA256.ValueString() != "" {
-				return s3Cfg.ExpectedSHA256.ValueString(), "expected_sha256", false, diags
-			}
+		// buildS3Source returns the parsed packageS3Model even when bucket/key
+		// are Unknown, so we can read expected_sha256 off it whether or not
+		// the S3 source itself is resolvable. That lets users who pinned the
+		// SHA out-of-band still hit the fast path when their bucket/key
+		// reference only resolves at apply time.
+		src, s3Cfg, err := buildS3Source(ctx, model)
+
+		if allowExpected && !s3Cfg.ExpectedSHA256.IsNull() && !s3Cfg.ExpectedSHA256.IsUnknown() && s3Cfg.ExpectedSHA256.ValueString() != "" {
+			return s3Cfg.ExpectedSHA256.ValueString(), "expected_sha256", false, diags
 		}
 
-		src, _, err := buildS3Source(ctx, model)
 		if err != nil {
 			if errors.Is(err, errS3SourceUnknown) {
 				// Bucket and/or key not yet known. Defer the SHA computation

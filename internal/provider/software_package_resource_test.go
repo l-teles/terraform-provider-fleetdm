@@ -898,6 +898,35 @@ func TestValidatePackageS3_invalidExpectedSHA256Rejected(t *testing.T) {
 	}
 }
 
+// TestValidatePackageS3_invalidExpectedSHA256WithUnknownBucketRejected covers
+// the corner case where a malformed expected_sha256 is paired with an Unknown
+// bucket. validatePackageS3 must catch the bad SHA at the config-validation
+// gate so it never reaches the HEAD-bypass logic in resolveRemoteSHA, which
+// would otherwise trust whatever string was provided.
+func TestValidatePackageS3_invalidExpectedSHA256WithUnknownBucketRejected(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringUnknown(),
+		Key:            types.StringUnknown(),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringValue("not-a-hash"),
+	}
+	diags := validatePackageS3(s3)
+	if !diags.HasError() {
+		t.Fatal("expected a diagnostic for malformed expected_sha256 even with Unknown bucket, got none")
+	}
+	found := false
+	for _, d := range diags.Errors() {
+		if strings.Contains(d.Detail(), "64 lowercase hexadecimal characters") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected the expected_sha256-format diagnostic, got: %v", diags)
+	}
+}
+
 func TestValidatePackageS3_validConfigAccepted(t *testing.T) {
 	s3 := packageS3Model{
 		Bucket:         types.StringValue("my-bucket"),
