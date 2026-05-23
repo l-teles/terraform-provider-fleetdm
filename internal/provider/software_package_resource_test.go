@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -1014,10 +1015,10 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_reattachFailureSav
 	initialTitleRef := 62
 	ps := &fleetPolicyMockState{installSoftwareTitleID: &initialTitleRef}
 
-	var failReattach bool
+	var failReattach atomic.Bool
 	baseHandler := installSoftwarePolicyHandler(t, ps, fleet, "/api/v1/fleet/global/policies", "/api/v1/fleet/global/policies/1")
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/fleet/global/policies/1" && r.Method == http.MethodPatch && failReattach {
+		if r.URL.Path == "/api/v1/fleet/global/policies/1" && r.Method == http.MethodPatch && failReattach.Load() {
 			raw, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(raw))
 			var body struct {
@@ -1055,7 +1056,7 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_reattachFailureSav
 					if err := os.WriteFile(pkgPath, contentV2, 0o600); err != nil {
 						t.Fatal(err)
 					}
-					failReattach = true
+					failReattach.Store(true)
 				},
 				Config:      testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
 				ExpectError: regexp.MustCompile(`(?s)Error re-attaching install_software automation.*1.*Install Test App`),
@@ -1067,7 +1068,7 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_reattachFailureSav
 			// state survived the failed step.
 			{
 				PreConfig: func() {
-					failReattach = false
+					failReattach.Store(false)
 				},
 				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
 				Check: func(s *terraform.State) error {
