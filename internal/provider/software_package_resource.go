@@ -1351,58 +1351,34 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 	}
 }
 
-// replaceSoftwarePackage deletes the existing software package in Fleet and
-// uploads the provided content as a replacement. On success it mutates `plan`
-// with the new title metadata. Returns true on success, false on failure (in
-// which case it has also appended diagnostics to resp).
+// replaceSoftwarePackage replaces the package binary in-place via Fleet's
+// PATCH /software/titles/{id}/package endpoint. The title_id is preserved
+// across the upgrade (it's in the URL path), so every policy that
+// references the title — install_software AND patch_software — stays
+// linked. No DELETE, no policy detach/reattach dance.
 //
-// Fleet refuses to delete a software title that any policy references via
-// install_software automation (HTTP 409: "Couldn't delete. Policy automation
-// uses this software."). Before issuing the delete, the function scans for
-// such policies and clears their software_title_id; after the re-upload
-// succeeds, it re-points them at the new title id returned by Fleet (which
-// may or may not equal the previous id, depending on whether Fleet matches
-// by bundle id).
+// This is the only safe shape against Fleet's policy model as of this
+// writing: Fleet's ModifyPolicyPayload does not expose
+// patch_software_title_id, so we cannot clear it from a patch policy via
+// PATCH — and Fleet refuses to DELETE a software title while any patch
+// policy references it ("Couldn't delete. This software has a patch
+// policy"). Replacing the binary in place sidesteps both constraints
+// entirely. If a future Fleet release exposes patch_software_title_id on
+// the modify endpoint, the DELETE+UPLOAD path becomes viable again — but
+// PATCH-in-place is still strictly preferable because it preserves
+// title_id and avoids the window where the package doesn't exist.
+//
+// Fleet's docs note that changing the installer package resets
+// installation counts and cancels pending installs for the old package;
+// that's expected behavior for any binary swap.
+//
+// Partial-failure recovery: if the PATCH succeeds but the follow-up
+// GetSoftwareTitle fails, we surface an error without persisting state.
+// The next apply's SHA fast-path will see state.PackageSHA256 != Fleet's
+// current SHA (Fleet has the new binary; state still has the old one)
+// and call replaceSoftwarePackage again — idempotent against the new
+// binary, so the second apply recovers.
 func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, content []byte, sha string, resp *resource.UpdateResponse) bool {
-	// Step 1: detach any install_software / patch_software automation pointing at this title.
-	attachedInstall, attachedPatch, err := listPoliciesBlockingTitleDelete(ctx, r.client, titleID, teamID)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error replacing software package",
-			"Could not list policies before re-upload (needed to clear policy automation): "+err.Error(),
-		)
-		return false
-	}
-	for _, p := range attachedInstall {
-		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
-			resp.Diagnostics.AddError(
-				"Error replacing software package",
-				fmt.Sprintf("Could not detach install_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
-			)
-			return false
-		}
-	}
-	for _, p := range attachedPatch {
-		if err := r.client.SetPolicyPatchSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
-			resp.Diagnostics.AddError(
-				"Error replacing software package",
-				fmt.Sprintf("Could not detach patch_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
-			)
-			return false
-		}
-	}
-
-	// Step 2: delete the existing package.
-	if err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID); err != nil {
-		if !isNotFound(err) {
-			resp.Diagnostics.AddError(
-				"Error replacing software package",
-				"Could not delete existing package before re-upload: "+err.Error(),
-			)
-			return false
-		}
-	}
-
 	filename := deriveFilename(ctx, plan)
 	if filename == "" {
 		resp.Diagnostics.AddError("Missing filename", "Could not determine filename for re-upload. Set 'filename' explicitly.")
@@ -1410,12 +1386,7 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 	}
 	plan.Filename = types.StringValue(filename)
 
-	// Legacy `automatic_install` for type=package now means setup-experience
-	// (see createPackage). Don't forward to the Upload request's
-	// AutomaticInstall (which would create a Fleet policy); the
-	// setup_experience reconciliation happens in updatePackageOrFMA's
-	// post-PATCH block.
-	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
+	patchReq := &fleetdm.PatchSoftwarePackageRequest{
 		TeamID:            teamID,
 		Software:          content,
 		Filename:          filename,
@@ -1427,42 +1398,46 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		SelfService:       plan.SelfService.ValueBool(),
 	}
 
-	uploadDiags := extractOptionalLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
-	resp.Diagnostics.Append(uploadDiags...)
+	patchDiags := extractOptionalLabels(ctx, plan.LabelsIncludeAny, &patchReq.LabelsIncludeAny)
+	resp.Diagnostics.Append(patchDiags...)
 	if resp.Diagnostics.HasError() {
 		return false
 	}
-	uploadDiags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
-	resp.Diagnostics.Append(uploadDiags...)
+	patchDiags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &patchReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(patchDiags...)
 	if resp.Diagnostics.HasError() {
 		return false
 	}
-	uploadDiags = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &uploadReq.LabelsIncludeAll)
-	resp.Diagnostics.Append(uploadDiags...)
+	patchDiags = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &patchReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(patchDiags...)
 	if resp.Diagnostics.HasError() {
 		return false
 	}
-	uploadDiags = extractLabels(ctx, plan.Categories, &uploadReq.Categories)
-	resp.Diagnostics.Append(uploadDiags...)
+	patchDiags = extractOptionalLabels(ctx, plan.Categories, &patchReq.Categories)
+	resp.Diagnostics.Append(patchDiags...)
 	if resp.Diagnostics.HasError() {
 		return false
 	}
 
-	// Step 3: upload the new package.
-	title, err := r.client.UploadSoftwarePackage(ctx, uploadReq)
+	if err := r.client.PatchSoftwarePackage(ctx, titleID, patchReq); err != nil {
+		resp.Diagnostics.AddError(
+			"Error replacing software package",
+			"Could not replace package binary: "+err.Error(),
+		)
+		return false
+	}
+
+	// Refresh title metadata so plan picks up the new version. title_id is
+	// preserved, so plan.ID / plan.TitleID stay correct.
+	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
-			"Error re-uploading software package",
-			"The existing package was deleted but the re-upload failed. "+
-				"The resource has been removed from state; run 'terraform apply' again to recreate it. "+
-				"Error: "+err.Error(),
+			"Error refreshing software title after replace",
+			"The package binary was replaced but reading the updated title metadata failed: "+err.Error(),
 		)
-		resp.State.RemoveResource(ctx)
 		return false
 	}
 
-	plan.ID = types.Int64Value(int64(title.ID))
-	plan.TitleID = types.Int64Value(int64(title.ID))
 	plan.Name = types.StringValue(title.Name)
 	if len(title.Versions) > 0 {
 		plan.Version = types.StringValue(title.Versions[0].Version)
@@ -1471,37 +1446,6 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
 	}
 	plan.PackageSHA256 = types.StringValue(sha)
-
-	// Step 4: reattach install_software / patch_software automation to the new title id.
-	newTitleID := title.ID
-	var reattachFailed []string
-	for _, p := range attachedInstall {
-		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
-			reattachFailed = append(reattachFailed, fmt.Sprintf("install_software policy %d (%q): %s", p.ID, p.Name, err.Error()))
-		}
-	}
-	for _, p := range attachedPatch {
-		if err := r.client.SetPolicyPatchSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
-			reattachFailed = append(reattachFailed, fmt.Sprintf("patch_software policy %d (%q): %s", p.ID, p.Name, err.Error()))
-		}
-	}
-	if len(reattachFailed) > 0 {
-		// Persist the new title metadata before bailing — the package itself
-		// was replaced successfully, only the reattach step failed. Saving
-		// state here means the next 'terraform apply' will see no drift on
-		// the package itself and let the affected fleetdm_policy resources
-		// self-heal via their normal drift-detection path.
-		stateDiags := resp.State.Set(ctx, *plan)
-		resp.Diagnostics.Append(stateDiags...)
-
-		resp.Diagnostics.AddError(
-			"Error re-attaching policy automation after package replace",
-			"The software package was replaced successfully (new title_id="+strconv.Itoa(newTitleID)+"), but re-attaching policy automation to the following policies failed:\n  - "+
-				strings.Join(reattachFailed, "\n  - ")+
-				"\n\nThe affected fleetdm_policy resources will show drift on `software_title_id` / `patch_software_title_id` on the next plan; re-running 'terraform apply' should heal them automatically.",
-		)
-		return false
-	}
 
 	return true
 }

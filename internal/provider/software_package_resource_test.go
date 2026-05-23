@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -327,15 +325,23 @@ func (m *s3Mock) snapshot() (head, get int) {
 }
 
 // fleetSWMockState tracks Fleet API calls during software-package tests.
+//
+// uploadCount counts POST /software/package (create-path uploads).
+// patchBinaryCount counts PATCH /software/titles/{id}/package requests that
+// carry a "software" file part (binary-replace path). PATCHes without a file
+// part — i.e. metadata-only updates — are deliberately NOT counted here, so
+// tests can distinguish "binary actually got replaced" from "scripts/labels
+// got updated".
 type fleetSWMockState struct {
-	mu           sync.Mutex
-	currentSHA   string
-	uploadCount  int
-	deleteCount  int
-	titleID      int
-	titleName    string
-	displayName  string
-	titleVersion string
+	mu               sync.Mutex
+	currentSHA       string
+	uploadCount      int
+	deleteCount      int
+	patchBinaryCount int
+	titleID          int
+	titleName        string
+	displayName      string
+	titleVersion     string
 }
 
 // fleetSoftwareHandler returns an http.HandlerFunc that emulates the subset of
@@ -382,6 +388,36 @@ func fleetSoftwareHandler(t *testing.T, state *fleetSWMockState) http.HandlerFun
 				},
 			})
 		case r.URL.Path == titleIDPath+"/package" && r.Method == "PATCH":
+			// PATCH on this endpoint is dual-mode: metadata-only (no file
+			// part) and binary-replace (with a "software" file part). The
+			// binary-replace path is the one that updates currentSHA and
+			// bumps patchBinaryCount — it's what replaceSoftwarePackage now
+			// goes through instead of DELETE+UPLOAD.
+			if err := r.ParseMultipartForm(10 << 20); err != nil {
+				t.Errorf("failed to parse multipart form on PATCH: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if files := r.MultipartForm.File["software"]; len(files) == 1 {
+				f, err := files[0].Open()
+				if err != nil {
+					t.Errorf("open uploaded file on PATCH: %v", err)
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				uploaded, err := io.ReadAll(f)
+				_ = f.Close()
+				if err != nil {
+					t.Errorf("read uploaded file on PATCH: %v", err)
+					http.Error(w, "read error", http.StatusInternalServerError)
+					return
+				}
+				h := sha256.Sum256(uploaded)
+				state.mu.Lock()
+				state.currentSHA = hex.EncodeToString(h[:])
+				state.patchBinaryCount++
+				state.mu.Unlock()
+			}
 			w.WriteHeader(http.StatusOK)
 		case r.URL.Path == titleIDPath && r.Method == "GET":
 			state.mu.Lock()
@@ -416,10 +452,15 @@ func fleetSoftwareHandler(t *testing.T, state *fleetSWMockState) http.HandlerFun
 	}
 }
 
-func snapshotFleet(state *fleetSWMockState) (uploads, deletes int) {
+// snapshotFleet returns the current upload / delete / patch-with-binary counts.
+// Tests use these to assert what the provider did on a given step:
+//   - uploadCount  ⇢ POST /software/package (create path)
+//   - deleteCount  ⇢ DELETE /software/titles/{id}/available_for_install (destroy or legacy replace)
+//   - patchBinaryCount ⇢ PATCH /software/titles/{id}/package with a "software" file part (in-place binary replace)
+func snapshotFleet(state *fleetSWMockState) (uploads, deletes, patchBinaries int) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return state.uploadCount, state.deleteCount
+	return state.uploadCount, state.deleteCount, state.patchBinaryCount
 }
 
 func TestAccSoftwarePackageResource_s3(t *testing.T) {
@@ -459,22 +500,24 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 					// Snapshot counts before the no-op step so we can assert
 					// what happens *during* it.
 					headBefore, getBefore := s3.snapshot()
-					uploadsBefore, deletesBefore := snapshotFleet(fleet)
-					t.Logf("Before no-op step: head=%d get=%d uploads=%d deletes=%d", headBefore, getBefore, uploadsBefore, deletesBefore)
+					uploadsBefore, deletesBefore, patchesBefore := snapshotFleet(fleet)
+					t.Logf("Before no-op step: head=%d get=%d uploads=%d deletes=%d patchBinaries=%d", headBefore, getBefore, uploadsBefore, deletesBefore, patchesBefore)
 					t.Setenv("__test_s3_head_before", fmt.Sprintf("%d", headBefore))
 					t.Setenv("__test_s3_get_before", fmt.Sprintf("%d", getBefore))
 					t.Setenv("__test_fleet_uploads_before", fmt.Sprintf("%d", uploadsBefore))
 					t.Setenv("__test_fleet_deletes_before", fmt.Sprintf("%d", deletesBefore))
+					t.Setenv("__test_fleet_patches_before", fmt.Sprintf("%d", patchesBefore))
 				},
 				Config: testAccSoftwarePackageResourceConfig_s3(fleetServer.URL, s3Server.URL),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaV1),
 					func(s *terraform.State) error {
 						_, getNow := s3.snapshot()
-						uploadsNow, deletesNow := snapshotFleet(fleet)
+						uploadsNow, deletesNow, patchesNow := snapshotFleet(fleet)
 						getBefore, _ := strconv.Atoi(os.Getenv("__test_s3_get_before"))
 						uploadsBefore, _ := strconv.Atoi(os.Getenv("__test_fleet_uploads_before"))
 						deletesBefore, _ := strconv.Atoi(os.Getenv("__test_fleet_deletes_before"))
+						patchesBefore, _ := strconv.Atoi(os.Getenv("__test_fleet_patches_before"))
 						if getNow != getBefore {
 							return fmt.Errorf("no-op step downloaded the body: get count %d -> %d", getBefore, getNow)
 						}
@@ -484,11 +527,17 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 						if deletesNow != deletesBefore {
 							return fmt.Errorf("no-op step deleted: delete count %d -> %d", deletesBefore, deletesNow)
 						}
+						if patchesNow != patchesBefore {
+							return fmt.Errorf("no-op step issued a binary PATCH: patch count %d -> %d", patchesBefore, patchesNow)
+						}
 						return nil
 					},
 				),
 			},
-			// Step 3: S3 content changes → update should detect SHA mismatch and re-upload.
+			// Step 3: S3 content changes → update should detect SHA mismatch and replace
+			// the binary via PATCH /software/titles/{id}/package. title_id is preserved
+			// (no DELETE, no POST), so the count shape is 1 create-upload + 1
+			// binary-PATCH, not 2 uploads + 1 delete.
 			{
 				PreConfig: func() {
 					s3.setContent(contentV2)
@@ -498,13 +547,15 @@ func TestAccSoftwarePackageResource_s3(t *testing.T) {
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "title_id", "55"),
 					resource.TestCheckResourceAttr("fleetdm_software_package.s3_test", "package_sha256", shaV2),
 					func(s *terraform.State) error {
-						uploadsNow, deletesNow := snapshotFleet(fleet)
-						// Step 1: create (1 upload). Step 2: no-op (0 uploads, 0 deletes). Step 3: re-upload (1 delete + 1 upload).
-						if uploadsNow != 2 {
-							return fmt.Errorf("expected 2 total uploads (create + re-upload), got %d", uploadsNow)
+						uploadsNow, deletesNow, patchesNow := snapshotFleet(fleet)
+						if uploadsNow != 1 {
+							return fmt.Errorf("expected exactly 1 upload (from create), got %d — the replace path must NOT use the create-path POST", uploadsNow)
 						}
-						if deletesNow != 1 {
-							return fmt.Errorf("expected 1 delete (before re-upload), got %d", deletesNow)
+						if deletesNow != 0 {
+							return fmt.Errorf("expected 0 deletes (PATCH-in-place preserves the title), got %d", deletesNow)
+						}
+						if patchesNow != 1 {
+							return fmt.Errorf("expected exactly 1 binary-PATCH (the replace), got %d", patchesNow)
 						}
 						return nil
 					},
@@ -618,7 +669,7 @@ func TestAccSoftwarePackageResource_s3_metadataSHA(t *testing.T) {
 			{
 				PreConfig: func() {
 					_, getBefore := s3.snapshot()
-					uploadsBefore, _ := snapshotFleet(fleet)
+					uploadsBefore, _, _ := snapshotFleet(fleet)
 					t.Setenv("__metaonly_get_before", fmt.Sprintf("%d", getBefore))
 					t.Setenv("__metaonly_uploads_before", fmt.Sprintf("%d", uploadsBefore))
 				},
@@ -626,7 +677,7 @@ func TestAccSoftwarePackageResource_s3_metadataSHA(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					func(s *terraform.State) error {
 						_, getNow := s3.snapshot()
-						uploadsNow, _ := snapshotFleet(fleet)
+						uploadsNow, _, _ := snapshotFleet(fleet)
 						getBefore, _ := strconv.Atoi(os.Getenv("__metaonly_get_before"))
 						uploadsBefore, _ := strconv.Atoi(os.Getenv("__metaonly_uploads_before"))
 						if getNow != getBefore {
@@ -674,7 +725,7 @@ func TestAccSoftwarePackageResource_s3_noChecksum_fallsBackToDownload(t *testing
 			{
 				PreConfig: func() {
 					_, getBefore := s3.snapshot()
-					uploadsBefore, deletesBefore := snapshotFleet(fleet)
+					uploadsBefore, deletesBefore, _ := snapshotFleet(fleet)
 					t.Setenv("__nocs_get_before", fmt.Sprintf("%d", getBefore))
 					t.Setenv("__nocs_uploads_before", fmt.Sprintf("%d", uploadsBefore))
 					t.Setenv("__nocs_deletes_before", fmt.Sprintf("%d", deletesBefore))
@@ -683,7 +734,7 @@ func TestAccSoftwarePackageResource_s3_noChecksum_fallsBackToDownload(t *testing
 				Check: resource.ComposeAggregateTestCheckFunc(
 					func(s *terraform.State) error {
 						_, getNow := s3.snapshot()
-						uploadsNow, deletesNow := snapshotFleet(fleet)
+						uploadsNow, deletesNow, _ := snapshotFleet(fleet)
 						getBefore, _ := strconv.Atoi(os.Getenv("__nocs_get_before"))
 						uploadsBefore, _ := strconv.Atoi(os.Getenv("__nocs_uploads_before"))
 						deletesBefore, _ := strconv.Atoi(os.Getenv("__nocs_deletes_before"))
@@ -896,18 +947,13 @@ resource "fleetdm_software_package" "test" {
 `, serverURL, pkgPath, teamID)
 }
 
-// TestAccSoftwarePackageResource_replaceWithAttachedPolicy exercises the
-// detach-before-delete / reattach-after-upload path that exists to work around
-// Fleet's HTTP 409 "Couldn't delete. Policy automation uses this software."
-// guard. It drives a create + update through the mock Fleet server with a
-// single install_software policy initially pointing at the title, and asserts
-// that during the update the provider issues:
-//   - One PATCH to /global/policies/1 with software_title_id=null (detach)
-//   - DELETE + POST /software/package (the existing replace path)
-//   - One PATCH to /global/policies/1 with software_title_id=<new title id> (reattach)
-//
-// in that order, and that no extra detaches/reattaches happen on the no-op
-// step that comes after.
+// TestAccSoftwarePackageResource_replaceWithAttachedPolicy verifies that
+// rotating the installer binary while an install_software policy points at
+// the title leaves the policy untouched. The new replace path is
+// PATCH /software/titles/{id}/package with the binary — title_id is
+// preserved (it's in the URL path), so the policy never needs to be
+// detached or reattached. The mock counters anchor exactly that:
+// 0 detaches, 0 reattaches, 0 DELETEs, 1 binary-PATCH.
 func TestAccSoftwarePackageResource_replaceWithAttachedPolicy(t *testing.T) {
 	contentV1 := []byte("PKGV1")
 	contentV2 := []byte("PKGV2")
@@ -938,8 +984,7 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy(t *testing.T) {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			// Step 1: create. The provider has no reason to touch policies on
-			// create (only Update goes through replaceSoftwarePackage).
+			// Step 1: create. Provider must not touch the policy on create.
 			{
 				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -956,7 +1001,10 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy(t *testing.T) {
 				),
 			},
 			// Step 2: rotate the installer. SHA changes → replaceSoftwarePackage.
-			// Policy must be detached, then reattached to the (new) title id.
+			// The new flow MUST NOT touch the policy (no detach, no reattach,
+			// no DELETE) and MUST issue a binary PATCH that updates Fleet's
+			// SHA. title_id is preserved across the upgrade, so the policy
+			// stays linked at the end.
 			{
 				PreConfig: func() {
 					if err := os.WriteFile(pkgPath, contentV2, 0o600); err != nil {
@@ -965,28 +1013,32 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy(t *testing.T) {
 				},
 				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "title_id", "60"),
 					resource.TestCheckResourceAttr("fleetdm_software_package.test", "package_sha256", shaV2),
 					func(s *terraform.State) error {
 						ps.mu.Lock()
 						defer ps.mu.Unlock()
-						if ps.detachCount != 1 {
-							return fmt.Errorf("expected exactly 1 detach, got %d", ps.detachCount)
+						if ps.detachCount != 0 {
+							return fmt.Errorf("policy must not be detached on binary replace (PATCH preserves title_id), got %d detaches", ps.detachCount)
 						}
-						if ps.reattachCount != 1 {
-							return fmt.Errorf("expected exactly 1 reattach, got %d", ps.reattachCount)
+						if ps.reattachCount != 0 {
+							return fmt.Errorf("policy must not be reattached on binary replace, got %d reattaches", ps.reattachCount)
 						}
-						if len(ps.patchOrder) != 2 || ps.patchOrder[0] != 0 || ps.patchOrder[1] != 60 {
-							return fmt.Errorf("expected patch order [0, 60], got %v", ps.patchOrder)
+						if len(ps.patchOrder) != 0 {
+							return fmt.Errorf("policy PATCH endpoint must not be hit during a binary replace, got patchOrder=%v", ps.patchOrder)
 						}
 						if ps.installSoftwareTitleID == nil || *ps.installSoftwareTitleID != 60 {
-							return fmt.Errorf("expected policy to end with software_title_id=60, got %v", ps.installSoftwareTitleID)
+							return fmt.Errorf("expected policy to still reference software_title_id=60 after replace, got %v", ps.installSoftwareTitleID)
 						}
-						uploads, deletes := snapshotFleet(fleet)
-						if uploads != 2 {
-							return fmt.Errorf("expected 2 uploads (create + replace), got %d", uploads)
+						uploads, deletes, patchBinaries := snapshotFleet(fleet)
+						if uploads != 1 {
+							return fmt.Errorf("expected exactly 1 upload (from create), got %d — the replace path must NOT use the create-path POST", uploads)
 						}
-						if deletes != 1 {
-							return fmt.Errorf("expected 1 delete, got %d", deletes)
+						if deletes != 0 {
+							return fmt.Errorf("expected 0 deletes on binary replace (PATCH-in-place preserves the title), got %d", deletes)
+						}
+						if patchBinaries != 1 {
+							return fmt.Errorf("expected exactly 1 binary-PATCH (the replace), got %d", patchBinaries)
 						}
 						return nil
 					},
@@ -996,121 +1048,12 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy(t *testing.T) {
 	})
 }
 
-// TestAccSoftwarePackageResource_replaceWithAttachedPolicy_reattachFailureSavesState
-// verifies the recovery path when the binary has already been replaced but
-// re-attaching install_software automation to one of the previously-detached
-// policies fails. The provider must:
-//   - Persist the new title id and SHA into state before bailing (so a follow-up
-//     apply does not re-create the package).
-//   - Surface an error that names the affected policy so the operator knows
-//     what needs follow-up.
-func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_reattachFailureSavesState(t *testing.T) {
-	contentV1 := []byte("PKGV1FAIL")
-	contentV2 := []byte("PKGV2FAIL")
-	shaV1 := hex.EncodeToString(sumOf(contentV1))
-	shaV2 := hex.EncodeToString(sumOf(contentV2))
-
-	tmpDir := t.TempDir()
-	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
-	if err := os.WriteFile(pkgPath, contentV1, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	fleet := &fleetSWMockState{
-		currentSHA:   shaV1,
-		titleID:      62,
-		titleName:    "test-app.pkg",
-		displayName:  "Test App",
-		titleVersion: "1.0.0",
-	}
-
-	initialTitleRef := 62
-	ps := &fleetPolicyMockState{installSoftwareTitleID: &initialTitleRef}
-
-	var failReattach atomic.Bool
-	baseHandler := installSoftwarePolicyHandler(t, ps, fleet, "/api/v1/fleet/global/policies", "/api/v1/fleet/global/policies/1")
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/fleet/global/policies/1" && r.Method == http.MethodPatch && failReattach.Load() {
-			raw, _ := io.ReadAll(r.Body)
-			r.Body = io.NopCloser(bytes.NewReader(raw))
-			var body struct {
-				SoftwareTitleID *int `json:"software_title_id"`
-			}
-			_ = json.Unmarshal(raw, &body)
-			if body.SoftwareTitleID != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"message":"reattach failed for test"}`))
-				return
-			}
-		}
-		baseHandler(w, r)
-	})
-	fleetServer := httptest.NewServer(handler)
-	defer fleetServer.Close()
-
-	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			// Step 1: create cleanly.
-			{
-				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("fleetdm_software_package.test", "title_id", "62"),
-					resource.TestCheckResourceAttr("fleetdm_software_package.test", "package_sha256", shaV1),
-				),
-			},
-			// Step 2: rotate content. Detach + delete + upload succeed; the
-			// reattach PATCH gets a 500. Apply must fail with a message that
-			// names the affected policy.
-			{
-				PreConfig: func() {
-					if err := os.WriteFile(pkgPath, contentV2, 0o600); err != nil {
-						t.Fatal(err)
-					}
-					failReattach.Store(true)
-				},
-				Config:      testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
-				ExpectError: regexp.MustCompile(`(?s)Error re-attaching policy automation.*install_software policy 1.*Install Test App`),
-			},
-			// Step 3: lift the injected failure and re-apply with the same
-			// content. If step 2 saved state correctly, this is a no-op for
-			// the package (state's package_sha256 already equals shaV2 and
-			// Fleet's GET returns shaV2 too), and the assertion below proves
-			// state survived the failed step.
-			{
-				PreConfig: func() {
-					failReattach.Store(false)
-				},
-				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
-				Check: func(s *terraform.State) error {
-					rs, ok := s.RootModule().Resources["fleetdm_software_package.test"]
-					if !ok {
-						return fmt.Errorf("resource fleetdm_software_package.test missing from state — state from the failed step 2 was lost")
-					}
-					if got := rs.Primary.Attributes["package_sha256"]; got != shaV2 {
-						return fmt.Errorf("expected package_sha256 in state to be the new SHA %s (proof that state was saved before the reattach error bailed), got %s", shaV2, got)
-					}
-					uploads, deletes := snapshotFleet(fleet)
-					if uploads != 2 {
-						return fmt.Errorf("expected 2 total uploads (create + the failed step's successful upload), got %d", uploads)
-					}
-					if deletes != 1 {
-						return fmt.Errorf("expected exactly 1 delete (from the failed step's successful pre-upload delete), got %d", deletes)
-					}
-					return nil
-				},
-			},
-		},
-	})
-}
-
 // TestAccSoftwarePackageResource_replaceWithAttachedPolicy_teamScope is the
 // team-scoped sibling of TestAccSoftwarePackageResource_replaceWithAttachedPolicy.
-// It exists to guard the scope dispatch in ListPoliciesByInstallSoftwareTitleID
-// and SetPolicyInstallSoftwareTitleID — i.e. that a team-scoped software
-// package hits /fleets/{teamID}/policies (not /global/policies) for both the
-// detach scan and the per-policy PATCH.
+// It guards the scope dispatch — a team-scoped software package's binary
+// replace must hit /api/v1/fleet/software/titles/{id}/package?team_id={n}
+// and must NOT issue any policy PATCH to either /global/policies/... or
+// /fleets/{teamID}/policies/...
 func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_teamScope(t *testing.T) {
 	contentV1 := []byte("PKGV1TEAM")
 	contentV2 := []byte("PKGV2TEAM")
@@ -1161,18 +1104,20 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_teamScope(t *testi
 				},
 				Config: testAccSoftwarePackageResourceConfig_team(fleetServer.URL, pkgPath, teamID),
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "title_id", "61"),
 					resource.TestCheckResourceAttr("fleetdm_software_package.test", "package_sha256", shaV2),
 					func(s *terraform.State) error {
 						ps.mu.Lock()
 						defer ps.mu.Unlock()
-						if ps.detachCount != 1 {
-							return fmt.Errorf("expected exactly 1 detach on team-scoped policy, got %d", ps.detachCount)
+						if ps.detachCount != 0 || ps.reattachCount != 0 || len(ps.patchOrder) != 0 {
+							return fmt.Errorf("team-scoped binary replace must not touch the team policy, got detach=%d reattach=%d patchOrder=%v", ps.detachCount, ps.reattachCount, ps.patchOrder)
 						}
-						if ps.reattachCount != 1 {
-							return fmt.Errorf("expected exactly 1 reattach on team-scoped policy, got %d", ps.reattachCount)
+						if ps.installSoftwareTitleID == nil || *ps.installSoftwareTitleID != 61 {
+							return fmt.Errorf("expected team policy to still reference software_title_id=61, got %v", ps.installSoftwareTitleID)
 						}
-						if len(ps.patchOrder) != 2 || ps.patchOrder[0] != 0 || ps.patchOrder[1] != 61 {
-							return fmt.Errorf("expected patch order [0, 61], got %v", ps.patchOrder)
+						uploads, deletes, patchBinaries := snapshotFleet(fleet)
+						if uploads != 1 || deletes != 0 || patchBinaries != 1 {
+							return fmt.Errorf("expected (uploads, deletes, patchBinaries) = (1, 0, 1) on team-scoped replace, got (%d, %d, %d)", uploads, deletes, patchBinaries)
 						}
 						return nil
 					},

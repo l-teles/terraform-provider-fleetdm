@@ -1,9 +1,11 @@
 package fleetdm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -497,6 +499,172 @@ func TestClient_PatchSoftwarePackage_SurfacesError(t *testing.T) {
 	}
 	if apiErr.Errors[0].Name != "install_script" || apiErr.Errors[0].Reason != "too long" {
 		t.Errorf("expected APIError.Errors[0] = {install_script, too long}, got %+v", apiErr.Errors[0])
+	}
+}
+
+// TestClient_PatchSoftwarePackage_WithBinary verifies the binary-replacement
+// mode of the PATCH endpoint: when req.Software is non-nil, the helper sends
+// a multipart/form-data request with a "software" file part whose content
+// and filename match the request, alongside ALL metadata fields supplied on
+// the request. The title_id stays in the URL path — there's no DELETE and
+// no policy detach.
+//
+// This shape replaces the legacy DELETE + UPLOAD + detach/reattach dance
+// that fell over against Fleet's patch-policy guard. The metadata pin
+// matters because the new resource-level replace flow passes the binary
+// and metadata together in one request; a regression that drops a
+// metadata field on the binary path would silently revert the user's
+// configuration without a plan-time signal.
+func TestClient_PatchSoftwarePackage_WithBinary(t *testing.T) {
+	// Use bytes that exercise null + non-printable + non-UTF-8 ranges so a
+	// regression that mishandles binary content (UTF-8 sanitization, null
+	// truncation) would fail here, not just on a real-world installer.
+	wantBinary := []byte("PK\x03\x04 fake installer \x00\x01\x02\xff\xfe")
+	wantFilename := "firefox-installer.msi"
+	wantCategories := []string{"Browsers", "Productivity"}
+	wantLabelsIncludeAny := []string{"Workstations", "Engineering"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("expected PATCH, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("team_id") != "5" {
+			t.Errorf("expected team_id=5, got %q", r.URL.Query().Get("team_id"))
+		}
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "multipart/form-data;") {
+			t.Errorf("expected multipart/form-data, got %q", ct)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart: %v", err)
+		}
+		// File part assertions.
+		files := r.MultipartForm.File["software"]
+		if len(files) != 1 {
+			t.Fatalf("expected exactly one 'software' file part, got %d", len(files))
+		}
+		if files[0].Filename != wantFilename {
+			t.Errorf("expected filename %q, got %q", wantFilename, files[0].Filename)
+		}
+		f, err := files[0].Open()
+		if err != nil {
+			t.Fatalf("open uploaded file: %v", err)
+		}
+		gotBytes, err := io.ReadAll(f)
+		_ = f.Close()
+		if err != nil {
+			t.Fatalf("read uploaded file: %v", err)
+		}
+		if !bytes.Equal(gotBytes, wantBinary) {
+			t.Errorf("uploaded bytes mismatch: got %q want %q", gotBytes, wantBinary)
+		}
+		// Every metadata field travels alongside the file. The check is
+		// exhaustive on purpose — see the test comment.
+		if got := r.FormValue("install_script"); got != "msiexec /i install.msi /quiet" {
+			t.Errorf("install_script: got %q", got)
+		}
+		if got := r.FormValue("uninstall_script"); got != "msiexec /x {GUID}" {
+			t.Errorf("uninstall_script: got %q", got)
+		}
+		if got := r.FormValue("pre_install_query"); got != "SELECT 1 FROM os_version" {
+			t.Errorf("pre_install_query: got %q", got)
+		}
+		if got := r.FormValue("post_install_script"); got != "echo done" {
+			t.Errorf("post_install_script: got %q", got)
+		}
+		if got := r.FormValue("self_service"); got != "true" {
+			t.Errorf("self_service: got %q", got)
+		}
+		if got := r.FormValue("display_name"); got != "Mozilla Firefox" {
+			t.Errorf("display_name: got %q", got)
+		}
+		if got := r.FormValue("categories"); got != `["Browsers","Productivity"]` {
+			t.Errorf("categories: got %q", got)
+		}
+		if got := r.FormValue("labels_include_any"); got != `["Workstations","Engineering"]` {
+			t.Errorf("labels_include_any: got %q", got)
+		}
+		// labels_exclude_any / labels_include_all were not set on the request → must be absent.
+		if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
+			t.Errorf("labels_exclude_any must be absent when nil, got %q", r.FormValue("labels_exclude_any"))
+		}
+		if _, ok := r.MultipartForm.Value["labels_include_all"]; ok {
+			t.Errorf("labels_include_all must be absent when nil, got %q", r.FormValue("labels_include_all"))
+		}
+		w.WriteHeader(http.StatusOK)
+		// Response shape mirrors what the docs document for this endpoint;
+		// the helper does not unmarshal it, but returning something realistic
+		// guards against future changes that start to.
+		_, _ = w.Write([]byte(`{"software_installer":{"name":"firefox-installer.msi","version":"125.0"}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 5
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		TeamID:            &teamID,
+		Software:          wantBinary,
+		Filename:          wantFilename,
+		DisplayName:       "Mozilla Firefox",
+		InstallScript:     "msiexec /i install.msi /quiet",
+		UninstallScript:   "msiexec /x {GUID}",
+		PreInstallQuery:   "SELECT 1 FROM os_version",
+		PostInstallScript: "echo done",
+		SelfService:       true,
+		Categories:        &wantCategories,
+		LabelsIncludeAny:  &wantLabelsIncludeAny,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_WithBinaryClearsCategoriesViaEmpty verifies
+// the categories "clear" path (pointer-to-empty) works on the binary
+// replacement endpoint too — not just on metadata-only PATCH. This pins the
+// extractOptionalLabels swap in the resource-level replace flow.
+func TestClient_PatchSoftwarePackage_WithBinaryClearsCategoriesViaEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart: %v", err)
+		}
+		if got := r.FormValue("categories"); got != `[]` {
+			t.Errorf(`expected categories "[]" for pointer-to-empty, got %q`, got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	empty := []string{}
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		Software:   []byte("bytes"),
+		Filename:   "x.msi",
+		Categories: &empty,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_BinaryRequiresFilename pins the input-guard
+// against a misuse where the caller passes Software bytes but forgets the
+// Filename — Fleet's multipart parser would otherwise accept a file part
+// with an empty filename and either reject it later or persist a nameless
+// installer, neither of which is a user-friendly failure.
+func TestClient_PatchSoftwarePackage_BinaryRequiresFilename(t *testing.T) {
+	client, _ := NewClient(ClientConfig{ServerAddress: "http://unused", APIKey: "test-api-key", VerifyTLS: false})
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		Software: []byte("bytes"),
+		// Filename intentionally omitted.
+	})
+	if err == nil {
+		t.Fatal("expected error when Filename is missing with Software set, got nil")
+	}
+	if !strings.Contains(err.Error(), "Filename is required") {
+		t.Errorf("expected error to mention Filename requirement, got: %v", err)
 	}
 }
 

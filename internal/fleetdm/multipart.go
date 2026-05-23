@@ -43,8 +43,11 @@ func (c *Client) doMultipartRequest(ctx context.Context, method, endpoint, fileF
 // doMultipartFormRequest builds a multipart/form-data request with only text
 // fields (no file part) and returns the raw response body. Use this for
 // endpoints that require multipart/form-data but where the caller has no file
-// to attach — Fleet's PATCH /software/titles/{id}/package is one such
-// endpoint, and rejects application/json bodies outright.
+// to attach — Fleet's PATCH /software/titles/{id}/package supports this shape
+// for metadata-only updates (scripts, labels, flags) and rejects
+// application/json bodies outright. When that same endpoint is used to
+// replace the installer binary in-place, the caller switches to
+// doMultipartRequest with the "software" file field instead.
 func (c *Client) doMultipartFormRequest(ctx context.Context, method, endpoint string, fields map[string]string) ([]byte, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
