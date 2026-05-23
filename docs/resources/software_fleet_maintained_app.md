@@ -46,10 +46,16 @@ resource "fleetdm_software_fleet_maintained_app" "chrome_custom" {
 
 ### Optional
 
-- `automatic_install` (Boolean) Whether to automatically install the software during device setup (install during setup). Defaults to false.
+- `automatic_install_policy` (Boolean) When true, Fleet automatically creates a policy that installs this software on hosts missing it. Distinct from `install_during_setup`, which flags the title for installation during the first-boot Setup Assistant flow. Forces resource replacement because Fleet only honors this flag at title creation. Computed-policy IDs are exposed via the `automatic_install_policies` attribute.
+- `categories` (List of String) Zero or more self-service categories the software appears under on the end-user's *My device* page. Supported values are documented under the `software` section at https://fleetdm.com/docs/configuration/yaml-files — at time of writing: `Browsers`, `Communication`, `Developer tools`, `Productivity`, `Security`, `Utilities`. To clear previously-set categories, set this attribute to `[]` explicitly; omitting it preserves Fleet's existing categories.
+- `display_name` (String) End-user-visible name shown for this software in Fleet's UI (e.g. on the Self Service page). Optional override for Fleet's auto-derived name (the installer's intrinsic name for custom packages, the App Store metadata for VPP, the catalog name for Fleet Maintained Apps). Computed when omitted.
+- `install_during_setup` (Boolean) Whether to install this software during the device's Setup Assistant / first-boot setup experience. Routes to Fleet's `PUT /setup_experience/software` endpoint, which manages a per-team-per-platform set of titles flagged for setup-time installation. Distinct from `automatic_install_policy`, which creates a Fleet policy that installs the software on hosts missing it (the policy-based path). 
+
+Multi-resource race: when two `fleetdm_software_*` resources on the same team and platform both flip `install_during_setup = true` in a single `terraform apply`, the provider serializes the updates per-(team, platform) inside the API client to avoid losing one — but cross-process race conditions (another `terraform apply` against the same team/platform at the same time, or a concurrent Fleet UI change) remain a user concern. Defaults to false.
 - `install_script` (String) Script to run during installation. Optional — Fleet picks a default for the package type when omitted.
-- `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any`; the conflict is enforced by the validator on `labels_include_any`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
-- `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels. Mutually exclusive with `labels_exclude_any` (Fleet's API rejects requests that set both). To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` and `labels_include_all`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_include_all` (List of String) List of label names. The software will be available for hosts that match *all* of these labels. Mutually exclusive with `labels_include_any` and `labels_exclude_any`; the conflict is enforced by validators on the other two. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_include_any` (List of String) List of label names. The software will be available for hosts that match *any* of these labels. Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `platform` (String) The platform the software targets (`darwin`, `windows`, `linux`, `ios`, `ipados`).
 - `post_install_script` (String) Script to run after installation. Optional.
 - `pre_install_query` (String) An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.
@@ -59,7 +65,16 @@ resource "fleetdm_software_fleet_maintained_app" "chrome_custom" {
 
 ### Read-Only
 
+- `automatic_install_policies` (Attributes List) Computed. The list of Fleet policies that auto-install this software title on hosts that fail the policy. Populated by Fleet when `automatic_install_policy = true` is set at Create time (for resources that support it), or when an admin attaches an `install_software` policy via Fleet's UI. Each entry exposes the policy `id` and `name` so you can reference them from other Terraform resources. (see [below for nested schema](#nestedatt--automatic_install_policies))
 - `id` (Number) The unique identifier (internal, same as title_id).
 - `name` (String) The name of the software, as parsed by Fleet from the installer or App Store metadata.
 - `title_id` (Number) The software title ID.
 - `version` (String) The version of the software.
+
+<a id="nestedatt--automatic_install_policies"></a>
+### Nested Schema for `automatic_install_policies`
+
+Read-Only:
+
+- `id` (Number) The Fleet policy ID.
+- `name` (String) The Fleet policy name.

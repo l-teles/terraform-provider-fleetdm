@@ -225,12 +225,15 @@ so the local-file source has always been a no-op when content is unchanged.
 ### Optional
 
 - `app_store_id` (String) The App Store ID (Adam ID) for VPP apps. Required when type is 'vpp'.
-- `automatic_install` (Boolean) Whether to automatically install the software during device setup (install during setup). Defaults to false.
+- `automatic_install` (Boolean) Type-dependent flag. For `type=package` and `type=vpp`: flags the title for install during the device's first-boot Setup Assistant via Fleet's `PUT /setup_experience/software` endpoint. For `type=fleet_maintained`: creates a Fleet *policy* that installs the software on hosts missing it. Fleet only honors this at Create time for FMA — changing the value after Create has no supported wire path and will produce a plan-time error. Deprecated: prefer the type-specific resources (`fleetdm_software_custom_package`, `fleetdm_software_app_store_app`, `fleetdm_software_fleet_maintained_app`) which expose `install_during_setup` and `automatic_install_policy` as separate attributes. Defaults to false.
+- `categories` (List of String) Self-service categories the software appears under on the end-user's *My device* page. Only applicable to `type = "package"` and `type = "fleet_maintained"` (VPP doesn't support categories).
+- `display_name` (String) End-user-visible name shown for this software in Fleet's UI. Optional override for Fleet's auto-derived name; Computed when omitted. Added in the same release that introduces the three type-specific replacement resources; the new resources expose the same attribute.
 - `filename` (String) The filename of the package (e.g., 'myapp-1.0.0.pkg'). Required for type 'package'.
 - `fleet_maintained_app_id` (Number) The Fleet Maintained App ID. Required when type is 'fleet_maintained'.
 - `install_script` (String) The script to run during installation. Optional. Used by type 'package' and 'fleet_maintained'.
-- `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` (Fleet's API rejects requests that set both); the conflict is enforced by the validator on `labels_include_any`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels. Fleet also supports `labels_include_all` (match hosts with *all* listed labels); that attribute is not yet exposed by this provider.
-- `labels_include_any` (List of String) List of label names. The software will be available for hosts that match any of these labels. Mutually exclusive with `labels_exclude_any` (Fleet's API rejects requests that set both). To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels. Fleet also supports `labels_include_all` (match hosts with *all* listed labels); that attribute is not yet exposed by this provider.
+- `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` and `labels_include_all`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_include_all` (List of String) List of label names. The software will be available for hosts that match *all* of these labels. Mutually exclusive with `labels_include_any` and `labels_exclude_any` — Fleet's API rejects requests that set more than one. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
+- `labels_include_any` (List of String) List of label names. The software will be available for hosts that match *any* of these labels. Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `package_path` (String) The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.
 - `package_s3` (Attributes) S3 source for the software package. Alternative to package_path. The provider reads the SHA256 via HeadObject and only downloads + re-uploads to Fleet when the hash differs from what Fleet has stored. Mutually exclusive with package_path. `bucket`, `key`, and `region` may reference module outputs or other resources' attributes — when their values aren't yet known at plan time, the SHA comparison is deferred to apply time. (see [below for nested schema](#nestedatt--package_s3))
 - `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed from the local file (package_path) or S3 object (package_s3) on create/update, or read from Fleet API. Can be set explicitly to avoid drift on import.
@@ -244,6 +247,7 @@ so the local-file source has always been a no-op when content is unchanged.
 
 ### Read-Only
 
+- `automatic_install_policies` (Attributes List) Computed. List of Fleet policies that auto-install this software title on hosts that fail the policy. (see [below for nested schema](#nestedatt--automatic_install_policies))
 - `id` (Number) The unique identifier (internal, same as title_id).
 - `name` (String) The name of the software (extracted from the package or App Store).
 - `title_id` (Number) The software title ID.
@@ -262,3 +266,12 @@ Optional:
 - `endpoint_url` (String) Custom S3 endpoint URL. Useful for S3-compatible services like LocalStack or MinIO.
 - `expected_sha256` (String) Lowercase hex SHA256 of the S3 object's content, asserted out-of-band. When set, the provider skips HeadObject and trusts this value as the remote SHA. Use this when the bucket is read-only to your runner and you cannot add a SHA256 checksum or `x-amz-meta-sha256` metadata to the object. You are responsible for keeping this value in sync with the actual object — if it's wrong, Fleet will think the installer is unchanged and the package will NOT be re-uploaded. See the 'SHA256 verification with S3 sources' section of the documentation.
 - `region` (String) The AWS region. Uses AWS_REGION or default config if omitted.
+
+
+<a id="nestedatt--automatic_install_policies"></a>
+### Nested Schema for `automatic_install_policies`
+
+Read-Only:
+
+- `id` (Number)
+- `name` (String)

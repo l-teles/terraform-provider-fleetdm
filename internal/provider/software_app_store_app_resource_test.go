@@ -233,3 +233,232 @@ func TestAccSoftwareAppStoreAppResource_basic(t *testing.T) {
 		},
 	})
 }
+
+// TestAccSoftwareAppStoreAppResource_installDuringSetupLifecycle drives
+// Create-true → Update-false → Update-true again and asserts a PUT
+// /setup_experience/software fires on each transition with the right
+// set membership. VPP-specific concern: Fleet has no install_during_setup
+// field on Create/PATCH JSON — the only path that flips it is the
+// out-of-band setup-experience PUT, so this test pins that contract.
+func TestAccSoftwareAppStoreAppResource_installDuringSetupLifecycle(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 142
+	f.titleSource = "app_store_app"
+
+	cfg := func(flag bool) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_app_store_app" "test" {
+  app_store_id         = "899247664"
+  platform             = "darwin"
+  self_service         = true
+  install_during_setup = %[2]t
+}
+`, f.srv.URL, flag)
+	}
+
+	priorPuts := 0
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "install_during_setup", "true"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts == priorPuts {
+							return fmt.Errorf("expected a PUT /setup_experience/software on Create-true, got none")
+						}
+						priorPuts = f.setupExperiencePuts
+						for _, id := range f.setupExperienceSet {
+							if id == f.titleID {
+								return nil
+							}
+						}
+						return fmt.Errorf("expected title %d in setup-experience set after Create-true, got %v", f.titleID, f.setupExperienceSet)
+					},
+				),
+			},
+			{
+				Config: cfg(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "install_during_setup", "false"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts == priorPuts {
+							return fmt.Errorf("expected a PUT /setup_experience/software on Update-false, got none")
+						}
+						priorPuts = f.setupExperiencePuts
+						for _, id := range f.setupExperienceSet {
+							if id == f.titleID {
+								return fmt.Errorf("title %d must NOT be in setup-experience set after Update-false, got %v", f.titleID, f.setupExperienceSet)
+							}
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "install_during_setup", "true"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts == priorPuts {
+							return fmt.Errorf("expected a PUT /setup_experience/software on Update-true again, got none")
+						}
+						for _, id := range f.setupExperienceSet {
+							if id == f.titleID {
+								return nil
+							}
+						}
+						return fmt.Errorf("expected title %d in setup-experience set after Update-true-again, got %v", f.titleID, f.setupExperienceSet)
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_displayNameLifecycle covers
+// display_name across Create → Update. VPP has no categories attribute,
+// so this test only validates the display_name wire-and-state round trip.
+func TestAccSoftwareAppStoreAppResource_displayNameLifecycle(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 162
+	f.titleSource = "app_store_app"
+
+	cfg := func(displayName string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_app_store_app" "test" {
+  app_store_id = "899247664"
+  platform     = "darwin"
+  self_service = true
+  display_name = %[2]q
+}
+`, f.srv.URL, displayName)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("MyVPPApp"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "display_name", "MyVPPApp"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.vppDisplayName != "MyVPPApp" {
+							return fmt.Errorf("VPP Create display_name=%q, want MyVPPApp", f.vppDisplayName)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg("MyVPPApp Renamed"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "display_name", "MyVPPApp Renamed"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.vppPatchDisplayName != "MyVPPApp Renamed" {
+							return fmt.Errorf("VPP PATCH display_name=%q, want MyVPPApp Renamed", f.vppPatchDisplayName)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_labelsIncludeAllLifecycle exercises
+// the new labels_include_all attribute on the VPP resource end-to-end:
+// set on Create, switch to labels_include_any, drop entirely. The VPP
+// path is JSON (Add + PATCH) so the fake captures the slice directly.
+func TestAccSoftwareAppStoreAppResource_labelsIncludeAllLifecycle(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 172
+	f.titleSource = "app_store_app"
+
+	cfg := func(labels string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_app_store_app" "test" {
+  app_store_id = "899247664"
+  platform     = "darwin"
+  self_service = true
+%[2]s
+}
+`, f.srv.URL, labels)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Fleet's POST /software/app_store_apps doesn't accept labels.
+				// The resource applies them via a follow-up PATCH after Add,
+				// so the labels land on f.vppPatchIncludeAll, not on the POST.
+				Config: cfg(`  labels_include_all = ["Engineering", "macOS"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "labels_include_all.#", "2"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if len(f.vppPatchIncludeAll) != 2 {
+							return fmt.Errorf("VPP follow-up PATCH labels_include_all=%v, want 2 entries", f.vppPatchIncludeAll)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg(`  labels_include_any = ["Engineering"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "labels_include_any.#", "1"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if len(f.vppPatchIncludeLabels) != 1 || f.vppPatchIncludeLabels[0] != "Engineering" {
+							return fmt.Errorf("VPP PATCH labels_include_any=%v, want [Engineering]", f.vppPatchIncludeLabels)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: cfg(``),
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if len(f.vppPatchIncludeAll) != 0 || len(f.vppPatchIncludeLabels) != 0 || len(f.vppPatchExcludeLabels) != 0 {
+						return fmt.Errorf("VPP PATCH must clear/omit all label slices; got incAll=%v incAny=%v excAny=%v",
+							f.vppPatchIncludeAll, f.vppPatchIncludeLabels, f.vppPatchExcludeLabels)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}

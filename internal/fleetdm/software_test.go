@@ -366,11 +366,13 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 		if got := r.FormValue("self_service"); got != "true" {
 			t.Errorf("expected self_service form field 'true', got: %q", got)
 		}
-		// Unset booleans must still be transmitted as "false" — Fleet treats
-		// omitted form fields as "no change", and the provider's contract is
-		// that PatchSoftwarePackage applies the caller's exact intent.
-		if got := r.FormValue("install_during_setup"); got != "false" {
-			t.Errorf("expected install_during_setup form field 'false' (unset bool), got: %q", got)
+		// install_during_setup is no longer sent on the package-PATCH
+		// endpoint — that field is the setup-experience flag which Fleet
+		// manages via a separate endpoint (PUT /setup_experience/software).
+		// The resource layer calls the setup_experience helper directly
+		// when install_during_setup changes.
+		if _, ok := r.MultipartForm.Value["install_during_setup"]; ok {
+			t.Errorf("install_during_setup must not appear on the package PATCH form (use setup_experience endpoint instead), got: %q", r.FormValue("install_during_setup"))
 		}
 		// When both label pointers are nil, neither field must appear
 		// in the multipart form. Fleet's API rejects requests that set

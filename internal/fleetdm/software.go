@@ -20,9 +20,21 @@ type SoftwareTitle struct {
 	VersionsCount    int                    `json:"versions_count"`
 	Versions         []SoftwareTitleVersion `json:"versions,omitempty"`
 	BundleIdentifier string                 `json:"bundle_identifier,omitempty"`
+	Categories       []string               `json:"categories,omitempty"`
 	SoftwarePackage  *SoftwarePackageInfo   `json:"software_package,omitempty"`
 	AppStoreApp      *AppStoreAppInfo       `json:"app_store_app,omitempty"`
 	CountsUpdatedAt  *time.Time             `json:"counts_updated_at,omitempty"`
+}
+
+// AutomaticInstallPolicyRef points at a Fleet policy that auto-installs a
+// software title on hosts that fail the policy. Returned as part of
+// software_package.automatic_install_policies / app_store_app's policies
+// list. The provider exposes this as a Computed list attribute on each
+// software resource so users can see (and reference) the auto-created
+// policies without leaving the Fleet UI.
+type AutomaticInstallPolicyRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 // SoftwareTitleVersion represents a version of a software title.
@@ -35,30 +47,35 @@ type SoftwareTitleVersion struct {
 
 // SoftwarePackageInfo represents software package installation info.
 type SoftwarePackageInfo struct {
-	Name               string          `json:"name,omitempty"`
-	Version            string          `json:"version,omitempty"`
-	Platform           string          `json:"platform,omitempty"`
-	SelfService        bool            `json:"self_service,omitempty"`
-	InstallDuringSetup *bool           `json:"install_during_setup,omitempty"`
-	InstallScript      string          `json:"install_script,omitempty"`
-	UninstallScript    string          `json:"uninstall_script,omitempty"`
-	PreInstallQuery    string          `json:"pre_install_query,omitempty"`
-	PostInstallScript  string          `json:"post_install_script,omitempty"`
-	HashSHA256         string          `json:"hash_sha256,omitempty"`
-	LabelsIncludeAny   []SoftwareLabel `json:"labels_include_any,omitempty"`
-	LabelsExcludeAny   []SoftwareLabel `json:"labels_exclude_any,omitempty"`
+	Name                     string                      `json:"name,omitempty"`
+	Version                  string                      `json:"version,omitempty"`
+	Platform                 string                      `json:"platform,omitempty"`
+	SelfService              bool                        `json:"self_service,omitempty"`
+	InstallDuringSetup       *bool                       `json:"install_during_setup,omitempty"`
+	InstallScript            string                      `json:"install_script,omitempty"`
+	UninstallScript          string                      `json:"uninstall_script,omitempty"`
+	PreInstallQuery          string                      `json:"pre_install_query,omitempty"`
+	PostInstallScript        string                      `json:"post_install_script,omitempty"`
+	HashSHA256               string                      `json:"hash_sha256,omitempty"`
+	Categories               []string                    `json:"categories,omitempty"`
+	LabelsIncludeAny         []SoftwareLabel             `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny         []SoftwareLabel             `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAll         []SoftwareLabel             `json:"labels_include_all,omitempty"`
+	AutomaticInstallPolicies []AutomaticInstallPolicyRef `json:"automatic_install_policies,omitempty"`
 }
 
 // AppStoreAppInfo represents App Store app info.
 type AppStoreAppInfo struct {
-	AdamID             string          `json:"app_store_id,omitempty"`
-	Platform           string          `json:"platform,omitempty"`
-	Name               string          `json:"name,omitempty"`
-	LatestVersion      string          `json:"latest_version,omitempty"`
-	SelfService        bool            `json:"self_service,omitempty"`
-	InstallDuringSetup *bool           `json:"install_during_setup,omitempty"`
-	LabelsIncludeAny   []SoftwareLabel `json:"labels_include_any,omitempty"`
-	LabelsExcludeAny   []SoftwareLabel `json:"labels_exclude_any,omitempty"`
+	AdamID                   string                      `json:"app_store_id,omitempty"`
+	Platform                 string                      `json:"platform,omitempty"`
+	Name                     string                      `json:"name,omitempty"`
+	LatestVersion            string                      `json:"latest_version,omitempty"`
+	SelfService              bool                        `json:"self_service,omitempty"`
+	InstallDuringSetup       *bool                       `json:"install_during_setup,omitempty"`
+	LabelsIncludeAny         []SoftwareLabel             `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny         []SoftwareLabel             `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAll         []SoftwareLabel             `json:"labels_include_all,omitempty"`
+	AutomaticInstallPolicies []AutomaticInstallPolicyRef `json:"automatic_install_policies,omitempty"`
 }
 
 // AddAppStoreAppRequest represents the request body for adding a VPP app.
@@ -67,15 +84,25 @@ type AddAppStoreAppRequest struct {
 	TeamID      int    `json:"team_id"`
 	Platform    string `json:"platform,omitempty"`
 	SelfService bool   `json:"self_service,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 // UpdateAppStoreAppRequest represents the request body for updating a VPP app.
+//
+// Label slice fields follow the convention documented on UpdatePolicyRequest
+// in policies.go: nil slice → JSON `null` → "no change"; empty slice → JSON
+// `[]` → "clear all labels"; populated → set. No `omitempty` on the three
+// label fields so the null/empty/populated distinction reaches Fleet. Only
+// one of labels_include_all, labels_include_any, labels_exclude_any may be
+// non-nil per request; the resource schema's ConflictsWith validators
+// enforce that at plan time.
 type UpdateAppStoreAppRequest struct {
 	TeamID           int      `json:"team_id"`
 	SelfService      bool     `json:"self_service"`
 	DisplayName      string   `json:"display_name,omitempty"`
 	LabelsIncludeAny []string `json:"labels_include_any"`
 	LabelsExcludeAny []string `json:"labels_exclude_any"`
+	LabelsIncludeAll []string `json:"labels_include_all"`
 }
 
 // FleetMaintainedApp represents a Fleet Maintained App.
@@ -93,16 +120,24 @@ type FleetMaintainedApp struct {
 }
 
 // AddFleetMaintainedAppRequest represents the request body for adding a Fleet Maintained App.
+//
+// AutomaticInstall maps to Fleet's documented `automatic_install` body field
+// (creates a policy that triggers install on hosts missing the software);
+// this is the policy-based auto-install, distinct from the
+// setup-experience flag which is set via the separate
+// PUT /setup_experience/software endpoint.
 type AddFleetMaintainedAppRequest struct {
 	FleetMaintainedAppID int      `json:"fleet_maintained_app_id"`
 	TeamID               int      `json:"team_id"`
 	InstallScript        string   `json:"install_script,omitempty"`
+	UninstallScript      string   `json:"uninstall_script,omitempty"`
 	PreInstallQuery      string   `json:"pre_install_query,omitempty"`
 	PostInstallScript    string   `json:"post_install_script,omitempty"`
 	SelfService          bool     `json:"self_service,omitempty"`
 	AutomaticInstall     bool     `json:"automatic_install,omitempty"`
 	LabelsIncludeAny     []string `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny     []string `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAll     []string `json:"labels_include_all,omitempty"`
 }
 
 // SoftwareVersion represents a software version in FleetDM.
@@ -341,14 +376,17 @@ type UploadSoftwarePackageRequest struct {
 	TeamID            *int      // Required for Premium
 	Software          []byte    // The software package file (pkg, msi, deb, rpm, exe)
 	Filename          string    // The filename of the package
+	DisplayName       string    // Override for the end-user-visible name; defaults to Filename when empty
+	Categories        []string  // Self-service categories (e.g. "Productivity", "Security"); empty = none
 	InstallScript     string    // Script to run during install
 	UninstallScript   string    // Script to run during uninstall
 	PreInstallQuery   string    // Osquery to check before install
 	PostInstallScript string    // Script to run after install
 	SelfService       bool      // Enable self-service
-	AutomaticInstall  bool      // Automatically install on hosts
+	AutomaticInstall  bool      // Create a Fleet policy that auto-installs on hosts missing the software (POLICY-based; distinct from the setup-experience flag set via PUT /setup_experience/software)
 	LabelsIncludeAny  *[]string // Labels to include (any match)
 	LabelsExcludeAny  *[]string // Labels to exclude
+	LabelsIncludeAll  *[]string // Labels to include (must match all)
 }
 
 // uploadSoftwareResponse is the API response when uploading software.
@@ -382,7 +420,21 @@ func (c *Client) UploadSoftwarePackage(ctx context.Context, req *UploadSoftwareP
 		fields["self_service"] = "true"
 	}
 	if req.AutomaticInstall {
-		fields["install_during_setup"] = "true"
+		// Fleet's documented Add Package field name is automatic_install
+		// (policy-based auto-install). Previously this code sent the
+		// undocumented "install_during_setup" key which Fleet silently
+		// ignored — see commit history for the bug fix.
+		fields["automatic_install"] = "true"
+	}
+	if req.DisplayName != "" {
+		fields["display_name"] = req.DisplayName
+	}
+	if len(req.Categories) > 0 {
+		categoriesJSON, err := json.Marshal(req.Categories)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal categories: %w", err)
+		}
+		fields["categories"] = string(categoriesJSON)
 	}
 	// Same nil/empty/populated semantics as PatchSoftwarePackage; nil
 	// pointer omits the field, pointer-to-empty sends "[]" so a future
@@ -400,6 +452,13 @@ func (c *Client) UploadSoftwarePackage(ctx context.Context, req *UploadSoftwareP
 			return nil, fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
 		}
 		fields["labels_exclude_any"] = string(labelsJSON)
+	}
+	if req.LabelsIncludeAll != nil {
+		labelsJSON, err := json.Marshal(*req.LabelsIncludeAll)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal labels_include_all: %w", err)
+		}
+		fields["labels_include_all"] = string(labelsJSON)
 	}
 
 	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/software/package", "software", req.Filename, req.Software, fields)
@@ -464,15 +523,22 @@ func (c *Client) DeleteSoftwarePackage(ctx context.Context, titleID int, teamID 
 // must never set both label pointers non-nil (the resource layer's schema
 // validator catches this at plan time).
 type PatchSoftwarePackageRequest struct {
-	TeamID             *int      `json:"team_id,omitempty"`
-	InstallScript      string    `json:"install_script"`
-	UninstallScript    string    `json:"uninstall_script"`
-	PreInstallQuery    string    `json:"pre_install_query"`
-	PostInstallScript  string    `json:"post_install_script"`
-	SelfService        bool      `json:"self_service"`
-	InstallDuringSetup bool      `json:"install_during_setup"`
-	LabelsIncludeAny   *[]string `json:"labels_include_any"`
-	LabelsExcludeAny   *[]string `json:"labels_exclude_any"`
+	TeamID            *int   `json:"team_id,omitempty"`
+	InstallScript     string `json:"install_script"`
+	UninstallScript   string `json:"uninstall_script"`
+	PreInstallQuery   string `json:"pre_install_query"`
+	PostInstallScript string `json:"post_install_script"`
+	SelfService       bool   `json:"self_service"`
+	// DisplayName, when non-empty, overrides the title's display name.
+	// Pass "" to leave Fleet's existing display_name untouched (no clear path
+	// is exposed today — Fleet's API doesn't accept an empty-string override).
+	DisplayName string `json:"display_name,omitempty"`
+	// Categories follows the same nil-vs-populated convention as the label
+	// pointers: nil = "no change", empty = "clear", populated = "set".
+	Categories       *[]string `json:"categories"`
+	LabelsIncludeAny *[]string `json:"labels_include_any"`
+	LabelsExcludeAny *[]string `json:"labels_exclude_any"`
+	LabelsIncludeAll *[]string `json:"labels_include_all"`
 }
 
 // PatchSoftwarePackage updates the metadata of an existing software package (scripts, labels, flags).
@@ -483,24 +549,32 @@ type PatchSoftwarePackageRequest struct {
 // ("failed to parse multipart form: request Content-Type isn't multipart/form-data").
 // We mirror UploadSoftwarePackage's field encoding (JSON-encoded strings for
 // the label arrays, "true"/"false" for booleans, raw strings for scripts).
+//
+// Note: install_during_setup is NOT sent here — that field belongs to the
+// separate PUT /setup_experience/software endpoint and is managed by the
+// resource layer via SetSetupExperienceSoftwareInclude / Exclude.
 func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *PatchSoftwarePackageRequest) error {
 	endpoint := fmt.Sprintf("/software/titles/%d/package", titleID)
 	if req.TeamID != nil {
 		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *req.TeamID)
 	}
 
-	// Every field is sent unconditionally — empty strings included — because
-	// PATCH semantics here are "set to exactly this", not "merge": for an
-	// update, omitting a field that previously had a value would leave the
-	// stale value in place. This differs from UploadSoftwarePackage, which
-	// skips empty script fields so Fleet picks defaults on create.
+	// Every script + boolean field is sent unconditionally — empty strings
+	// included — because PATCH semantics here are "set to exactly this", not
+	// "merge": for an update, omitting a field that previously had a value
+	// would leave the stale value in place. This differs from
+	// UploadSoftwarePackage, which skips empty script fields so Fleet picks
+	// defaults on create. The label fields use *[]string instead so the
+	// caller can distinguish nil (omit) from empty (clear).
 	fields := map[string]string{
-		"install_script":       req.InstallScript,
-		"uninstall_script":     req.UninstallScript,
-		"pre_install_query":    req.PreInstallQuery,
-		"post_install_script":  req.PostInstallScript,
-		"self_service":         strconv.FormatBool(req.SelfService),
-		"install_during_setup": strconv.FormatBool(req.InstallDuringSetup),
+		"install_script":      req.InstallScript,
+		"uninstall_script":    req.UninstallScript,
+		"pre_install_query":   req.PreInstallQuery,
+		"post_install_script": req.PostInstallScript,
+		"self_service":        strconv.FormatBool(req.SelfService),
+	}
+	if req.DisplayName != "" {
+		fields["display_name"] = req.DisplayName
 	}
 
 	// A nil label pointer means "don't touch this field". Sending both
@@ -521,6 +595,20 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 			return fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
 		}
 		fields["labels_exclude_any"] = string(labelsExcJSON)
+	}
+	if req.LabelsIncludeAll != nil {
+		labelsAllJSON, err := json.Marshal(*req.LabelsIncludeAll)
+		if err != nil {
+			return fmt.Errorf("failed to marshal labels_include_all: %w", err)
+		}
+		fields["labels_include_all"] = string(labelsAllJSON)
+	}
+	if req.Categories != nil {
+		categoriesJSON, err := json.Marshal(*req.Categories)
+		if err != nil {
+			return fmt.Errorf("failed to marshal categories: %w", err)
+		}
+		fields["categories"] = string(categoriesJSON)
 	}
 
 	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {

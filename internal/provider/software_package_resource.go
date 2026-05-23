@@ -67,27 +67,31 @@ type softwarePackageResource struct {
 
 // softwarePackageResourceModel maps the resource schema data.
 type softwarePackageResourceModel struct {
-	ID                   types.Int64  `tfsdk:"id"`
-	TitleID              types.Int64  `tfsdk:"title_id"`
-	TeamID               types.Int64  `tfsdk:"team_id"`
-	Type                 types.String `tfsdk:"type"`
-	Name                 types.String `tfsdk:"name"`
-	Version              types.String `tfsdk:"version"`
-	Filename             types.String `tfsdk:"filename"`
-	PackagePath          types.String `tfsdk:"package_path"`
-	PackageS3            types.Object `tfsdk:"package_s3"`
-	PackageSHA256        types.String `tfsdk:"package_sha256"`
-	Platform             types.String `tfsdk:"platform"`
-	InstallScript        types.String `tfsdk:"install_script"`
-	UninstallScript      types.String `tfsdk:"uninstall_script"`
-	PreInstallQuery      types.String `tfsdk:"pre_install_query"`
-	PostInstallScript    types.String `tfsdk:"post_install_script"`
-	SelfService          types.Bool   `tfsdk:"self_service"`
-	AutomaticInstall     types.Bool   `tfsdk:"automatic_install"`
-	LabelsIncludeAny     types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny     types.List   `tfsdk:"labels_exclude_any"`
-	AppStoreID           types.String `tfsdk:"app_store_id"`
-	FleetMaintainedAppID types.Int64  `tfsdk:"fleet_maintained_app_id"`
+	ID                       types.Int64  `tfsdk:"id"`
+	TitleID                  types.Int64  `tfsdk:"title_id"`
+	TeamID                   types.Int64  `tfsdk:"team_id"`
+	Type                     types.String `tfsdk:"type"`
+	Name                     types.String `tfsdk:"name"`
+	Version                  types.String `tfsdk:"version"`
+	DisplayName              types.String `tfsdk:"display_name"`
+	Filename                 types.String `tfsdk:"filename"`
+	PackagePath              types.String `tfsdk:"package_path"`
+	PackageS3                types.Object `tfsdk:"package_s3"`
+	PackageSHA256            types.String `tfsdk:"package_sha256"`
+	Platform                 types.String `tfsdk:"platform"`
+	InstallScript            types.String `tfsdk:"install_script"`
+	UninstallScript          types.String `tfsdk:"uninstall_script"`
+	PreInstallQuery          types.String `tfsdk:"pre_install_query"`
+	PostInstallScript        types.String `tfsdk:"post_install_script"`
+	SelfService              types.Bool   `tfsdk:"self_service"`
+	AutomaticInstall         types.Bool   `tfsdk:"automatic_install"`
+	Categories               types.List   `tfsdk:"categories"`
+	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
+	AppStoreID               types.String `tfsdk:"app_store_id"`
+	FleetMaintainedAppID     types.Int64  `tfsdk:"fleet_maintained_app_id"`
+	AutomaticInstallPolicies types.List   `tfsdk:"automatic_install_policies"`
 }
 
 // packageS3Model maps the nested package_s3 attribute.
@@ -242,31 +246,42 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Default:     booldefault.StaticBool(false),
 			},
 			"automatic_install": schema.BoolAttribute{
-				Description: "Whether to automatically install the software during device setup (install during setup). Defaults to false.",
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(false),
+				Description: "Type-dependent flag. " +
+					"For `type=package` and `type=vpp`: flags the title for install during the device's first-boot Setup Assistant via Fleet's " +
+					"`PUT /setup_experience/software` endpoint. " +
+					"For `type=fleet_maintained`: creates a Fleet *policy* that installs the software on hosts missing it. Fleet only honors this " +
+					"at Create time for FMA — changing the value after Create has no supported wire path and will produce a plan-time error. " +
+					"Deprecated: prefer the type-specific resources (`fleetdm_software_custom_package`, `fleetdm_software_app_store_app`, " +
+					"`fleetdm_software_fleet_maintained_app`) which expose `install_during_setup` and `automatic_install_policy` as separate attributes. " +
+					"Defaults to false.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
 			},
 			"labels_include_any": schema.ListAttribute{
-				Description: "List of label names. The software will be available for hosts that match any of these labels. " +
-					"Mutually exclusive with `labels_exclude_any` (Fleet's API rejects requests that set both). " +
-					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels. " +
-					"Fleet also supports `labels_include_all` (match hosts with *all* listed labels); that attribute is not yet exposed by this provider.",
+				Description: "List of label names. The software will be available for hosts that match *any* of these labels. " +
+					"Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. " +
+					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 				Optional:    true,
 				ElementType: types.StringType,
 				Validators: []validator.List{
 					listvalidator.ConflictsWith(path.Expressions{
 						path.MatchRoot("labels_exclude_any"),
+						path.MatchRoot("labels_include_all"),
 					}...),
 				},
 			},
 			"labels_exclude_any": schema.ListAttribute{
 				Description: "List of label names. The software will not be available for hosts that match any of these labels. " +
-					"Mutually exclusive with `labels_include_any` (Fleet's API rejects requests that set both); the conflict is enforced by the validator on `labels_include_any`. " +
-					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels. " +
-					"Fleet also supports `labels_include_all` (match hosts with *all* listed labels); that attribute is not yet exposed by this provider.",
+					"Mutually exclusive with `labels_include_any` and `labels_include_all`. " +
+					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 				Optional:    true,
 				ElementType: types.StringType,
+				Validators: []validator.List{
+					listvalidator.ConflictsWith(path.Expressions{
+						path.MatchRoot("labels_include_all"),
+					}...),
+				},
 			},
 			"app_store_id": schema.StringAttribute{
 				Description: "The App Store ID (Adam ID) for VPP apps. Required when type is 'vpp'.",
@@ -280,6 +295,40 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Optional:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
+				},
+			},
+			"display_name": schema.StringAttribute{
+				Description: "End-user-visible name shown for this software in Fleet's UI. Optional override for Fleet's auto-derived name; Computed when omitted. " +
+					"Added in the same release that introduces the three type-specific replacement resources; the new resources expose the same attribute.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"categories": schema.ListAttribute{
+				Description: "Self-service categories the software appears under on the end-user's *My device* page. Only applicable to `type = \"package\"` and `type = \"fleet_maintained\"` (VPP doesn't support categories).",
+				Optional:    true,
+				ElementType: types.StringType,
+			},
+			"labels_include_all": schema.ListAttribute{
+				Description: "List of label names. The software will be available for hosts that match *all* of these labels. " +
+					"Mutually exclusive with `labels_include_any` and `labels_exclude_any` — Fleet's API rejects requests that set more than one. " +
+					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
+				Optional:    true,
+				ElementType: types.StringType,
+			},
+			"automatic_install_policies": schema.ListNestedAttribute{
+				Description: "Computed. List of Fleet policies that auto-install this software title on hosts that fail the policy.",
+				Computed:    true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"id":   schema.Int64Attribute{Computed: true},
+						"name": schema.StringAttribute{Computed: true},
+					},
+				},
+				PlanModifiers: []planmodifier.List{
+					automaticInstallPoliciesUseStateForUnknown{},
 				},
 			},
 		},
@@ -313,6 +362,26 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 			"package_path and package_s3 can only be used with type = \"package\". "+
 				"VPP and Fleet Maintained apps are managed through the Fleet API directly.",
 		)
+	}
+
+	// Fleet's VPP endpoints don't accept categories or labels_include_all.
+	// Silently dropping these would cause a perpetual diff (HCL has the
+	// value, Fleet doesn't, refresh wipes state). Error at plan-time.
+	if swType == "vpp" {
+		if !data.Categories.IsNull() && !data.Categories.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("categories"),
+				"Invalid Configuration",
+				"`categories` is not supported for type = \"vpp\". Fleet's VPP API doesn't accept categories. Remove the attribute or migrate to type=package via fleetdm_software_custom_package.",
+			)
+		}
+		if !data.LabelsIncludeAll.IsNull() && !data.LabelsIncludeAll.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("labels_include_all"),
+				"Invalid Configuration",
+				"`labels_include_all` is not supported for type = \"vpp\". Fleet's Add App Store App endpoint doesn't accept labels at create time. Use the new `fleetdm_software_app_store_app` resource (which exposes labels_include_all on Update) instead.",
+			)
+		}
 	}
 
 	// Validate package_s3 fields when the block is present.
@@ -491,16 +560,25 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 	// Persist the derived filename to state so it's available on subsequent plans.
 	plan.Filename = types.StringValue(filename)
 
-	// Build the upload request
+	// Build the upload request. NOTE: AutomaticInstall is intentionally
+	// NOT set from plan.AutomaticInstall here — for the legacy resource
+	// with type=package, the documented semantic of `automatic_install`
+	// is the setup-experience flag (despite the misleading wire name).
+	// We route that path through PUT /setup_experience/software after
+	// the upload completes; setting AutomaticInstall here would create
+	// a Fleet auto-install POLICY, which is a behavioral change. Users
+	// who want the policy-based behavior should migrate to the new
+	// fleetdm_software_custom_package resource and set
+	// automatic_install_policy = true.
 	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
 		Software:          packageContent,
 		Filename:          filename,
+		DisplayName:       plan.DisplayName.ValueString(),
 		InstallScript:     plan.InstallScript.ValueString(),
 		UninstallScript:   plan.UninstallScript.ValueString(),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
-		AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
 	}
 
 	// Set team_id if specified
@@ -513,6 +591,16 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 		return
 	}
 	diags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	diags = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &uploadReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	diags = extractLabels(ctx, plan.Categories, &uploadReq.Categories)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -532,6 +620,7 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 	plan.ID = types.Int64Value(int64(title.ID))
 	plan.TitleID = types.Int64Value(int64(title.ID))
 	plan.Name = types.StringValue(title.Name)
+	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
 	if len(title.Versions) > 0 {
 		plan.Version = types.StringValue(title.Versions[0].Version)
@@ -544,6 +633,32 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 		plan.Platform = types.StringValue("")
 	}
 	plan.PackageSHA256 = types.StringValue(packageSHA256)
+	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+
+	// Persist state BEFORE attempting the setup-experience flip so a flip
+	// failure doesn't strand the just-created title outside Terraform
+	// state. See software_custom_package_resource.go for the rationale.
+	preFlipPlan := *plan
+	if plan.AutomaticInstall.IsNull() || plan.AutomaticInstall.IsUnknown() {
+		preFlipPlan.AutomaticInstall = types.BoolValue(false)
+	}
+	preDiags := resp.State.Set(ctx, preFlipPlan)
+	resp.Diagnostics.Append(preDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Legacy semantic: type=package's `automatic_install` flag means
+	// "install during setup". Route via the setup_experience endpoint.
+	if plan.AutomaticInstall.ValueBool() {
+		if err := r.client.SetSetupExperienceSoftwareInclude(ctx, optionalIntPtr(plan.TeamID), plan.Platform.ValueString(), title.ID); err != nil {
+			resp.Diagnostics.AddError(
+				"Error enabling automatic_install (setup-experience) for package",
+				err.Error()+". The package was uploaded successfully and is tracked in state; re-running `terraform apply` will retry the flip.",
+			)
+			return
+		}
+	}
 
 	// Set the state
 	diags = resp.State.Set(ctx, *plan)
@@ -570,6 +685,7 @@ func (r *softwarePackageResource) createVPP(ctx context.Context, plan *softwareP
 		TeamID:      teamID,
 		Platform:    plan.Platform.ValueString(),
 		SelfService: plan.SelfService.ValueBool(),
+		DisplayName: plan.DisplayName.ValueString(),
 	}
 
 	title, err := r.client.AddAppStoreApp(ctx, addReq)
@@ -584,6 +700,7 @@ func (r *softwarePackageResource) createVPP(ctx context.Context, plan *softwareP
 	plan.ID = types.Int64Value(int64(title.ID))
 	plan.TitleID = types.Int64Value(int64(title.ID))
 	plan.Name = types.StringValue(title.Name)
+	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
 	if title.AppStoreApp != nil && title.AppStoreApp.LatestVersion != "" {
 		plan.Version = types.StringValue(title.AppStoreApp.LatestVersion)
@@ -596,6 +713,70 @@ func (r *softwarePackageResource) createVPP(ctx context.Context, plan *softwareP
 	plan.PackageSHA256 = types.StringNull()
 	if plan.Filename.IsNull() || plan.Filename.IsUnknown() {
 		plan.Filename = types.StringNull()
+	}
+	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+
+	// Fleet's AddAppStoreApp endpoint doesn't accept labels. If the user
+	// set any of the three label attributes in HCL, follow up with an
+	// UpdateAppStoreApp call to apply them — otherwise the state would
+	// permanently diverge from Fleet (Fleet returns no labels, Read's
+	// non-null-state guard keeps the HCL value in state forever).
+	// labels_include_all on VPP is rejected by ValidateConfig, so only
+	// labels_include_any / labels_exclude_any can reach here.
+	if !plan.LabelsIncludeAny.IsNull() || !plan.LabelsExcludeAny.IsNull() {
+		tid := 0
+		if !plan.TeamID.IsNull() && !plan.TeamID.IsUnknown() {
+			tid = int(plan.TeamID.ValueInt64())
+		}
+		labelReq := &fleetdm.UpdateAppStoreAppRequest{
+			TeamID:      tid,
+			SelfService: plan.SelfService.ValueBool(),
+			DisplayName: plan.DisplayName.ValueString(),
+		}
+		var d diag.Diagnostics
+		d = extractLabels(ctx, plan.LabelsIncludeAny, &labelReq.LabelsIncludeAny)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		d = extractLabels(ctx, plan.LabelsExcludeAny, &labelReq.LabelsExcludeAny)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if err := r.client.UpdateAppStoreApp(ctx, title.ID, labelReq); err != nil {
+			resp.Diagnostics.AddError(
+				"Error applying labels on VPP create",
+				"The VPP app was added successfully, but the follow-up call to apply labels failed: "+err.Error()+
+					". The resource is tracked in state; re-running `terraform apply` will retry.",
+			)
+			// Persist state so the title isn't stranded.
+			_ = resp.State.Set(ctx, *plan)
+			return
+		}
+	}
+
+	// Persist state before the setup-experience flip; see the analogous
+	// block in createPackage for the rationale.
+	preFlipPlan := *plan
+	if plan.AutomaticInstall.IsNull() || plan.AutomaticInstall.IsUnknown() {
+		preFlipPlan.AutomaticInstall = types.BoolValue(false)
+	}
+	preDiags := resp.State.Set(ctx, preFlipPlan)
+	resp.Diagnostics.Append(preDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Legacy semantic for VPP: automatic_install means install_during_setup.
+	if plan.AutomaticInstall.ValueBool() {
+		if err := r.client.SetSetupExperienceSoftwareInclude(ctx, optionalIntPtr(plan.TeamID), plan.Platform.ValueString(), title.ID); err != nil {
+			resp.Diagnostics.AddError(
+				"Error enabling automatic_install (setup-experience) for VPP",
+				err.Error()+". The VPP app was created successfully and is tracked in state; re-running `terraform apply` will retry the flip.",
+			)
+			return
+		}
 	}
 
 	// Set the state
@@ -618,10 +799,16 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 		teamID = int(plan.TeamID.ValueInt64())
 	}
 
+	// For legacy fleet_maintained: automatic_install was always policy-based
+	// here (Fleet's AddFMA endpoint accepts the automatic_install JSON field
+	// and creates a policy). This branch keeps that behavior — it's been
+	// working for FMA users. The package and VPP branches above route
+	// automatic_install through setup_experience instead.
 	addReq := &fleetdm.AddFleetMaintainedAppRequest{
 		FleetMaintainedAppID: int(plan.FleetMaintainedAppID.ValueInt64()),
 		TeamID:               teamID,
 		InstallScript:        plan.InstallScript.ValueString(),
+		UninstallScript:      plan.UninstallScript.ValueString(),
 		PreInstallQuery:      plan.PreInstallQuery.ValueString(),
 		PostInstallScript:    plan.PostInstallScript.ValueString(),
 		SelfService:          plan.SelfService.ValueBool(),
@@ -634,6 +821,11 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 		return
 	}
 	diags = extractLabels(ctx, plan.LabelsExcludeAny, &addReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	diags = extractLabels(ctx, plan.LabelsIncludeAll, &addReq.LabelsIncludeAll)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -651,6 +843,7 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 	plan.ID = types.Int64Value(int64(title.ID))
 	plan.TitleID = types.Int64Value(int64(title.ID))
 	plan.Name = types.StringValue(title.Name)
+	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
 	if len(title.Versions) > 0 {
 		plan.Version = types.StringValue(title.Versions[0].Version)
@@ -662,6 +855,7 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 	if plan.Filename.IsNull() || plan.Filename.IsUnknown() {
 		plan.Filename = types.StringNull()
 	}
+	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 
 	diags = resp.State.Set(ctx, *plan)
 	resp.Diagnostics.Append(diags...)
@@ -799,6 +993,7 @@ func detectSoftwareType(title *fleetdm.SoftwareTitle) string {
 // readVPP populates state from a VPP app title.
 func (r *softwarePackageResource) readVPP(_ context.Context, title *fleetdm.SoftwareTitle, state *softwarePackageResourceModel) {
 	state.Name = types.StringValue(title.Name)
+	state.DisplayName = types.StringValue(title.DisplayName)
 	app := title.AppStoreApp
 	if app.LatestVersion != "" {
 		state.Version = types.StringValue(app.LatestVersion)
@@ -811,6 +1006,10 @@ func (r *softwarePackageResource) readVPP(_ context.Context, title *fleetdm.Soft
 	// If app.Platform is empty, leave state.Platform unchanged (UseStateForUnknown handles this).
 	state.AppStoreID = types.StringValue(app.AdamID)
 	state.SelfService = types.BoolValue(app.SelfService)
+	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+	if app.LabelsIncludeAll != nil && !state.LabelsIncludeAll.IsNull() {
+		state.LabelsIncludeAll = labelsToStringListValue(app.LabelsIncludeAll)
+	}
 	// Refresh labels only when Fleet returned a concrete value AND the
 	// prior state already tracked the attribute. Writing into an
 	// Optional-not-Computed list whose prior state is null would: (a)
@@ -828,8 +1027,21 @@ func (r *softwarePackageResource) readVPP(_ context.Context, title *fleetdm.Soft
 }
 
 // readPackageOrFMA populates state from a software package or Fleet Maintained App title.
+//
+// For the legacy `automatic_install` attribute we have to pick which Fleet
+// signal to mirror — the answer is type-dependent:
+//   - type=package: legacy semantic is "install during setup". Mirror
+//     pkg.InstallDuringSetup (the value Fleet returns from the title's
+//     setup-experience flag).
+//   - type=fleet_maintained: legacy semantic is "policy-based auto-install".
+//     Mirror presence of an automatic_install policy.
+//
+// The Read function gets called for both types via this helper, so the
+// caller (Read) sets state.Type before invoking us. Here we branch on the
+// already-populated state.Type.
 func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fleetdm.SoftwareTitle, state *softwarePackageResourceModel) {
 	state.Name = types.StringValue(title.Name)
+	state.DisplayName = types.StringValue(title.DisplayName)
 	if len(title.Versions) > 0 {
 		state.Version = types.StringValue(title.Versions[0].Version)
 	}
@@ -853,9 +1065,17 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 		state.PostInstallScript = types.StringValue(pkg.PostInstallScript)
 	}
 	state.SelfService = types.BoolValue(pkg.SelfService)
-	if pkg.InstallDuringSetup != nil {
-		state.AutomaticInstall = types.BoolValue(*pkg.InstallDuringSetup)
+	switch state.Type.ValueString() {
+	case "fleet_maintained":
+		// Policy-based auto-install is the legacy FMA semantic.
+		state.AutomaticInstall = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+	default:
+		// type=package — setup-experience semantic.
+		if pkg.InstallDuringSetup != nil {
+			state.AutomaticInstall = types.BoolValue(*pkg.InstallDuringSetup)
+		}
 	}
+	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 	if pkg.HashSHA256 != "" {
 		state.PackageSHA256 = types.StringValue(pkg.HashSHA256)
 	}
@@ -867,6 +1087,12 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	}
 	if pkg.LabelsExcludeAny != nil && !state.LabelsExcludeAny.IsNull() {
 		state.LabelsExcludeAny = labelsToStringListValue(pkg.LabelsExcludeAny)
+	}
+	if pkg.LabelsIncludeAll != nil && !state.LabelsIncludeAll.IsNull() {
+		state.LabelsIncludeAll = labelsToStringListValue(pkg.LabelsIncludeAll)
+	}
+	if pkg.Categories != nil && !state.Categories.IsNull() {
+		state.Categories = stringSliceToStringList(pkg.Categories)
 	}
 }
 
@@ -896,10 +1122,21 @@ func (r *softwarePackageResource) Update(ctx context.Context, req resource.Updat
 
 	switch softwareType {
 	case "vpp":
-		r.updateVPP(ctx, titleID, teamID, &plan, resp)
+		r.updateVPP(ctx, titleID, teamID, &plan, &state, resp)
 	default:
 		// Both "package" and "fleet_maintained" use PatchSoftwarePackage
 		r.updatePackageOrFMA(ctx, titleID, teamID, &plan, &state, resp)
+	}
+
+	// Carry over Computed attributes that the type-specific update paths
+	// don't refresh — the next Read will overwrite with Fleet's current
+	// values. Without this, the framework treats them as Unknown after
+	// apply and errors with "Provider returned invalid result object".
+	if plan.AutomaticInstallPolicies.IsUnknown() {
+		plan.AutomaticInstallPolicies = state.AutomaticInstallPolicies
+	}
+	if plan.DisplayName.IsUnknown() {
+		plan.DisplayName = state.DisplayName
 	}
 
 	if resp.Diagnostics.HasError() {
@@ -911,7 +1148,7 @@ func (r *softwarePackageResource) Update(ctx context.Context, req resource.Updat
 }
 
 // updateVPP handles updating a VPP (App Store) app.
-func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, resp *resource.UpdateResponse) {
+func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, priorState *softwarePackageResourceModel, resp *resource.UpdateResponse) {
 	tid := 0
 	if teamID != nil {
 		tid = *teamID
@@ -920,6 +1157,7 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 	updateReq := &fleetdm.UpdateAppStoreAppRequest{
 		TeamID:      tid,
 		SelfService: plan.SelfService.ValueBool(),
+		DisplayName: plan.DisplayName.ValueString(),
 	}
 
 	// UpdateAppStoreAppRequest is JSON-encoded with no `omitempty` on the
@@ -939,12 +1177,33 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	diags = extractLabels(ctx, plan.LabelsIncludeAll, &updateReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	if err := r.client.UpdateAppStoreApp(ctx, titleID, updateReq); err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating VPP app",
 			"Could not update App Store app: "+err.Error(),
 		)
+		return
+	}
+
+	// Legacy VPP `automatic_install` means setup-experience flag. Route
+	// the diff through the setup_experience endpoint — only when it
+	// actually changed (else every Update would emit a redundant PUT).
+	if !plan.AutomaticInstall.Equal(priorState.AutomaticInstall) {
+		if plan.AutomaticInstall.ValueBool() {
+			if err := r.client.SetSetupExperienceSoftwareInclude(ctx, teamID, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error enabling automatic_install (setup-experience) for VPP", err.Error())
+			}
+		} else {
+			if err := r.client.SetSetupExperienceSoftwareExclude(ctx, teamID, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error disabling automatic_install (setup-experience) for VPP", err.Error())
+			}
+		}
 	}
 }
 
@@ -959,6 +1218,22 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 // or the SHA actually differs, we download the body, delete the old package,
 // and re-upload.
 func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, priorState *softwarePackageResourceModel, resp *resource.UpdateResponse) {
+	// Plan-time guard: for type=fleet_maintained, automatic_install is a
+	// Create-time-only flag (Fleet's AddFMA endpoint creates the policy at
+	// title creation; the PATCH endpoint doesn't accept it). Fail BEFORE
+	// any wire operation — otherwise a partial PATCH would leave Fleet
+	// updated but the resource error'd-out, with the user unable to see
+	// what already applied.
+	if plan.Type.ValueString() == "fleet_maintained" && !plan.AutomaticInstall.Equal(priorState.AutomaticInstall) {
+		resp.Diagnostics.AddError(
+			"automatic_install cannot be changed for type=fleet_maintained",
+			"Fleet only honors automatic_install at creation time for Fleet Maintained Apps. "+
+				"Recreate the resource (terraform taint + apply) or migrate to fleetdm_software_fleet_maintained_app "+
+				"and use automatic_install_policy (ForceNew).",
+		)
+		return
+	}
+
 	hasPath := !plan.PackagePath.IsNull() && !plan.PackagePath.IsUnknown() && plan.PackagePath.ValueString() != ""
 	hasS3 := !plan.PackageS3.IsNull() && !plan.PackageS3.IsUnknown()
 	hasSource := hasPath || hasS3
@@ -1020,13 +1295,13 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 	// avoid sending both labels_include_any and labels_exclude_any in the
 	// same multipart body, which Fleet rejects ("Only one of …").
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
-		TeamID:             teamID,
-		InstallScript:      plan.InstallScript.ValueString(),
-		UninstallScript:    plan.UninstallScript.ValueString(),
-		PreInstallQuery:    plan.PreInstallQuery.ValueString(),
-		PostInstallScript:  plan.PostInstallScript.ValueString(),
-		SelfService:        plan.SelfService.ValueBool(),
-		InstallDuringSetup: plan.AutomaticInstall.ValueBool(),
+		TeamID:            teamID,
+		InstallScript:     plan.InstallScript.ValueString(),
+		UninstallScript:   plan.UninstallScript.ValueString(),
+		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
+		PostInstallScript: plan.PostInstallScript.ValueString(),
+		SelfService:       plan.SelfService.ValueBool(),
+		DisplayName:       plan.DisplayName.ValueString(),
 	}
 
 	var diags diag.Diagnostics
@@ -1040,12 +1315,39 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	diags = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &patchReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	diags = extractOptionalLabels(ctx, plan.Categories, &patchReq.Categories)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	if err := r.client.PatchSoftwarePackage(ctx, titleID, patchReq); err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating software package",
 			"Could not update software package metadata: "+err.Error(),
 		)
+		return
+	}
+
+	// For type=package, route automatic_install via setup-experience —
+	// only when the value actually changed. The type=fleet_maintained
+	// case is rejected at the top of this function, before any wire
+	// operation, so it never reaches here.
+	if plan.Type.ValueString() == "package" && !plan.AutomaticInstall.Equal(priorState.AutomaticInstall) {
+		if plan.AutomaticInstall.ValueBool() {
+			if err := r.client.SetSetupExperienceSoftwareInclude(ctx, teamID, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error enabling automatic_install (setup-experience) for package", err.Error())
+			}
+		} else {
+			if err := r.client.SetSetupExperienceSoftwareExclude(ctx, teamID, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error disabling automatic_install (setup-experience) for package", err.Error())
+			}
+		}
 	}
 }
 
@@ -1099,16 +1401,21 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 	}
 	plan.Filename = types.StringValue(filename)
 
+	// Legacy `automatic_install` for type=package now means setup-experience
+	// (see createPackage). Don't forward to the Upload request's
+	// AutomaticInstall (which would create a Fleet policy); the
+	// setup_experience reconciliation happens in updatePackageOrFMA's
+	// post-PATCH block.
 	uploadReq := &fleetdm.UploadSoftwarePackageRequest{
 		TeamID:            teamID,
 		Software:          content,
 		Filename:          filename,
+		DisplayName:       plan.DisplayName.ValueString(),
 		InstallScript:     plan.InstallScript.ValueString(),
 		UninstallScript:   plan.UninstallScript.ValueString(),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
-		AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
 	}
 
 	uploadDiags := extractOptionalLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
@@ -1117,6 +1424,16 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		return false
 	}
 	uploadDiags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	resp.Diagnostics.Append(uploadDiags...)
+	if resp.Diagnostics.HasError() {
+		return false
+	}
+	uploadDiags = extractOptionalLabels(ctx, plan.LabelsIncludeAll, &uploadReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(uploadDiags...)
+	if resp.Diagnostics.HasError() {
+		return false
+	}
+	uploadDiags = extractLabels(ctx, plan.Categories, &uploadReq.Categories)
 	resp.Diagnostics.Append(uploadDiags...)
 	if resp.Diagnostics.HasError() {
 		return false

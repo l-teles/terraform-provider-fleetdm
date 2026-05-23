@@ -1822,6 +1822,298 @@ func TestAccSoftwarePackageResource_labelLifecycle(t *testing.T) {
 	})
 }
 
+// fakeFleetForTypeRouting stands up a fake server that handles all three
+// type=* paths plus the setup_experience endpoints, used by the
+// type-aware automatic_install routing tests below.
+type fakeFleetForTypeRouting struct {
+	srv        *httptest.Server
+	mu         sync.Mutex
+	titleID    int
+	source     string // "pkg" | "app_store_app" | "fma"
+	platform   string
+	appStoreID string
+
+	uploadAutomaticInstall string
+	vppCreates             int
+	fmaAutomaticInstall    bool
+	setupExperienceSet     []int
+	setupExperiencePuts    int
+}
+
+// newFakeFleetForTypeRouting builds a fake Fleet API surface that covers
+// all three legacy-resource types: POST /software/package (multipart),
+// POST /software/app_store_apps (JSON), POST /software/fleet_maintained_apps
+// (JSON), GET title, GET+PUT /setup_experience/software, DELETE title.
+// The test asserts on the captured wire fields to verify routing.
+func newFakeFleetForTypeRouting(t *testing.T, titleID int, source string) *fakeFleetForTypeRouting {
+	t.Helper()
+	f := &fakeFleetForTypeRouting{titleID: titleID, source: source, platform: "darwin"}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		idStr := strconv.Itoa(f.titleID)
+		switch {
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
+
+		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == http.MethodPost:
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("ParseMultipartForm (upload): %v", err)
+				http.Error(w, "bad multipart", http.StatusBadRequest)
+				return
+			}
+			f.mu.Lock()
+			f.uploadAutomaticInstall = r.FormValue("automatic_install")
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_package": map[string]any{"title_id": f.titleID, "team_id": 0},
+			})
+
+		case r.URL.Path == "/api/v1/fleet/software/app_store_apps" && r.Method == http.MethodPost:
+			var body struct {
+				AppStoreID string `json:"app_store_id"`
+				Platform   string `json:"platform"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.vppCreates++
+			f.appStoreID = body.AppStoreID
+			if body.Platform != "" {
+				f.platform = body.Platform
+			}
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"software_title_id": f.titleID})
+
+		case r.URL.Path == "/api/v1/fleet/software/fleet_maintained_apps" && r.Method == http.MethodPost:
+			var body struct {
+				FleetMaintainedAppID int  `json:"fleet_maintained_app_id"`
+				AutomaticInstall     bool `json:"automatic_install"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.fmaAutomaticInstall = body.AutomaticInstall
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"software_title_id": f.titleID})
+
+		case r.URL.Path == "/api/v1/fleet/software/titles/"+idStr && r.Method == http.MethodGet:
+			f.mu.Lock()
+			payload := map[string]any{
+				"id":             f.titleID,
+				"name":           "test-app",
+				"source":         "pkg",
+				"hosts_count":    0,
+				"versions_count": 1,
+				"versions":       []map[string]any{{"id": 1, "version": "1.0.0", "hosts_count": 0}},
+			}
+			pkgBody := map[string]any{
+				"title_id":    f.titleID,
+				"platform":    f.platform,
+				"hash_sha256": hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
+			}
+			for _, id := range f.setupExperienceSet {
+				if id == f.titleID {
+					pkgBody["install_during_setup"] = true
+					break
+				}
+			}
+			// FMA's Read derives automatic_install from the presence of
+			// automatic_install_policies (policy-based auto-install). Mirror
+			// that here when the fake's FMA Add captured automatic_install=true.
+			if f.source == "fma" && f.fmaAutomaticInstall {
+				pkgBody["automatic_install_policies"] = []map[string]any{
+					{"id": 7, "name": "Auto-install test-app"},
+				}
+			}
+			if f.source == "app_store_app" {
+				vppBody := map[string]any{
+					"app_store_id":   f.appStoreID,
+					"platform":       f.platform,
+					"name":           "test-app",
+					"latest_version": "1.0.0",
+				}
+				for _, id := range f.setupExperienceSet {
+					if id == f.titleID {
+						vppBody["install_during_setup"] = true
+						break
+					}
+				}
+				payload["app_store_app"] = vppBody
+			} else {
+				payload["software_package"] = pkgBody
+			}
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"software_title": payload})
+
+		case r.URL.Path == "/api/v1/fleet/setup_experience/software" && r.Method == http.MethodGet:
+			f.mu.Lock()
+			arr := []map[string]any{}
+			for _, id := range f.setupExperienceSet {
+				arr = append(arr, map[string]any{"id": id})
+			}
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"software_titles": arr})
+
+		case r.URL.Path == "/api/v1/fleet/setup_experience/software" && r.Method == http.MethodPut:
+			var body struct {
+				SoftwareTitleIDs []int `json:"software_title_ids"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.setupExperienceSet = append([]int{}, body.SoftwareTitleIDs...)
+			f.setupExperiencePuts++
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+
+		case r.URL.Path == "/api/v1/fleet/software/titles/"+idStr+"/available_for_install" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// TestAccSoftwarePackageResource_typeAwareAutomaticInstall_package verifies
+// that on the legacy resource, `type=package` + `automatic_install=true`
+// routes through the setup_experience PUT endpoint — NOT through any
+// JSON automatic_install body field (Fleet's upload endpoint historically
+// expected `install_during_setup` here; the form key was renamed but the
+// semantics on the legacy resource map to setup-experience).
+func TestAccSoftwarePackageResource_typeAwareAutomaticInstall_package(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetForTypeRouting(t, 71, "pkg")
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "test" {
+  type              = "package"
+  package_path      = %[2]q
+  filename          = "test-app.pkg"
+  install_script    = "echo hi"
+  automatic_install = true
+}
+`, f.srv.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if f.setupExperiencePuts == 0 {
+						return fmt.Errorf("type=package + automatic_install=true must issue a PUT /setup_experience/software, got 0 PUTs")
+					}
+					for _, id := range f.setupExperienceSet {
+						if id == f.titleID {
+							return nil
+						}
+					}
+					return fmt.Errorf("expected title %d in setup-experience set, got %v", f.titleID, f.setupExperienceSet)
+				},
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_typeAwareAutomaticInstall_vpp verifies
+// that `type=vpp` + `automatic_install=true` on the legacy resource
+// routes through the setup_experience PUT endpoint (matching Fleet's
+// model where VPP install_during_setup is the only meaningful semantic
+// for the legacy automatic_install field).
+func TestAccSoftwarePackageResource_typeAwareAutomaticInstall_vpp(t *testing.T) {
+	f := newFakeFleetForTypeRouting(t, 101, "app_store_app")
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "test" {
+  type              = "vpp"
+  app_store_id      = "899247664"
+  platform          = "darwin"
+  automatic_install = true
+}
+`, f.srv.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if f.setupExperiencePuts == 0 {
+						return fmt.Errorf("type=vpp + automatic_install=true must issue a PUT /setup_experience/software, got 0 PUTs")
+					}
+					for _, id := range f.setupExperienceSet {
+						if id == f.titleID {
+							return nil
+						}
+					}
+					return fmt.Errorf("expected title %d in setup-experience set, got %v", f.titleID, f.setupExperienceSet)
+				},
+			},
+		},
+	})
+}
+
+// TestAccSoftwarePackageResource_typeAwareAutomaticInstall_fleetMaintained
+// verifies that `type=fleet_maintained` + `automatic_install=true` routes
+// through Fleet's JSON `automatic_install` field on the FMA Add endpoint
+// (creating a Fleet policy) — NOT through the setup_experience PUT.
+// This is the divergent-routing branch: FMA's automatic_install is
+// policy-based, while package/vpp's automatic_install means setup-experience.
+func TestAccSoftwarePackageResource_typeAwareAutomaticInstall_fleetMaintained(t *testing.T) {
+	f := newFakeFleetForTypeRouting(t, 201, "fma")
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "test" {
+  type                    = "fleet_maintained"
+  fleet_maintained_app_id = 1
+  automatic_install       = true
+}
+`, f.srv.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if !f.fmaAutomaticInstall {
+						return fmt.Errorf("type=fleet_maintained + automatic_install=true must send automatic_install=true on FMA Add, got %v", f.fmaAutomaticInstall)
+					}
+					if f.setupExperiencePuts != 0 {
+						return fmt.Errorf("type=fleet_maintained must NOT call setup_experience PUT, got %d PUTs", f.setupExperiencePuts)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
 // TestAccSoftwarePackageResource_conflictingLabels verifies the schema
 // validator rejects HCL that sets both labels_include_any and
 // labels_exclude_any, surfacing Fleet's "only one of …" invariant at

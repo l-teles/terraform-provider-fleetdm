@@ -46,17 +46,20 @@ type softwareAppStoreAppResource struct {
 // (Apple manages the install flow), no package_path / package_s3 / filename
 // (there's no installer to upload), and no SHA256.
 type softwareAppStoreAppResourceModel struct {
-	ID               types.Int64  `tfsdk:"id"`
-	TitleID          types.Int64  `tfsdk:"title_id"`
-	TeamID           types.Int64  `tfsdk:"team_id"`
-	AppStoreID       types.String `tfsdk:"app_store_id"`
-	Name             types.String `tfsdk:"name"`
-	Version          types.String `tfsdk:"version"`
-	Platform         types.String `tfsdk:"platform"`
-	SelfService      types.Bool   `tfsdk:"self_service"`
-	AutomaticInstall types.Bool   `tfsdk:"automatic_install"`
-	LabelsIncludeAny types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny types.List   `tfsdk:"labels_exclude_any"`
+	ID                       types.Int64  `tfsdk:"id"`
+	TitleID                  types.Int64  `tfsdk:"title_id"`
+	TeamID                   types.Int64  `tfsdk:"team_id"`
+	AppStoreID               types.String `tfsdk:"app_store_id"`
+	Name                     types.String `tfsdk:"name"`
+	Version                  types.String `tfsdk:"version"`
+	Platform                 types.String `tfsdk:"platform"`
+	DisplayName              types.String `tfsdk:"display_name"`
+	SelfService              types.Bool   `tfsdk:"self_service"`
+	InstallDuringSetup       types.Bool   `tfsdk:"install_during_setup"`
+	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
+	AutomaticInstallPolicies types.List   `tfsdk:"automatic_install_policies"`
 }
 
 // Metadata returns the resource type name.
@@ -107,6 +110,7 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		TeamID:      teamID,
 		Platform:    plan.Platform.ValueString(),
 		SelfService: plan.SelfService.ValueBool(),
+		DisplayName: plan.DisplayName.ValueString(),
 	}
 
 	title, err := r.client.AddAppStoreApp(ctx, addReq)
@@ -121,6 +125,7 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 	plan.ID = types.Int64Value(int64(title.ID))
 	plan.TitleID = types.Int64Value(int64(title.ID))
 	plan.Name = types.StringValue(title.Name)
+	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
 	if title.AppStoreApp != nil && title.AppStoreApp.LatestVersion != "" {
 		plan.Version = types.StringValue(title.AppStoreApp.LatestVersion)
@@ -131,6 +136,73 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		plan.Platform = types.StringValue(title.AppStoreApp.Platform)
 	} else if plan.Platform.IsNull() || plan.Platform.IsUnknown() {
 		plan.Platform = types.StringValue("")
+	}
+	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+
+	// Fleet's AddAppStoreApp endpoint doesn't accept labels. If the user
+	// set any of the three label attributes in HCL, follow up with an
+	// UpdateAppStoreApp call to apply them — otherwise the state would
+	// permanently diverge from Fleet (Fleet returns no labels, Read's
+	// non-null-state guard keeps the HCL value in state forever).
+	if !plan.LabelsIncludeAny.IsNull() || !plan.LabelsExcludeAny.IsNull() || !plan.LabelsIncludeAll.IsNull() {
+		tid := 0
+		if !plan.TeamID.IsNull() && !plan.TeamID.IsUnknown() {
+			tid = int(plan.TeamID.ValueInt64())
+		}
+		labelReq := &fleetdm.UpdateAppStoreAppRequest{
+			TeamID:      tid,
+			SelfService: plan.SelfService.ValueBool(),
+			DisplayName: plan.DisplayName.ValueString(),
+		}
+		var d diag.Diagnostics
+		d = extractLabels(ctx, plan.LabelsIncludeAny, &labelReq.LabelsIncludeAny)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		d = extractLabels(ctx, plan.LabelsExcludeAny, &labelReq.LabelsExcludeAny)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		d = extractLabels(ctx, plan.LabelsIncludeAll, &labelReq.LabelsIncludeAll)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if err := r.client.UpdateAppStoreApp(ctx, title.ID, labelReq); err != nil {
+			resp.Diagnostics.AddError(
+				"Error applying labels on VPP create",
+				"The VPP app was added successfully, but the follow-up call to apply labels failed: "+err.Error()+
+					". The resource is tracked in state; re-running `terraform apply` will retry.",
+			)
+			_ = resp.State.Set(ctx, plan)
+			return
+		}
+	}
+
+	// Persist state before the setup-experience flip — see the analogous
+	// block in software_custom_package_resource.go for the rationale.
+	preFlipPlan := plan
+	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
+		preFlipPlan.InstallDuringSetup = types.BoolValue(false)
+	}
+	preDiags := resp.State.Set(ctx, preFlipPlan)
+	resp.Diagnostics.Append(preDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Post-create: route install_during_setup via PUT /setup_experience/software.
+	if plan.InstallDuringSetup.ValueBool() {
+		if err := r.client.SetSetupExperienceSoftwareInclude(ctx, optionalIntPtr(plan.TeamID), plan.Platform.ValueString(), title.ID); err != nil {
+			resp.Diagnostics.AddError(
+				"Error setting install_during_setup",
+				"The VPP app was added successfully but enabling install_during_setup failed: "+err.Error()+
+					". The resource is tracked in state; re-running `terraform apply` will retry the flip.",
+			)
+			return
+		}
 	}
 
 	diags = resp.State.Set(ctx, plan)
@@ -191,6 +263,7 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 
 	app := title.AppStoreApp
 	state.Name = types.StringValue(title.Name)
+	state.DisplayName = types.StringValue(title.DisplayName)
 	if app.LatestVersion != "" {
 		state.Version = types.StringValue(app.LatestVersion)
 	} else if len(title.Versions) > 0 {
@@ -202,13 +275,17 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 	state.AppStoreID = types.StringValue(app.AdamID)
 	state.SelfService = types.BoolValue(app.SelfService)
 	if app.InstallDuringSetup != nil {
-		state.AutomaticInstall = types.BoolValue(*app.InstallDuringSetup)
+		state.InstallDuringSetup = types.BoolValue(*app.InstallDuringSetup)
 	}
+	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 	if app.LabelsIncludeAny != nil && !state.LabelsIncludeAny.IsNull() {
 		state.LabelsIncludeAny = labelsToStringListValue(app.LabelsIncludeAny)
 	}
 	if app.LabelsExcludeAny != nil && !state.LabelsExcludeAny.IsNull() {
 		state.LabelsExcludeAny = labelsToStringListValue(app.LabelsExcludeAny)
+	}
+	if app.LabelsIncludeAll != nil && !state.LabelsIncludeAll.IsNull() {
+		state.LabelsIncludeAll = labelsToStringListValue(app.LabelsIncludeAll)
 	}
 
 	diags = resp.State.Set(ctx, state)
@@ -231,9 +308,17 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 		tid = int(plan.TeamID.ValueInt64())
 	}
 
+	var state softwareAppStoreAppResourceModel
+	diags = req.State.Get(ctx, &state)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	updateReq := &fleetdm.UpdateAppStoreAppRequest{
 		TeamID:      tid,
 		SelfService: plan.SelfService.ValueBool(),
+		DisplayName: plan.DisplayName.ValueString(),
 	}
 
 	// UpdateAppStoreAppRequest is JSON-encoded with no `omitempty` on the
@@ -251,6 +336,11 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	d = extractLabels(ctx, plan.LabelsIncludeAll, &updateReq.LabelsIncludeAll)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	if err := r.client.UpdateAppStoreApp(ctx, titleID, updateReq); err != nil {
 		resp.Diagnostics.AddError(
@@ -258,6 +348,31 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 			"Could not update App Store app: "+err.Error(),
 		)
 		return
+	}
+
+	// Carry over Computed attributes that the PATCH path doesn't refresh.
+	if plan.AutomaticInstallPolicies.IsUnknown() {
+		plan.AutomaticInstallPolicies = state.AutomaticInstallPolicies
+	}
+	if plan.DisplayName.IsUnknown() {
+		plan.DisplayName = state.DisplayName
+	}
+
+	// install_during_setup diff routes through the separate
+	// PUT /setup_experience/software endpoint.
+	if !plan.InstallDuringSetup.Equal(state.InstallDuringSetup) {
+		teamPtr := optionalIntPtr(plan.TeamID)
+		if plan.InstallDuringSetup.ValueBool() {
+			if err := r.client.SetSetupExperienceSoftwareInclude(ctx, teamPtr, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error enabling install_during_setup", err.Error())
+				return
+			}
+		} else {
+			if err := r.client.SetSetupExperienceSoftwareExclude(ctx, teamPtr, plan.Platform.ValueString(), titleID); err != nil {
+				resp.Diagnostics.AddError("Error disabling install_during_setup", err.Error())
+				return
+			}
+		}
 	}
 
 	diags = resp.State.Set(ctx, plan)
