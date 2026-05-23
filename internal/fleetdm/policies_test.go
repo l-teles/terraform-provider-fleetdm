@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -931,5 +932,305 @@ func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
 	}
 	if policy.PatchSoftware == nil || policy.PatchSoftware.SoftwareTitleID != 1234 {
 		t.Errorf("expected patch_software.software_title_id 1234, got: %+v", policy.PatchSoftware)
+	}
+}
+
+func TestClient_ListPoliciesByInstallSoftwareTitleID_Global(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/global/policies" {
+			t.Errorf("expected global policies path, got: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				{ID: 1, Name: "No automation"},
+				{ID: 2, Name: "Installs Other", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 99}},
+				{ID: 3, Name: "Installs Target A", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				{ID: 4, Name: "Installs Target B", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByInstallSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got: %d (%+v)", len(matches), matches)
+	}
+	if matches[0].ID != 3 || matches[1].ID != 4 {
+		t.Errorf("expected policy IDs [3, 4], got: [%d, %d]", matches[0].ID, matches[1].ID)
+	}
+}
+
+func TestClient_ListPoliciesByInstallSoftwareTitleID_Team(t *testing.T) {
+	var sawTeamPath bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/fleet/fleets/7/policies" {
+			sawTeamPath = true
+		} else {
+			t.Errorf("expected team policies path, got: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				{ID: 10, Name: "Installs Target", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	teamID := 7
+	matches, err := client.ListPoliciesByInstallSoftwareTitleID(context.Background(), 42, &teamID)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !sawTeamPath {
+		t.Error("expected ListPoliciesByInstallSoftwareTitleID to hit the team-scoped endpoint")
+	}
+	if len(matches) != 1 || matches[0].ID != 10 {
+		t.Errorf("expected one match with ID 10, got: %+v", matches)
+	}
+}
+
+// TestClient_ListPoliciesByInstallSoftwareTitleID_Paginates verifies the
+// helper walks every page of /global/policies until has_next_results=false,
+// finding matches across pages. Without pagination, Fleet's default
+// per_page=20 would cause matches on later pages to be missed and the
+// caller would hit the 409 "Policy automation uses this software" error
+// that this helper exists to prevent.
+func TestClient_ListPoliciesByInstallSoftwareTitleID_Paginates(t *testing.T) {
+	pagesServed := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/global/policies" {
+			t.Errorf("expected /global/policies, got %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("expected per_page=100, got %s", got)
+		}
+
+		pagesServed++
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "": // page 0 — first call omits the page param
+			_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+				Policies: []Policy{
+					{ID: 1, Name: "Other", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 99}},
+					{ID: 2, Name: "Match page 0", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				},
+				Meta: &PaginationMeta{HasNextResults: true},
+			})
+		case "1":
+			_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+				Policies: []Policy{
+					{ID: 3, Name: "Match page 1", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				},
+				Meta: &PaginationMeta{HasNextResults: true},
+			})
+		case "2":
+			_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+				Policies: []Policy{
+					{ID: 4, Name: "No automation"},
+					{ID: 5, Name: "Match page 2", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				},
+				Meta: &PaginationMeta{HasNextResults: false},
+			})
+		default:
+			t.Errorf("unexpected page=%s; pagination loop should have stopped", r.URL.Query().Get("page"))
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByInstallSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if pagesServed != 3 {
+		t.Errorf("expected exactly 3 pages served, got %d", pagesServed)
+	}
+	wantIDs := []int{2, 3, 5}
+	gotIDs := make([]int, len(matches))
+	for i, p := range matches {
+		gotIDs[i] = p.ID
+	}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Errorf("expected matches %v, got %v", wantIDs, gotIDs)
+	}
+}
+
+func TestClient_ListPoliciesByInstallSoftwareTitleID_NoMatches(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				{ID: 1, Name: "No automation"},
+				{ID: 2, Name: "Installs Other", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 99}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByInstallSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("expected zero matches, got: %d", len(matches))
+	}
+}
+
+func TestClient_SetPolicyInstallSoftwareTitleID_DetachPreservesFields(t *testing.T) {
+	// Existing policy state: software_title_id=42, plus all the other fields
+	// we expect to be preserved across the PATCH.
+	teamID := 7
+	existing := Policy{
+		ID:                       55,
+		Name:                     "Install Slack",
+		Description:              "Auto-install on failing hosts",
+		Query:                    "SELECT 1 FROM osquery_info",
+		Critical:                 true,
+		Resolution:               "Install the latest Slack",
+		Platform:                 "darwin",
+		TeamID:                   &teamID,
+		CalendarEventsEnabled:    true,
+		ConditionalAccessEnabled: false,
+		LabelsIncludeAny:         []PolicyLabel{{ID: 11, Name: "Macs on Sonoma"}, {ID: 12, Name: "Macs in Engineering"}},
+		LabelsExcludeAny:         []PolicyLabel{{ID: 13, Name: "Exempt"}},
+		InstallSoftware:          &PolicyAutomationSoftware{SoftwareTitleID: 42},
+		RunScript:                &PolicyAutomationScript{ID: 9001},
+	}
+
+	var sawGet, sawPatch bool
+	var patchBody UpdatePolicyRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			sawGet = true
+			if r.URL.Path != "/api/v1/fleet/fleets/7/policies/55" {
+				t.Errorf("unexpected GET path: %s", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(GetPolicyResponse{Policy: existing})
+		case http.MethodPatch:
+			sawPatch = true
+			if r.URL.Path != "/api/v1/fleet/fleets/7/policies/55" {
+				t.Errorf("unexpected PATCH path: %s", r.URL.Path)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
+				t.Fatalf("decode patch body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: existing})
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	if err := client.SetPolicyInstallSoftwareTitleID(context.Background(), 55, &teamID, nil); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if !sawGet {
+		t.Error("expected SetPolicyInstallSoftwareTitleID to issue a GET first")
+	}
+	if !sawPatch {
+		t.Error("expected SetPolicyInstallSoftwareTitleID to issue a PATCH")
+	}
+	if patchBody.SoftwareTitleID != nil {
+		t.Errorf("expected software_title_id to be cleared (nil), got: %v", *patchBody.SoftwareTitleID)
+	}
+	if patchBody.Name != existing.Name {
+		t.Errorf("expected name to be preserved as %q, got: %q", existing.Name, patchBody.Name)
+	}
+	if patchBody.Description != existing.Description {
+		t.Errorf("expected description to be preserved, got: %q", patchBody.Description)
+	}
+	if patchBody.Query != existing.Query {
+		t.Errorf("expected query to be preserved, got: %q", patchBody.Query)
+	}
+	if patchBody.Critical != existing.Critical {
+		t.Errorf("expected critical=true to be preserved, got: %v", patchBody.Critical)
+	}
+	if patchBody.Resolution != existing.Resolution {
+		t.Errorf("expected resolution to be preserved, got: %q", patchBody.Resolution)
+	}
+	if patchBody.Platform != existing.Platform {
+		t.Errorf("expected platform to be preserved, got: %q", patchBody.Platform)
+	}
+	if patchBody.CalendarEventsEnabled == nil || *patchBody.CalendarEventsEnabled != true {
+		t.Errorf("expected calendar_events_enabled true to be preserved, got: %v", patchBody.CalendarEventsEnabled)
+	}
+	if patchBody.ConditionalAccessEnabled == nil || *patchBody.ConditionalAccessEnabled != false {
+		t.Errorf("expected conditional_access_enabled false to be preserved, got: %v", patchBody.ConditionalAccessEnabled)
+	}
+	if patchBody.ScriptID == nil || *patchBody.ScriptID != 9001 {
+		t.Errorf("expected script_id 9001 to be preserved, got: %v", patchBody.ScriptID)
+	}
+	wantLabelsInc := []string{"Macs on Sonoma", "Macs in Engineering"}
+	if !slices.Equal(patchBody.LabelsIncludeAny, wantLabelsInc) {
+		t.Errorf("expected labels_include_any %v, got: %v", wantLabelsInc, patchBody.LabelsIncludeAny)
+	}
+	wantLabelsExc := []string{"Exempt"}
+	if !slices.Equal(patchBody.LabelsExcludeAny, wantLabelsExc) {
+		t.Errorf("expected labels_exclude_any %v, got: %v", wantLabelsExc, patchBody.LabelsExcludeAny)
+	}
+}
+
+func TestClient_SetPolicyInstallSoftwareTitleID_Reattach(t *testing.T) {
+	existing := Policy{
+		ID:   55,
+		Name: "Install Slack",
+	}
+	var patchBody UpdatePolicyRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(GetPolicyResponse{Policy: existing})
+		case http.MethodPatch:
+			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
+				t.Fatalf("decode patch body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: existing})
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	newID := 77
+	if err := client.SetPolicyInstallSoftwareTitleID(context.Background(), 55, nil, &newID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if patchBody.SoftwareTitleID == nil {
+		t.Fatal("expected software_title_id to be set, got nil")
+	}
+	if *patchBody.SoftwareTitleID != 77 {
+		t.Errorf("expected software_title_id 77, got: %d", *patchBody.SoftwareTitleID)
+	}
+}
+
+func TestPolicyLabelsToStrings(t *testing.T) {
+	if got := policyLabelsToStrings(nil); got != nil {
+		t.Errorf("expected nil for nil input, got: %v", got)
+	}
+	if got := policyLabelsToStrings([]PolicyLabel{}); got != nil {
+		t.Errorf("expected nil for empty input, got: %v", got)
+	}
+	in := []PolicyLabel{{ID: 1, Name: "Alpha"}, {ID: 2, Name: "Beta"}}
+	got := policyLabelsToStrings(in)
+	want := []string{"Alpha", "Beta"}
+	if !slices.Equal(got, want) {
+		t.Errorf("expected %v, got: %v", want, got)
 	}
 }

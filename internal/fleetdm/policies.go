@@ -3,7 +3,20 @@ package fleetdm
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
+
+// maxPolicyListPages caps the pagination loop in
+// ListPoliciesByInstallSoftwareTitleID as a defense-in-depth measure against a
+// Fleet API regression that fails to flip has_next_results to false. 1000
+// pages × policyListPerPage per page is well above any realistic team size.
+const maxPolicyListPages = 1000
+
+// policyListPerPage is the per_page hint used by ListPoliciesByInstallSoftwareTitleID
+// when paginating /global/policies and /fleets/{teamID}/policies. Chosen large
+// enough that most fleets fit in a single request, but bounded so a misbehaving
+// server can't deliver an unbounded response in one shot.
+const policyListPerPage = 100
 
 // PolicyAutomationSoftware echoes the install_software automation attached to a policy.
 type PolicyAutomationSoftware struct {
@@ -326,4 +339,106 @@ func (c *Client) ListPolicies(ctx context.Context, teamID *int) ([]Policy, error
 		return c.ListTeamPolicies(ctx, *teamID)
 	}
 	return c.ListGlobalPolicies(ctx)
+}
+
+// ListPoliciesByInstallSoftwareTitleID returns policies in the given scope
+// whose install_software automation references the given software title ID.
+// Fleet does not expose a server-side filter, so the implementation paginates
+// through all policies in the scope and filters client-side.
+//
+// Scope follows teamID: nil (or zero-pointer) selects global policies;
+// non-zero pointer selects the named team. Install_software policies can only
+// reference titles in the same scope, so callers should pass the same teamID
+// as the title being looked up.
+//
+// Pagination matters because the underlying /global/policies and
+// /fleets/{teamID}/policies endpoints default to per_page=20: without paging,
+// any team with more than 20 policies would silently miss matches and the
+// caller would then hit Fleet's "Policy automation uses this software" 409.
+func (c *Client) ListPoliciesByInstallSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
+	endpoint := "/global/policies"
+	if isTeamScoped(teamID) {
+		endpoint = fmt.Sprintf("/fleets/%d/policies", *teamID)
+	}
+
+	var matches []Policy
+	for page := range maxPolicyListPages {
+		params := map[string]string{
+			"per_page": strconv.Itoa(policyListPerPage),
+		}
+		if page > 0 {
+			params["page"] = strconv.Itoa(page)
+		}
+
+		var resp ListPoliciesResponse
+		if err := c.Get(ctx, endpoint, params, &resp); err != nil {
+			return nil, fmt.Errorf("failed to list policies (page %d): %w", page, err)
+		}
+
+		for _, p := range resp.Policies {
+			if p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID {
+				matches = append(matches, p)
+			}
+		}
+
+		if resp.Meta == nil || !resp.Meta.HasNextResults {
+			return matches, nil
+		}
+	}
+	return nil, fmt.Errorf("policy pagination exceeded %d pages — Fleet API may be returning has_next_results=true indefinitely", maxPolicyListPages)
+}
+
+// SetPolicyInstallSoftwareTitleID switches a policy's install_software
+// automation to point at the given softwareTitleID. Pass softwareTitleID=nil
+// to detach — Fleet treats null as "clear / reset to default" (see the
+// UpdatePolicyRequest doc comment).
+//
+// The implementation does a GET-then-PATCH round-trip so every other field on
+// the policy is preserved verbatim. conditional_access_bypass_enabled is not
+// echoed in Fleet's GET response and is therefore not preserved across this
+// call; that field is being removed from Fleet in favor of `critical`
+// (fleetdm/fleet#40521).
+func (c *Client) SetPolicyInstallSoftwareTitleID(ctx context.Context, policyID int, teamID *int, softwareTitleID *int) error {
+	p, err := c.GetPolicy(ctx, policyID, teamID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch policy %d before update: %w", policyID, err)
+	}
+
+	req := UpdatePolicyRequest{
+		Name:                     p.Name,
+		Description:              p.Description,
+		Query:                    p.Query,
+		Critical:                 p.Critical,
+		Resolution:               p.Resolution,
+		Platform:                 p.Platform,
+		SoftwareTitleID:          softwareTitleID,
+		CalendarEventsEnabled:    &p.CalendarEventsEnabled,
+		ConditionalAccessEnabled: &p.ConditionalAccessEnabled,
+		LabelsIncludeAny:         policyLabelsToStrings(p.LabelsIncludeAny),
+		LabelsExcludeAny:         policyLabelsToStrings(p.LabelsExcludeAny),
+	}
+	if p.RunScript != nil {
+		id := p.RunScript.ID
+		req.ScriptID = &id
+	}
+
+	if _, err := c.UpdatePolicy(ctx, policyID, teamID, req); err != nil {
+		return fmt.Errorf("failed to update policy %d install_software: %w", policyID, err)
+	}
+	return nil
+}
+
+// policyLabelsToStrings converts the response-side []PolicyLabel into the
+// request-side []string of label names. Returns nil for nil/empty input — the
+// request layer treats nil as "no change" (see UpdatePolicyRequest doc), which
+// is the correct semantics when round-tripping a policy that has no labels.
+func policyLabelsToStrings(in []PolicyLabel) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, l := range in {
+		out[i] = l.Name
+	}
+	return out
 }

@@ -967,7 +967,35 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 // uploads the provided content as a replacement. On success it mutates `plan`
 // with the new title metadata. Returns true on success, false on failure (in
 // which case it has also appended diagnostics to resp).
+//
+// Fleet refuses to delete a software title that any policy references via
+// install_software automation (HTTP 409: "Couldn't delete. Policy automation
+// uses this software."). Before issuing the delete, the function scans for
+// such policies and clears their software_title_id; after the re-upload
+// succeeds, it re-points them at the new title id returned by Fleet (which
+// may or may not equal the previous id, depending on whether Fleet matches
+// by bundle id).
 func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, content []byte, sha string, resp *resource.UpdateResponse) bool {
+	// Step 1: detach any install_software automation pointing at this title.
+	attachedPolicies, err := r.client.ListPoliciesByInstallSoftwareTitleID(ctx, titleID, teamID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error replacing software package",
+			"Could not list policies before re-upload (needed to clear install_software automation): "+err.Error(),
+		)
+		return false
+	}
+	for _, p := range attachedPolicies {
+		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
+			resp.Diagnostics.AddError(
+				"Error replacing software package",
+				fmt.Sprintf("Could not detach install_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
+			)
+			return false
+		}
+	}
+
+	// Step 2: delete the existing package.
 	if err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID); err != nil {
 		if !isNotFound(err) {
 			resp.Diagnostics.AddError(
@@ -1008,6 +1036,7 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		return false
 	}
 
+	// Step 3: upload the new package.
 	title, err := r.client.UploadSoftwarePackage(ctx, uploadReq)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -1030,6 +1059,33 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
 	}
 	plan.PackageSHA256 = types.StringValue(sha)
+
+	// Step 4: reattach install_software automation to the new title id.
+	newTitleID := title.ID
+	var reattachFailed []string
+	for _, p := range attachedPolicies {
+		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
+			reattachFailed = append(reattachFailed, fmt.Sprintf("%d (%q): %s", p.ID, p.Name, err.Error()))
+		}
+	}
+	if len(reattachFailed) > 0 {
+		// Persist the new title metadata before bailing — the package itself
+		// was replaced successfully, only the reattach step failed. Saving
+		// state here means the next 'terraform apply' will see no drift on
+		// the package itself and let the affected fleetdm_policy resources
+		// self-heal via their normal drift-detection path.
+		stateDiags := resp.State.Set(ctx, *plan)
+		resp.Diagnostics.Append(stateDiags...)
+
+		resp.Diagnostics.AddError(
+			"Error re-attaching install_software automation after package replace",
+			"The software package was replaced successfully (new title_id="+strconv.Itoa(newTitleID)+"), but re-attaching install_software automation to the following policies failed:\n  - "+
+				strings.Join(reattachFailed, "\n  - ")+
+				"\n\nThe affected fleetdm_policy resources will show drift on `software_title_id` on the next plan; re-running 'terraform apply' should heal them automatically.",
+		)
+		return false
+	}
+
 	return true
 }
 
