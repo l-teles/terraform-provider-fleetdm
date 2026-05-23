@@ -391,38 +391,27 @@ func (c *Client) ListPoliciesByInstallSoftwareTitleID(ctx context.Context, title
 // SetPolicyInstallSoftwareTitleID switches a policy's install_software
 // automation to point at the given softwareTitleID. Pass softwareTitleID=nil
 // to detach — Fleet treats null as "clear / reset to default" (see the
-// UpdatePolicyRequest doc comment).
+// "Update fleet-level policy" endpoint docs).
 //
-// The implementation does a GET-then-PATCH round-trip so every other field on
-// the policy is preserved verbatim. conditional_access_bypass_enabled is not
-// echoed in Fleet's GET response and is therefore not preserved across this
-// call; that field is being removed from Fleet in favor of `critical`
-// (fleetdm/fleet#40521).
+// Uses a single-field PATCH body so we don't have to round-trip every other
+// field on the policy via GET-then-PATCH. Fleet's policy PATCH endpoint
+// treats absent fields as "no change", so only software_title_id is
+// affected. This is also the only safe shape against type=patch policies:
+// Fleet rejects PATCH requests that include `query` or `platform` on a
+// patch-type policy with errPolicyQueryUpdated / errPolicyPlatformUpdated
+// (see server/fleet/policies.go in fleetdm/fleet), and a GET-then-PATCH
+// round-trip echoes both fields back.
 func (c *Client) SetPolicyInstallSoftwareTitleID(ctx context.Context, policyID int, teamID *int, softwareTitleID *int) error {
-	p, err := c.GetPolicy(ctx, policyID, teamID)
-	if err != nil {
-		return fmt.Errorf("failed to fetch policy %d before update: %w", policyID, err)
+	endpoint := fmt.Sprintf("/global/policies/%d", policyID)
+	if isTeamScoped(teamID) {
+		endpoint = fmt.Sprintf("/fleets/%d/policies/%d", *teamID, policyID)
 	}
-
-	req := UpdatePolicyRequest{
-		Name:                     p.Name,
-		Description:              p.Description,
-		Query:                    p.Query,
-		Critical:                 p.Critical,
-		Resolution:               p.Resolution,
-		Platform:                 p.Platform,
-		SoftwareTitleID:          softwareTitleID,
-		CalendarEventsEnabled:    &p.CalendarEventsEnabled,
-		ConditionalAccessEnabled: &p.ConditionalAccessEnabled,
-		LabelsIncludeAny:         policyLabelsToStrings(p.LabelsIncludeAny),
-		LabelsExcludeAny:         policyLabelsToStrings(p.LabelsExcludeAny),
+	body := struct {
+		SoftwareTitleID *int `json:"software_title_id"`
+	}{
+		SoftwareTitleID: softwareTitleID,
 	}
-	if p.RunScript != nil {
-		id := p.RunScript.ID
-		req.ScriptID = &id
-	}
-
-	if _, err := c.UpdatePolicy(ctx, policyID, teamID, req); err != nil {
+	if err := c.Patch(ctx, endpoint, body, nil); err != nil {
 		return fmt.Errorf("failed to update policy %d install_software: %w", policyID, err)
 	}
 	return nil
@@ -509,19 +498,4 @@ func (c *Client) SetPolicyPatchSoftwareTitleID(ctx context.Context, policyID int
 		return fmt.Errorf("failed to update policy %d patch_software: %w", policyID, err)
 	}
 	return nil
-}
-
-// policyLabelsToStrings converts the response-side []PolicyLabel into the
-// request-side []string of label names. Returns nil for nil/empty input — the
-// request layer treats nil as "no change" (see UpdatePolicyRequest doc), which
-// is the correct semantics when round-tripping a policy that has no labels.
-func policyLabelsToStrings(in []PolicyLabel) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, len(in))
-	for i, l := range in {
-		out[i] = l.Name
-	}
-	return out
 }
