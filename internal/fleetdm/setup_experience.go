@@ -2,6 +2,7 @@ package fleetdm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -127,6 +128,13 @@ func (c *Client) setupExperienceMutex(teamID *int, platform string) *sync.Mutex 
 // Read-modify-write is serialized per-(team, platform) via a mutex on the
 // Client instance so two Terraform resources flipping install_during_setup
 // in the same apply don't clobber each other.
+//
+// Before the PUT, stale ids (titles that 404 on GET /software/titles/{id})
+// are filtered out of the read-modify-write payload — Fleet rejects the PUT
+// with HTTP 400 ("at least one selected software title does not exist or is
+// not available for setup experience") if any id in the request is unknown,
+// and that can happen when a parallel apply deleted a sibling title between
+// our GET and PUT.
 func (c *Client) SetSetupExperienceSoftwareInclude(ctx context.Context, teamID *int, platform string, titleID int) error {
 	mu := c.setupExperienceMutex(teamID, platform)
 	mu.Lock()
@@ -141,7 +149,11 @@ func (c *Client) SetSetupExperienceSoftwareInclude(ctx context.Context, teamID *
 			return nil // already included
 		}
 	}
-	return c.putSetupExperienceSoftware(ctx, teamID, platform, append(current, titleID))
+	live, err := c.filterStaleSetupExperienceTitleIDs(ctx, current, teamID)
+	if err != nil {
+		return err
+	}
+	return c.putSetupExperienceSoftware(ctx, teamID, platform, append(live, titleID))
 }
 
 // SetSetupExperienceSoftwareExclude removes titleID from the
@@ -149,7 +161,8 @@ func (c *Client) SetSetupExperienceSoftwareInclude(ctx context.Context, teamID *
 // titleID isn't in the set, returns nil without calling PUT.
 //
 // Same per-(team, platform) mutex as the Include path; concurrent
-// includes/excludes serialize.
+// includes/excludes serialize. Same stale-id filter as Include — see that
+// method's doc comment for the rationale.
 func (c *Client) SetSetupExperienceSoftwareExclude(ctx context.Context, teamID *int, platform string, titleID int) error {
 	mu := c.setupExperienceMutex(teamID, platform)
 	mu.Lock()
@@ -171,5 +184,34 @@ func (c *Client) SetSetupExperienceSoftwareExclude(ctx context.Context, teamID *
 	if !found {
 		return nil
 	}
-	return c.putSetupExperienceSoftware(ctx, teamID, platform, filtered)
+	live, err := c.filterStaleSetupExperienceTitleIDs(ctx, filtered, teamID)
+	if err != nil {
+		return err
+	}
+	return c.putSetupExperienceSoftware(ctx, teamID, platform, live)
+}
+
+// filterStaleSetupExperienceTitleIDs returns ids unchanged in order,
+// dropping any whose GET /software/titles/{id} returns 404. Any other
+// error (network, 5xx, auth) propagates — we'd rather fail the apply
+// than silently drop an id we can't classify.
+//
+// Skipping the GET when len(ids)==0 keeps this a true no-op when the
+// current setup-experience set is empty, matching the previous behavior.
+func (c *Client) filterStaleSetupExperienceTitleIDs(ctx context.Context, ids []int, teamID *int) ([]int, error) {
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	live := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if _, err := c.GetSoftwareTitle(ctx, id, teamID); err != nil {
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+				continue
+			}
+			return nil, fmt.Errorf("validate setup-experience title %d before PUT: %w", id, err)
+		}
+		live = append(live, id)
+	}
+	return live, nil
 }

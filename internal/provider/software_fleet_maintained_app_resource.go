@@ -437,6 +437,11 @@ func (r *softwareFleetMaintainedAppResource) Delete(ctx context.Context, req res
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags != nil {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
 	err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID)
 	if err != nil && !isNotFound(err) {
 		resp.Diagnostics.AddError(

@@ -428,6 +428,74 @@ func (c *Client) SetPolicyInstallSoftwareTitleID(ctx context.Context, policyID i
 	return nil
 }
 
+// ListPoliciesByPatchSoftwareTitleID returns policies in the given scope
+// whose patch_software automation references the given software title ID.
+// Mirrors ListPoliciesByInstallSoftwareTitleID — Fleet does not expose a
+// server-side filter, so the implementation paginates through all policies
+// in the scope and filters client-side on Policy.PatchSoftware.
+//
+// Note: for type=patch policies Fleet auto-creates an install_software
+// automation pointing at the same title, so most patch policies will also
+// appear in ListPoliciesByInstallSoftwareTitleID. Callers that want a full
+// picture of "everything blocking delete on this title" should call both
+// list helpers and deduplicate by policy id.
+func (c *Client) ListPoliciesByPatchSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
+	endpoint := "/global/policies"
+	if isTeamScoped(teamID) {
+		endpoint = fmt.Sprintf("/fleets/%d/policies", *teamID)
+	}
+
+	var matches []Policy
+	for page := range maxPolicyListPages {
+		params := map[string]string{
+			"per_page": strconv.Itoa(policyListPerPage),
+		}
+		if page > 0 {
+			params["page"] = strconv.Itoa(page)
+		}
+
+		var resp ListPoliciesResponse
+		if err := c.Get(ctx, endpoint, params, &resp); err != nil {
+			return nil, fmt.Errorf("failed to list policies (page %d): %w", page, err)
+		}
+
+		for _, p := range resp.Policies {
+			if p.PatchSoftware != nil && p.PatchSoftware.SoftwareTitleID == titleID {
+				matches = append(matches, p)
+			}
+		}
+
+		if resp.Meta == nil || !resp.Meta.HasNextResults {
+			return matches, nil
+		}
+	}
+	return nil, fmt.Errorf("policy pagination exceeded %d pages — Fleet API may be returning has_next_results=true indefinitely", maxPolicyListPages)
+}
+
+// SetPolicyPatchSoftwareTitleID switches a policy's patch_software
+// automation to point at the given softwareTitleID. Pass softwareTitleID=nil
+// to detach — Fleet treats null as "clear / reset to default".
+//
+// Uses a single-field PATCH body so we don't have to round-trip every other
+// field on the policy via GET-then-PATCH. Fleet's policy PATCH endpoint
+// treats absent fields as "no change", so only patch_software_title_id is
+// affected.
+func (c *Client) SetPolicyPatchSoftwareTitleID(ctx context.Context, policyID int, teamID *int, softwareTitleID *int) error {
+	endpoint := fmt.Sprintf("/global/policies/%d", policyID)
+	if isTeamScoped(teamID) {
+		endpoint = fmt.Sprintf("/fleets/%d/policies/%d", *teamID, policyID)
+	}
+	body := struct {
+		PatchSoftwareTitleID *int `json:"patch_software_title_id"`
+	}{
+		PatchSoftwareTitleID: softwareTitleID,
+	}
+	if err := c.Patch(ctx, endpoint, body, nil); err != nil {
+		return fmt.Errorf("failed to update policy %d patch_software: %w", policyID, err)
+	}
+	return nil
+}
+
 // policyLabelsToStrings converts the response-side []PolicyLabel into the
 // request-side []string of label names. Returns nil for nil/empty input — the
 // request layer treats nil as "no change" (see UpdatePolicyRequest doc), which

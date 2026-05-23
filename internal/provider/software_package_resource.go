@@ -1364,20 +1364,29 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 // may or may not equal the previous id, depending on whether Fleet matches
 // by bundle id).
 func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, titleID int, teamID *int, plan *softwarePackageResourceModel, content []byte, sha string, resp *resource.UpdateResponse) bool {
-	// Step 1: detach any install_software automation pointing at this title.
-	attachedPolicies, err := r.client.ListPoliciesByInstallSoftwareTitleID(ctx, titleID, teamID)
+	// Step 1: detach any install_software / patch_software automation pointing at this title.
+	attachedInstall, attachedPatch, err := listPoliciesBlockingTitleDelete(ctx, r.client, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error replacing software package",
-			"Could not list policies before re-upload (needed to clear install_software automation): "+err.Error(),
+			"Could not list policies before re-upload (needed to clear policy automation): "+err.Error(),
 		)
 		return false
 	}
-	for _, p := range attachedPolicies {
+	for _, p := range attachedInstall {
 		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
 			resp.Diagnostics.AddError(
 				"Error replacing software package",
 				fmt.Sprintf("Could not detach install_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
+			)
+			return false
+		}
+	}
+	for _, p := range attachedPatch {
+		if err := r.client.SetPolicyPatchSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
+			resp.Diagnostics.AddError(
+				"Error replacing software package",
+				fmt.Sprintf("Could not detach patch_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
 			)
 			return false
 		}
@@ -1463,12 +1472,17 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 	}
 	plan.PackageSHA256 = types.StringValue(sha)
 
-	// Step 4: reattach install_software automation to the new title id.
+	// Step 4: reattach install_software / patch_software automation to the new title id.
 	newTitleID := title.ID
 	var reattachFailed []string
-	for _, p := range attachedPolicies {
+	for _, p := range attachedInstall {
 		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
-			reattachFailed = append(reattachFailed, fmt.Sprintf("%d (%q): %s", p.ID, p.Name, err.Error()))
+			reattachFailed = append(reattachFailed, fmt.Sprintf("install_software policy %d (%q): %s", p.ID, p.Name, err.Error()))
+		}
+	}
+	for _, p := range attachedPatch {
+		if err := r.client.SetPolicyPatchSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
+			reattachFailed = append(reattachFailed, fmt.Sprintf("patch_software policy %d (%q): %s", p.ID, p.Name, err.Error()))
 		}
 	}
 	if len(reattachFailed) > 0 {
@@ -1481,10 +1495,10 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		resp.Diagnostics.Append(stateDiags...)
 
 		resp.Diagnostics.AddError(
-			"Error re-attaching install_software automation after package replace",
-			"The software package was replaced successfully (new title_id="+strconv.Itoa(newTitleID)+"), but re-attaching install_software automation to the following policies failed:\n  - "+
+			"Error re-attaching policy automation after package replace",
+			"The software package was replaced successfully (new title_id="+strconv.Itoa(newTitleID)+"), but re-attaching policy automation to the following policies failed:\n  - "+
 				strings.Join(reattachFailed, "\n  - ")+
-				"\n\nThe affected fleetdm_policy resources will show drift on `software_title_id` on the next plan; re-running 'terraform apply' should heal them automatically.",
+				"\n\nThe affected fleetdm_policy resources will show drift on `software_title_id` / `patch_software_title_id` on the next plan; re-running 'terraform apply' should heal them automatically.",
 		)
 		return false
 	}
@@ -1715,6 +1729,11 @@ func (r *softwarePackageResource) Delete(ctx context.Context, req resource.Delet
 
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
+
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags != nil {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
 
 	// Delete the software package
 	err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID)
