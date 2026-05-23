@@ -30,6 +30,14 @@ import (
 // hexSHA256Re matches a lowercase hex-encoded SHA256.
 var hexSHA256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// errS3SourceUnknown signals that package_s3.bucket or package_s3.key has not
+// yet been resolved to a concrete string. Returned by buildS3Source for the
+// "deferred resolution" case (module output backed by a resource being
+// created in the same apply). Callers in ModifyPlan / resolveRemoteSHA treat
+// this as a soft-skip, not an error: Terraform's graph evaluation will
+// resolve the value before Create/Update is invoked at apply time.
+var errS3SourceUnknown = errors.New("package_s3 bucket or key not yet known")
+
 // fetchS3SHA256 is the function used to resolve the SHA256 of an S3 object via
 // HeadObject. It is a package-level variable so tests can stub it without
 // needing real S3 / httptest plumbing for every unit-style assertion.
@@ -155,7 +163,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Optional:    true,
 			},
 			"package_s3": schema.SingleNestedAttribute{
-				Description: "S3 source for the software package. Alternative to package_path. The provider downloads the object from S3 and uploads it to Fleet. Mutually exclusive with package_path. Note: bucket and key must be known at plan time (they cannot reference computed values from resources that haven't been created yet).",
+				Description: "S3 source for the software package. Alternative to package_path. The provider reads the SHA256 via HeadObject and only downloads + re-uploads to Fleet when the hash differs from what Fleet has stored. Mutually exclusive with package_path. `bucket`, `key`, and `region` may reference module outputs or other resources' attributes — when their values aren't yet known at plan time, the SHA comparison is deferred to apply time.",
 				Optional:    true,
 				Attributes: map[string]schema.Attribute{
 					"bucket": schema.StringAttribute{
@@ -295,45 +303,48 @@ func (r *softwarePackageResource) ValidateConfig(ctx context.Context, req resour
 			resp.Diagnostics.Append(diags...)
 			return
 		}
-		{
-			if s3Config.Bucket.IsUnknown() {
-				resp.Diagnostics.AddAttributeError(
-					path.Root("package_s3"),
-					"Invalid Configuration",
-					"package_s3.bucket must be a known value at plan time. It cannot reference computed attributes from uncreated resources.",
-				)
-			} else if s3Config.Bucket.ValueString() == "" {
-				resp.Diagnostics.AddAttributeError(
-					path.Root("package_s3"),
-					"Invalid Configuration",
-					"package_s3.bucket must not be empty.",
-				)
-			}
-			if s3Config.Key.IsUnknown() {
-				resp.Diagnostics.AddAttributeError(
-					path.Root("package_s3"),
-					"Invalid Configuration",
-					"package_s3.key must be a known value at plan time. It cannot reference computed attributes from uncreated resources.",
-				)
-			} else if s3Config.Key.ValueString() == "" {
-				resp.Diagnostics.AddAttributeError(
-					path.Root("package_s3"),
-					"Invalid Configuration",
-					"package_s3.key must not be empty.",
-				)
-			}
-			if !s3Config.ExpectedSHA256.IsNull() && !s3Config.ExpectedSHA256.IsUnknown() {
-				v := s3Config.ExpectedSHA256.ValueString()
-				if !hexSHA256Re.MatchString(v) {
-					resp.Diagnostics.AddAttributeError(
-						path.Root("package_s3").AtName("expected_sha256"),
-						"Invalid Configuration",
-						"package_s3.expected_sha256 must be 64 lowercase hexadecimal characters (the hex-encoded SHA256 of the object's content).",
-					)
-				}
-			}
+		resp.Diagnostics.Append(validatePackageS3(s3Config)...)
+	}
+}
+
+// validatePackageS3 checks the inner fields of a package_s3 block. It is
+// intentionally separated from ValidateConfig so unit tests can drive it
+// with crafted packageS3Model values (Unknown bucket/key, etc.) without
+// reconstructing a full tfsdk.Config.
+//
+// Rules:
+//   - Unknown bucket/key/region are accepted (validate runs without state,
+//     so references to other resources show as Unknown — that's not an error).
+//   - Literal empty strings for bucket or key are rejected.
+//   - expected_sha256 must match 64 lowercase hex chars when set.
+func validatePackageS3(s3Config packageS3Model) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	if !s3Config.Bucket.IsNull() && !s3Config.Bucket.IsUnknown() && s3Config.Bucket.ValueString() == "" {
+		diags.AddAttributeError(
+			path.Root("package_s3"),
+			"Invalid Configuration",
+			"package_s3.bucket must not be empty.",
+		)
+	}
+	if !s3Config.Key.IsNull() && !s3Config.Key.IsUnknown() && s3Config.Key.ValueString() == "" {
+		diags.AddAttributeError(
+			path.Root("package_s3"),
+			"Invalid Configuration",
+			"package_s3.key must not be empty.",
+		)
+	}
+	if !s3Config.ExpectedSHA256.IsNull() && !s3Config.ExpectedSHA256.IsUnknown() {
+		v := s3Config.ExpectedSHA256.ValueString()
+		if !hexSHA256Re.MatchString(v) {
+			diags.AddAttributeError(
+				path.Root("package_s3").AtName("expected_sha256"),
+				"Invalid Configuration",
+				"package_s3.expected_sha256 must be 64 lowercase hexadecimal characters (the hex-encoded SHA256 of the object's content).",
+			)
 		}
 	}
+	return diags
 }
 
 // ModifyPlan computes package_sha256 at plan time from the package source.
@@ -1036,13 +1047,17 @@ func buildS3Source(ctx context.Context, model *softwarePackageResourceModel) (fl
 	}
 
 	if s3Config.Bucket.IsUnknown() || s3Config.Key.IsUnknown() {
-		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3 bucket and key must be known values; they cannot be derived from resources that haven't been created yet")
+		// Soft-signal: caller decides whether to skip (plan time, expected)
+		// or surface (apply time, defensive — should not happen because
+		// Terraform resolves dependent values before Create/Update is
+		// invoked).
+		return fleetdm.S3Source{}, s3Config, errS3SourceUnknown
 	}
 	if s3Config.Bucket.ValueString() == "" {
-		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3 bucket must not be empty")
+		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3.bucket must not be empty")
 	}
 	if s3Config.Key.ValueString() == "" {
-		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3 key must not be empty")
+		return fleetdm.S3Source{}, s3Config, fmt.Errorf("package_s3.key must not be empty")
 	}
 
 	src := fleetdm.S3Source{
@@ -1100,15 +1115,26 @@ func resolveRemoteSHA(ctx context.Context, model *softwarePackageResourceModel, 
 		return hex.EncodeToString(sum[:]), "local-file", false, diags
 
 	case s3Present:
-		src, s3Config, err := buildS3Source(ctx, model)
-		if err != nil {
-			diags.AddError("Invalid package_s3", err.Error())
-			return "", "", false, diags
+		// buildS3Source returns the parsed packageS3Model even when bucket/key
+		// are Unknown, so we can read expected_sha256 off it whether or not
+		// the S3 source itself is resolvable. That lets users who pinned the
+		// SHA out-of-band still hit the fast path when their bucket/key
+		// reference only resolves at apply time.
+		src, s3Cfg, err := buildS3Source(ctx, model)
+
+		if allowExpected && !s3Cfg.ExpectedSHA256.IsNull() && !s3Cfg.ExpectedSHA256.IsUnknown() && s3Cfg.ExpectedSHA256.ValueString() != "" {
+			return s3Cfg.ExpectedSHA256.ValueString(), "expected_sha256", false, diags
 		}
 
-		// User-supplied SHA wins — they're explicitly opting out of HEAD.
-		if allowExpected && !s3Config.ExpectedSHA256.IsNull() && !s3Config.ExpectedSHA256.IsUnknown() && s3Config.ExpectedSHA256.ValueString() != "" {
-			return s3Config.ExpectedSHA256.ValueString(), "expected_sha256", false, diags
+		if err != nil {
+			if errors.Is(err, errS3SourceUnknown) {
+				// Bucket and/or key not yet known. Defer the SHA computation
+				// to apply time; the plan will show package_sha256 as
+				// (known after apply).
+				return "", "", false, diags
+			}
+			diags.AddError("Invalid package_s3", err.Error())
+			return "", "", false, diags
 		}
 
 		sha, source, err := fetchS3SHA256(ctx, src)
@@ -1162,6 +1188,16 @@ func readPackageContentForUpload(ctx context.Context, model *softwarePackageReso
 	case s3Present:
 		src, _, err := buildS3Source(ctx, model)
 		if err != nil {
+			if errors.Is(err, errS3SourceUnknown) {
+				// Defensive: Terraform should always resolve dependent values
+				// before invoking Create/Update. If we land here, something
+				// has gone wrong in the graph evaluation upstream — give the
+				// user something actionable rather than the raw sentinel.
+				return nil, "", fmt.Errorf(
+					"package_s3.bucket or package_s3.key did not resolve to a known string by apply time; " +
+						"this usually means the resource providing the value failed to apply, or a dependency was declared incorrectly — " +
+						"verify the referenced resource exists and check `terraform plan` output for unresolved (known after apply) markers")
+			}
 			return nil, "", err
 		}
 		content, err = fleetdm.DownloadS3Object(ctx, src)

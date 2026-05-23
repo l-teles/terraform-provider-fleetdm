@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,9 +14,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -776,4 +780,227 @@ resource "fleetdm_software_package" "test" {
   filename     = "test-app.pkg"
 }
 `, serverURL, pkgPath)
+}
+
+// packageS3AttrTypes mirrors the attribute types of the package_s3 nested
+// block, used to construct types.Object values directly in tests.
+var packageS3AttrTypes = map[string]attr.Type{
+	"bucket":          types.StringType,
+	"key":             types.StringType,
+	"region":          types.StringType,
+	"endpoint_url":    types.StringType,
+	"expected_sha256": types.StringType,
+}
+
+// newPackageS3 returns a types.Object matching the package_s3 schema with
+// the given inner values. Any field not in `values` is treated as null.
+func newPackageS3(t *testing.T, values map[string]attr.Value) types.Object {
+	t.Helper()
+	complete := map[string]attr.Value{
+		"bucket":          types.StringNull(),
+		"key":             types.StringNull(),
+		"region":          types.StringNull(),
+		"endpoint_url":    types.StringNull(),
+		"expected_sha256": types.StringNull(),
+	}
+	for k, v := range values {
+		complete[k] = v
+	}
+	obj, diags := types.ObjectValue(packageS3AttrTypes, complete)
+	if diags.HasError() {
+		t.Fatalf("failed to construct package_s3 object: %v", diags)
+	}
+	return obj
+}
+
+// TestValidatePackageS3_unknownBucketAccepted is the headline regression test:
+// `terraform validate` runs without state, so references to module outputs or
+// other resources' attributes evaluate to Unknown. Treating Unknown as a
+// validation error (as the provider did before this fix) produces false
+// positives on configs that resolve correctly at plan time.
+func TestValidatePackageS3_unknownBucketAccepted(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringUnknown(),
+		Key:            types.StringUnknown(),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringNull(),
+	}
+	diags := validatePackageS3(s3)
+	if diags.HasError() {
+		t.Errorf("expected no diagnostics for Unknown bucket/key, got: %v", diags)
+	}
+}
+
+func TestValidatePackageS3_unknownKeyOnlyAccepted(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringValue("my-bucket"),
+		Key:            types.StringUnknown(),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringNull(),
+	}
+	diags := validatePackageS3(s3)
+	if diags.HasError() {
+		t.Errorf("expected no diagnostics for Unknown key alone, got: %v", diags)
+	}
+}
+
+func TestValidatePackageS3_emptyBucketRejected(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringValue(""),
+		Key:            types.StringValue("k"),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringNull(),
+	}
+	diags := validatePackageS3(s3)
+	if !diags.HasError() {
+		t.Fatal("expected a diagnostic for empty bucket, got none")
+	}
+	found := false
+	for _, d := range diags.Errors() {
+		if strings.Contains(d.Detail(), "bucket must not be empty") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'bucket must not be empty' diagnostic, got: %v", diags)
+	}
+}
+
+func TestValidatePackageS3_emptyKeyRejected(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringValue("my-bucket"),
+		Key:            types.StringValue(""),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringNull(),
+	}
+	diags := validatePackageS3(s3)
+	if !diags.HasError() {
+		t.Fatal("expected a diagnostic for empty key, got none")
+	}
+}
+
+func TestValidatePackageS3_invalidExpectedSHA256Rejected(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringValue("my-bucket"),
+		Key:            types.StringValue("k"),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringValue("not-a-hash"),
+	}
+	diags := validatePackageS3(s3)
+	if !diags.HasError() {
+		t.Fatal("expected a diagnostic for malformed expected_sha256, got none")
+	}
+}
+
+// TestValidatePackageS3_invalidExpectedSHA256WithUnknownBucketRejected covers
+// the corner case where a malformed expected_sha256 is paired with an Unknown
+// bucket. validatePackageS3 must catch the bad SHA at the config-validation
+// gate so it never reaches the HEAD-bypass logic in resolveRemoteSHA, which
+// would otherwise trust whatever string was provided.
+func TestValidatePackageS3_invalidExpectedSHA256WithUnknownBucketRejected(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringUnknown(),
+		Key:            types.StringUnknown(),
+		Region:         types.StringNull(),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringValue("not-a-hash"),
+	}
+	diags := validatePackageS3(s3)
+	if !diags.HasError() {
+		t.Fatal("expected a diagnostic for malformed expected_sha256 even with Unknown bucket, got none")
+	}
+	found := false
+	for _, d := range diags.Errors() {
+		if strings.Contains(d.Detail(), "64 lowercase hexadecimal characters") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected the expected_sha256-format diagnostic, got: %v", diags)
+	}
+}
+
+func TestValidatePackageS3_validConfigAccepted(t *testing.T) {
+	s3 := packageS3Model{
+		Bucket:         types.StringValue("my-bucket"),
+		Key:            types.StringValue("installers/app.pkg"),
+		Region:         types.StringValue("us-east-1"),
+		EndpointURL:    types.StringNull(),
+		ExpectedSHA256: types.StringValue("aa7f05f70feb6201886d8a27a004bc322e7ba578262c984a213f48089e162183"),
+	}
+	diags := validatePackageS3(s3)
+	if diags.HasError() {
+		t.Errorf("expected no diagnostics for valid config, got: %v", diags)
+	}
+}
+
+// TestResolveRemoteSHA_unknownS3SoftSkip confirms that when package_s3.bucket
+// is Unknown at plan time, resolveRemoteSHA returns no SHA, no error, and
+// requiresDownload=false — which makes ModifyPlan defer the SHA computation
+// to apply time without erroring or surfacing a warning. This is the second
+// half of the fix: ValidateConfig accepting Unknown is necessary but not
+// sufficient on its own.
+func TestResolveRemoteSHA_unknownS3SoftSkip(t *testing.T) {
+	ctx := context.Background()
+	s3Obj := newPackageS3(t, map[string]attr.Value{
+		"bucket": types.StringUnknown(),
+		"key":    types.StringValue("k"),
+	})
+	model := &softwarePackageResourceModel{
+		PackageS3: s3Obj,
+	}
+
+	sha, source, requiresDownload, diags := resolveRemoteSHA(ctx, model, true)
+	if diags.HasError() {
+		t.Errorf("expected no diagnostics for Unknown bucket, got: %v", diags)
+	}
+	if len(diags.Warnings()) != 0 {
+		t.Errorf("expected no warnings for Unknown bucket, got: %v", diags.Warnings())
+	}
+	if sha != "" {
+		t.Errorf("expected empty sha, got %q", sha)
+	}
+	if source != "" {
+		t.Errorf("expected empty source, got %q", source)
+	}
+	if requiresDownload {
+		t.Error("expected requiresDownload=false (Terraform will resolve at apply)")
+	}
+}
+
+// TestResolveRemoteSHA_unknownBucketWithExpectedSHA confirms that even when
+// the bucket is Unknown, a user-supplied expected_sha256 still wins — the
+// provider doesn't need to HEAD the object at all.
+func TestResolveRemoteSHA_unknownBucketWithExpectedSHA(t *testing.T) {
+	ctx := context.Background()
+	pinnedSHA := "aa7f05f70feb6201886d8a27a004bc322e7ba578262c984a213f48089e162183"
+	s3Obj := newPackageS3(t, map[string]attr.Value{
+		"bucket":          types.StringUnknown(),
+		"key":             types.StringValue("k"),
+		"expected_sha256": types.StringValue(pinnedSHA),
+	})
+	model := &softwarePackageResourceModel{
+		PackageS3: s3Obj,
+	}
+
+	sha, source, requiresDownload, diags := resolveRemoteSHA(ctx, model, true)
+	if diags.HasError() {
+		t.Errorf("expected no diagnostics, got: %v", diags)
+	}
+	if sha != pinnedSHA {
+		t.Errorf("expected pinned sha %s, got %q", pinnedSHA, sha)
+	}
+	if source != "expected_sha256" {
+		t.Errorf("expected source=expected_sha256, got %q", source)
+	}
+	if requiresDownload {
+		t.Error("expected requiresDownload=false")
+	}
 }
