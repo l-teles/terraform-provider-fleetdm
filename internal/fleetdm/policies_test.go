@@ -1084,154 +1084,84 @@ func TestClient_ListPoliciesByInstallSoftwareTitleID_NoMatches(t *testing.T) {
 	}
 }
 
-func TestClient_SetPolicyInstallSoftwareTitleID_DetachPreservesFields(t *testing.T) {
-	// Existing policy state: software_title_id=42, plus all the other fields
-	// we expect to be preserved across the PATCH.
-	teamID := 7
-	existing := Policy{
-		ID:                       55,
-		Name:                     "Install Slack",
-		Description:              "Auto-install on failing hosts",
-		Query:                    "SELECT 1 FROM osquery_info",
-		Critical:                 true,
-		Resolution:               "Install the latest Slack",
-		Platform:                 "darwin",
-		TeamID:                   &teamID,
-		CalendarEventsEnabled:    true,
-		ConditionalAccessEnabled: false,
-		LabelsIncludeAny:         []PolicyLabel{{ID: 11, Name: "Macs on Sonoma"}, {ID: 12, Name: "Macs in Engineering"}},
-		LabelsExcludeAny:         []PolicyLabel{{ID: 13, Name: "Exempt"}},
-		InstallSoftware:          &PolicyAutomationSoftware{SoftwareTitleID: 42},
-		RunScript:                &PolicyAutomationScript{ID: 9001},
-	}
-
-	var sawGet, sawPatch bool
-	var patchBody UpdatePolicyRequest
+// TestClient_SetPolicyInstallSoftwareTitleID_Detach verifies the helper sends
+// a single-field PATCH body with software_title_id=null and no other fields.
+// Critically, Fleet rejects PATCH requests that include `query` or `platform`
+// on a type=patch policy (errPolicyQueryUpdated / errPolicyPlatformUpdated in
+// server/fleet/policies.go), so this test also acts as a regression guard
+// against a future change that reintroduces a GET-then-PATCH round-trip.
+func TestClient_SetPolicyInstallSoftwareTitleID_Detach(t *testing.T) {
+	var sawPatch bool
+	var rawBody map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			sawGet = true
-			if r.URL.Path != "/api/v1/fleet/fleets/7/policies/55" {
-				t.Errorf("unexpected GET path: %s", r.URL.Path)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(GetPolicyResponse{Policy: existing})
-		case http.MethodPatch:
-			sawPatch = true
-			if r.URL.Path != "/api/v1/fleet/fleets/7/policies/55" {
-				t.Errorf("unexpected PATCH path: %s", r.URL.Path)
-			}
-			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
-				t.Fatalf("decode patch body: %v", err)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: existing})
-		default:
-			t.Errorf("unexpected method %s", r.Method)
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected method %s — helper must not issue any GET round-trip", r.Method)
 		}
+		if r.URL.Path != "/api/v1/fleet/fleets/7/policies/55" {
+			t.Errorf("unexpected PATCH path: %s", r.URL.Path)
+		}
+		sawPatch = true
+		if err := json.NewDecoder(r.Body).Decode(&rawBody); err != nil {
+			t.Fatalf("decode patch body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
-
+	teamID := 7
 	if err := client.SetPolicyInstallSoftwareTitleID(context.Background(), 55, &teamID, nil); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-
-	if !sawGet {
-		t.Error("expected SetPolicyInstallSoftwareTitleID to issue a GET first")
-	}
 	if !sawPatch {
-		t.Error("expected SetPolicyInstallSoftwareTitleID to issue a PATCH")
+		t.Fatal("expected a PATCH request")
 	}
-	if patchBody.SoftwareTitleID != nil {
-		t.Errorf("expected software_title_id to be cleared (nil), got: %v", *patchBody.SoftwareTitleID)
+	if len(rawBody) != 1 {
+		t.Errorf("expected single-field PATCH body, got %d fields: %v", len(rawBody), rawBody)
 	}
-	if patchBody.Name != existing.Name {
-		t.Errorf("expected name to be preserved as %q, got: %q", existing.Name, patchBody.Name)
+	raw, ok := rawBody["software_title_id"]
+	if !ok {
+		t.Fatal("expected software_title_id field in body")
 	}
-	if patchBody.Description != existing.Description {
-		t.Errorf("expected description to be preserved, got: %q", patchBody.Description)
+	if string(raw) != "null" {
+		t.Errorf("expected software_title_id=null, got: %s", raw)
 	}
-	if patchBody.Query != existing.Query {
-		t.Errorf("expected query to be preserved, got: %q", patchBody.Query)
-	}
-	if patchBody.Critical != existing.Critical {
-		t.Errorf("expected critical=true to be preserved, got: %v", patchBody.Critical)
-	}
-	if patchBody.Resolution != existing.Resolution {
-		t.Errorf("expected resolution to be preserved, got: %q", patchBody.Resolution)
-	}
-	if patchBody.Platform != existing.Platform {
-		t.Errorf("expected platform to be preserved, got: %q", patchBody.Platform)
-	}
-	if patchBody.CalendarEventsEnabled == nil || *patchBody.CalendarEventsEnabled != true {
-		t.Errorf("expected calendar_events_enabled true to be preserved, got: %v", patchBody.CalendarEventsEnabled)
-	}
-	if patchBody.ConditionalAccessEnabled == nil || *patchBody.ConditionalAccessEnabled != false {
-		t.Errorf("expected conditional_access_enabled false to be preserved, got: %v", patchBody.ConditionalAccessEnabled)
-	}
-	if patchBody.ScriptID == nil || *patchBody.ScriptID != 9001 {
-		t.Errorf("expected script_id 9001 to be preserved, got: %v", patchBody.ScriptID)
-	}
-	wantLabelsInc := []string{"Macs on Sonoma", "Macs in Engineering"}
-	if !slices.Equal(patchBody.LabelsIncludeAny, wantLabelsInc) {
-		t.Errorf("expected labels_include_any %v, got: %v", wantLabelsInc, patchBody.LabelsIncludeAny)
-	}
-	wantLabelsExc := []string{"Exempt"}
-	if !slices.Equal(patchBody.LabelsExcludeAny, wantLabelsExc) {
-		t.Errorf("expected labels_exclude_any %v, got: %v", wantLabelsExc, patchBody.LabelsExcludeAny)
+	// Explicit guards for the fields that Fleet rejects on type=patch policies.
+	for _, forbidden := range []string{"query", "platform", "name", "description", "resolution", "critical", "calendar_events_enabled", "conditional_access_enabled", "script_id", "labels_include_any", "labels_exclude_any"} {
+		if _, present := rawBody[forbidden]; present {
+			t.Errorf("PATCH body must not include %q — Fleet's policy PATCH validator rejects %q on type=patch policies, and any other echoed field risks unintended mutation", forbidden, forbidden)
+		}
 	}
 }
 
+// TestClient_SetPolicyInstallSoftwareTitleID_Reattach verifies the helper
+// sends software_title_id=<value> when reattaching, against the global path.
 func TestClient_SetPolicyInstallSoftwareTitleID_Reattach(t *testing.T) {
-	existing := Policy{
-		ID:   55,
-		Name: "Install Slack",
-	}
-	var patchBody UpdatePolicyRequest
+	var rawBody map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(GetPolicyResponse{Policy: existing})
-		case http.MethodPatch:
-			if err := json.NewDecoder(r.Body).Decode(&patchBody); err != nil {
-				t.Fatalf("decode patch body: %v", err)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: existing})
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected method %s — helper must not issue any GET round-trip", r.Method)
 		}
+		if r.URL.Path != "/api/v1/fleet/global/policies/55" {
+			t.Errorf("unexpected PATCH path (expected global): %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&rawBody); err != nil {
+			t.Fatalf("decode patch body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
-
 	newID := 77
 	if err := client.SetPolicyInstallSoftwareTitleID(context.Background(), 55, nil, &newID); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-
-	if patchBody.SoftwareTitleID == nil {
-		t.Fatal("expected software_title_id to be set, got nil")
+	if len(rawBody) != 1 {
+		t.Errorf("expected single-field PATCH body, got %d fields: %v", len(rawBody), rawBody)
 	}
-	if *patchBody.SoftwareTitleID != 77 {
-		t.Errorf("expected software_title_id 77, got: %d", *patchBody.SoftwareTitleID)
-	}
-}
-
-func TestPolicyLabelsToStrings(t *testing.T) {
-	if got := policyLabelsToStrings(nil); got != nil {
-		t.Errorf("expected nil for nil input, got: %v", got)
-	}
-	if got := policyLabelsToStrings([]PolicyLabel{}); got != nil {
-		t.Errorf("expected nil for empty input, got: %v", got)
-	}
-	in := []PolicyLabel{{ID: 1, Name: "Alpha"}, {ID: 2, Name: "Beta"}}
-	got := policyLabelsToStrings(in)
-	want := []string{"Alpha", "Beta"}
-	if !slices.Equal(got, want) {
-		t.Errorf("expected %v, got: %v", want, got)
+	if string(rawBody["software_title_id"]) != "77" {
+		t.Errorf("expected software_title_id=77, got: %s", rawBody["software_title_id"])
 	}
 }
 
