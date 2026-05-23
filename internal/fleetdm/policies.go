@@ -327,3 +327,81 @@ func (c *Client) ListPolicies(ctx context.Context, teamID *int) ([]Policy, error
 	}
 	return c.ListGlobalPolicies(ctx)
 }
+
+// ListPoliciesByInstallSoftwareTitleID returns policies in the given scope
+// whose install_software automation references the given software title ID.
+// Fleet does not expose a server-side filter, so the implementation lists all
+// policies in the scope and filters client-side.
+//
+// Scope follows teamID: nil (or zero-pointer) selects global policies;
+// non-zero pointer selects the named team. Install_software policies can only
+// reference titles in the same scope, so callers should pass the same teamID
+// as the title being looked up.
+func (c *Client) ListPoliciesByInstallSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
+	all, err := c.ListPolicies(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	var matches []Policy
+	for _, p := range all {
+		if p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID {
+			matches = append(matches, p)
+		}
+	}
+	return matches, nil
+}
+
+// SetPolicyInstallSoftwareTitleID switches a policy's install_software
+// automation to point at the given softwareTitleID. Pass softwareTitleID=nil
+// to detach — Fleet treats null as "clear / reset to default" (see the
+// UpdatePolicyRequest doc comment).
+//
+// The implementation does a GET-then-PATCH round-trip so every other field on
+// the policy is preserved verbatim. conditional_access_bypass_enabled is not
+// echoed in Fleet's GET response and is therefore not preserved across this
+// call; that field is being removed from Fleet in favor of `critical`
+// (fleetdm/fleet#40521).
+func (c *Client) SetPolicyInstallSoftwareTitleID(ctx context.Context, policyID int, teamID *int, softwareTitleID *int) error {
+	p, err := c.GetPolicy(ctx, policyID, teamID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch policy %d before update: %w", policyID, err)
+	}
+
+	req := UpdatePolicyRequest{
+		Name:                     p.Name,
+		Description:              p.Description,
+		Query:                    p.Query,
+		Critical:                 p.Critical,
+		Resolution:               p.Resolution,
+		Platform:                 p.Platform,
+		SoftwareTitleID:          softwareTitleID,
+		CalendarEventsEnabled:    &p.CalendarEventsEnabled,
+		ConditionalAccessEnabled: &p.ConditionalAccessEnabled,
+		LabelsIncludeAny:         policyLabelsToStrings(p.LabelsIncludeAny),
+		LabelsExcludeAny:         policyLabelsToStrings(p.LabelsExcludeAny),
+	}
+	if p.RunScript != nil {
+		id := p.RunScript.ID
+		req.ScriptID = &id
+	}
+
+	if _, err := c.UpdatePolicy(ctx, policyID, teamID, req); err != nil {
+		return fmt.Errorf("failed to update policy %d install_software: %w", policyID, err)
+	}
+	return nil
+}
+
+// policyLabelsToStrings converts the response-side []PolicyLabel into the
+// request-side []string of label names. Returns nil for nil/empty input — the
+// request layer treats nil as "no change" (see UpdatePolicyRequest doc), which
+// is the correct semantics when round-tripping a policy that has no labels.
+func policyLabelsToStrings(in []PolicyLabel) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, l := range in {
+		out[i] = l.Name
+	}
+	return out
+}

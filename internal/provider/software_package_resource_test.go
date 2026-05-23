@@ -326,12 +326,17 @@ type fleetSWMockState struct {
 
 // fleetSoftwareHandler returns an http.HandlerFunc that emulates the subset of
 // the Fleet software API exercised by these tests (upload, title get, patch,
-// delete).
+// delete). It also returns empty global/team policy lists so the
+// replaceSoftwarePackage detach-policies scan has something benign to hit
+// when a test does not stage any install_software automation.
 func fleetSoftwareHandler(t *testing.T, state *fleetSWMockState) http.HandlerFunc {
 	titleIDPath := fmt.Sprintf("/api/v1/fleet/software/titles/%d", state.titleID)
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet,
+			strings.HasPrefix(r.URL.Path, "/api/v1/fleet/fleets/") && strings.HasSuffix(r.URL.Path, "/policies") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == "POST":
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				t.Errorf("failed to parse multipart form: %v", err)
@@ -780,6 +785,187 @@ resource "fleetdm_software_package" "test" {
   filename     = "test-app.pkg"
 }
 `, serverURL, pkgPath)
+}
+
+// fleetPolicyMockState captures the install_software automation state for a
+// single policy plus a record of the PATCH sequence, so tests can assert that
+// the provider detaches before delete and reattaches after upload.
+type fleetPolicyMockState struct {
+	mu                     sync.Mutex
+	installSoftwareTitleID *int
+	detachCount            int
+	reattachCount          int
+	patchOrder             []int // 0 = detach (nil), >0 = reattach to that title id
+}
+
+// TestAccSoftwarePackageResource_replaceWithAttachedPolicy exercises the
+// detach-before-delete / reattach-after-upload path that exists to work around
+// Fleet's HTTP 409 "Couldn't delete. Policy automation uses this software."
+// guard. It drives a create + update through the mock Fleet server with a
+// single install_software policy initially pointing at the title, and asserts
+// that during the update the provider issues:
+//   - One PATCH to /global/policies/1 with software_title_id=null (detach)
+//   - DELETE + POST /software/package (the existing replace path)
+//   - One PATCH to /global/policies/1 with software_title_id=<new title id> (reattach)
+//
+// in that order, and that no extra detaches/reattaches happen on the no-op
+// step that comes after.
+func TestAccSoftwarePackageResource_replaceWithAttachedPolicy(t *testing.T) {
+	contentV1 := []byte("PKGV1")
+	contentV2 := []byte("PKGV2")
+	shaV1 := hex.EncodeToString(sumOf(contentV1))
+	shaV2 := hex.EncodeToString(sumOf(contentV2))
+
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, contentV1, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fleet := &fleetSWMockState{
+		currentSHA:   shaV1,
+		titleID:      60,
+		titleName:    "test-app.pkg",
+		displayName:  "Test App",
+		titleVersion: "1.0.0",
+	}
+
+	initialTitleRef := 60
+	ps := &fleetPolicyMockState{installSoftwareTitleID: &initialTitleRef}
+
+	policyPath := "/api/v1/fleet/global/policies"
+	policyOnePath := policyPath + "/1"
+
+	policySnapshot := func() map[string]any {
+		ps.mu.Lock()
+		defer ps.mu.Unlock()
+		policyOne := map[string]any{
+			"id":       1,
+			"name":     "Install Test App",
+			"query":    "SELECT 1",
+			"critical": false,
+		}
+		if ps.installSoftwareTitleID != nil {
+			policyOne["install_software"] = map[string]any{
+				"name":              "Test App",
+				"software_title_id": *ps.installSoftwareTitleID,
+			}
+		}
+		return policyOne
+	}
+
+	softwareHandler := fleetSoftwareHandler(t, fleet)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == policyPath && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policies": []map[string]any{
+					policySnapshot(),
+					{
+						"id":       2,
+						"name":     "Unrelated",
+						"query":    "SELECT 1",
+						"critical": false,
+					},
+				},
+			})
+		case r.URL.Path == policyOnePath && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy": policySnapshot(),
+			})
+		case r.URL.Path == policyOnePath && r.Method == http.MethodPatch:
+			var body struct {
+				SoftwareTitleID *int `json:"software_title_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode patch body: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			ps.mu.Lock()
+			ps.installSoftwareTitleID = body.SoftwareTitleID
+			if body.SoftwareTitleID == nil {
+				ps.detachCount++
+				ps.patchOrder = append(ps.patchOrder, 0)
+			} else {
+				ps.reattachCount++
+				ps.patchOrder = append(ps.patchOrder, *body.SoftwareTitleID)
+			}
+			ps.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"policy": policySnapshot(),
+			})
+		default:
+			softwareHandler(w, r)
+		}
+	})
+
+	fleetServer := httptest.NewServer(handler)
+	defer fleetServer.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Step 1: create. The provider has no reason to touch policies on
+			// create (only Update goes through replaceSoftwarePackage).
+			{
+				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "title_id", "60"),
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "package_sha256", shaV1),
+					func(s *terraform.State) error {
+						ps.mu.Lock()
+						defer ps.mu.Unlock()
+						if ps.detachCount != 0 || ps.reattachCount != 0 {
+							return fmt.Errorf("create step must not touch policies, got detach=%d reattach=%d", ps.detachCount, ps.reattachCount)
+						}
+						return nil
+					},
+				),
+			},
+			// Step 2: rotate the installer. SHA changes → replaceSoftwarePackage.
+			// Policy must be detached, then reattached to the (new) title id.
+			{
+				PreConfig: func() {
+					if err := os.WriteFile(pkgPath, contentV2, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "package_sha256", shaV2),
+					func(s *terraform.State) error {
+						ps.mu.Lock()
+						defer ps.mu.Unlock()
+						if ps.detachCount != 1 {
+							return fmt.Errorf("expected exactly 1 detach, got %d", ps.detachCount)
+						}
+						if ps.reattachCount != 1 {
+							return fmt.Errorf("expected exactly 1 reattach, got %d", ps.reattachCount)
+						}
+						if len(ps.patchOrder) != 2 || ps.patchOrder[0] != 0 || ps.patchOrder[1] != 60 {
+							return fmt.Errorf("expected patch order [0, 60], got %v", ps.patchOrder)
+						}
+						if ps.installSoftwareTitleID == nil || *ps.installSoftwareTitleID != 60 {
+							return fmt.Errorf("expected policy to end with software_title_id=60, got %v", ps.installSoftwareTitleID)
+						}
+						uploads, deletes := snapshotFleet(fleet)
+						if uploads != 2 {
+							return fmt.Errorf("expected 2 uploads (create + replace), got %d", uploads)
+						}
+						if deletes != 1 {
+							return fmt.Errorf("expected 1 delete, got %d", deletes)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
 }
 
 // packageS3AttrTypes mirrors the attribute types of the package_s3 nested
