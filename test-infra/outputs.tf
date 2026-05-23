@@ -61,13 +61,24 @@ output "scripts" {
 }
 
 output "software_package" {
-  description = "Crowdstrike software package"
+  description = "Zoom on the (deprecated) fleetdm_software_package resource — smoke test for the legacy path"
   value = {
-    id       = fleetdm_software_package.crowdstrike.id
-    title_id = fleetdm_software_package.crowdstrike.title_id
-    name     = fleetdm_software_package.crowdstrike.name
-    version  = fleetdm_software_package.crowdstrike.version
-    platform = fleetdm_software_package.crowdstrike.platform
+    id       = fleetdm_software_package.zoom.id
+    title_id = fleetdm_software_package.zoom.title_id
+    name     = fleetdm_software_package.zoom.name
+    version  = fleetdm_software_package.zoom.version
+    platform = fleetdm_software_package.zoom.platform
+  }
+}
+
+output "software_custom_package" {
+  description = "Zoom on the new fleetdm_software_custom_package resource — smoke test for the new path"
+  value = {
+    id       = fleetdm_software_custom_package.zoom_new.id
+    title_id = fleetdm_software_custom_package.zoom_new.title_id
+    name     = fleetdm_software_custom_package.zoom_new.name
+    version  = fleetdm_software_custom_package.zoom_new.version
+    platform = fleetdm_software_custom_package.zoom_new.platform
   }
 }
 
@@ -97,7 +108,8 @@ output "summary" {
       - Queries: 2  
       - Policies: 2
       - Scripts: 2
-      - Software Package: ${fleetdm_software_package.crowdstrike.name}
+      - Software Package (legacy): ${fleetdm_software_package.zoom.name}
+      - Software Custom Package (new): ${fleetdm_software_custom_package.zoom_new.name}
 
     To clean up, run:
       terraform destroy

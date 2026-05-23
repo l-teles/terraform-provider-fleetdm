@@ -215,6 +215,43 @@ resource "fleetdm_software_package" "zoom" {
 }
 
 # -----------------------------------------------------------------------------
+# Software Custom Package - Zoom (on the new type-specific resource).
+#
+# This block is the parallel smoke test for fleetdm_software_custom_package
+# during the deprecation window. The fleetdm_software_package.zoom block
+# above remains intentionally as a smoke test for the deprecated resource
+# until it is removed. To avoid uploading the same package to the same team
+# twice (which Fleet rejects), this block targets a different team.
+# -----------------------------------------------------------------------------
+
+resource "fleetdm_team" "test_new" {
+  name = "${var.test_prefix}-new"
+}
+
+resource "fleetdm_software_custom_package" "zoom_new" {
+  team_id  = fleetdm_team.test_new.id
+  filename = basename(var.package_path)
+
+  package_path = var.package_path
+
+  install_script = <<-EOT
+    #!/bin/bash
+    # Install Zoom
+    sudo installer -pkg "$INSTALLER_PATH" -target /
+  EOT
+
+  uninstall_script = <<-EOT
+    #!/bin/bash
+    # Uninstall Zoom
+    if [ -d "/Applications/zoom.us.app" ]; then
+        sudo rm -rf "/Applications/zoom.us.app"
+    fi
+  EOT
+
+  self_service = true
+}
+
+# -----------------------------------------------------------------------------
 # Enroll Secret - For enrolling hosts to the test team
 # -----------------------------------------------------------------------------
 

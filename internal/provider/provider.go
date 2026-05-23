@@ -219,7 +219,10 @@ func (p *FleetDMProvider) Resources(ctx context.Context) []func() resource.Resou
 		NewConfigurationResource,
 		NewUserResource,
 		NewConfigurationProfileResource,
-		NewSoftwarePackageResource,
+		NewSoftwarePackageResource, // deprecated: split into the three resources below
+		NewSoftwareCustomPackageResource,
+		NewSoftwareAppStoreAppResource,
+		NewSoftwareFleetMaintainedAppResource,
 		NewBootstrapPackageResource,
 		NewSetupExperienceResource,
 	}

@@ -108,6 +108,12 @@ func (r *softwarePackageResource) Metadata(_ context.Context, req resource.Metad
 func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a FleetDM software package, VPP (App Store) app, or Fleet Maintained App. This is a Premium feature.",
+		DeprecationMessage: "fleetdm_software_package is deprecated and will be removed in a future major release. " +
+			"Use one of the type-specific resources depending on the value of `type`:\n" +
+			"  - type = \"package\"          -> fleetdm_software_custom_package\n" +
+			"  - type = \"vpp\"              -> fleetdm_software_app_store_app\n" +
+			"  - type = \"fleet_maintained\" -> fleetdm_software_fleet_maintained_app\n" +
+			"See the \"Migrating from fleetdm_software_package\" guide in the provider documentation.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The unique identifier (internal, same as title_id).",
@@ -1169,11 +1175,17 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 	return true
 }
 
+// Adapter methods so the legacy model implements packageSource (defined
+// in software_common_schema.go) for the binary-source helpers below.
+func (m *softwarePackageResourceModel) PackagePathField() types.String { return m.PackagePath }
+func (m *softwarePackageResourceModel) PackageS3Field() types.Object   { return m.PackageS3 }
+func (m *softwarePackageResourceModel) FilenameField() types.String    { return m.Filename }
+
 // buildS3Source parses the package_s3 nested object into an fleetdm.S3Source and
 // the original model. It enforces bucket/key being known + non-empty.
-func buildS3Source(ctx context.Context, model *softwarePackageResourceModel) (fleetdm.S3Source, packageS3Model, error) {
+func buildS3Source(ctx context.Context, model packageSource) (fleetdm.S3Source, packageS3Model, error) {
 	var s3Config packageS3Model
-	diags := model.PackageS3.As(ctx, &s3Config, basetypes.ObjectAsOptions{})
+	diags := model.PackageS3Field().As(ctx, &s3Config, basetypes.ObjectAsOptions{})
 	if diags.HasError() {
 		var details string
 		for _, d := range diags.Errors() {
@@ -1226,11 +1238,13 @@ func buildS3Source(ctx context.Context, model *softwarePackageResourceModel) (fl
 // allowExpected gates use of package_s3.expected_sha256. Set it true for
 // ModifyPlan / Update (where trusting the user is the whole point); false has
 // no current callers but is reserved.
-func resolveRemoteSHA(ctx context.Context, model *softwarePackageResourceModel, allowExpected bool) (string, string, bool, diag.Diagnostics) {
+func resolveRemoteSHA(ctx context.Context, model packageSource, allowExpected bool) (string, string, bool, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
-	hasPath := !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != ""
-	s3Present := !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown()
+	path := model.PackagePathField()
+	pkgS3 := model.PackageS3Field()
+	hasPath := !path.IsNull() && !path.IsUnknown() && path.ValueString() != ""
+	s3Present := !pkgS3.IsNull() && !pkgS3.IsUnknown()
 
 	if hasPath && s3Present {
 		diags.AddError("Conflicting Configuration", "package_path and package_s3 are mutually exclusive; set one or the other.")
@@ -1242,9 +1256,9 @@ func resolveRemoteSHA(ctx context.Context, model *softwarePackageResourceModel, 
 		// Hashing a local file is cheap; just do it. We don't keep the bytes
 		// here — the caller calls readPackageContentForUpload when it actually
 		// needs to upload.
-		content, err := os.ReadFile(model.PackagePath.ValueString()) // #nosec G304 -- path comes from Terraform config
+		content, err := os.ReadFile(path.ValueString()) // #nosec G304 -- path comes from Terraform config
 		if err != nil {
-			diags.AddError("Unable to read package file", fmt.Sprintf("Could not read %s: %s", model.PackagePath.ValueString(), err.Error()))
+			diags.AddError("Unable to read package file", fmt.Sprintf("Could not read %s: %s", path.ValueString(), err.Error()))
 			return "", "", false, diags
 		}
 		sum := sha256.Sum256(content)
@@ -1304,9 +1318,11 @@ func resolveRemoteSHA(ctx context.Context, model *softwarePackageResourceModel, 
 // readPackageContentForUpload reads the full package content from package_path
 // or package_s3 (downloading from S3 when needed) and returns the content along
 // with its lowercase hex SHA256. Used by Create and by the slow path of Update.
-func readPackageContentForUpload(ctx context.Context, model *softwarePackageResourceModel) ([]byte, string, error) {
-	hasPath := !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != ""
-	s3Present := !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown()
+func readPackageContentForUpload(ctx context.Context, model packageSource) ([]byte, string, error) {
+	path := model.PackagePathField()
+	pkgS3 := model.PackageS3Field()
+	hasPath := !path.IsNull() && !path.IsUnknown() && path.ValueString() != ""
+	s3Present := !pkgS3.IsNull() && !pkgS3.IsUnknown()
 
 	if hasPath && s3Present {
 		return nil, "", fmt.Errorf("package_path and package_s3 are mutually exclusive; set one or the other")
@@ -1317,9 +1333,9 @@ func readPackageContentForUpload(ctx context.Context, model *softwarePackageReso
 
 	switch {
 	case hasPath:
-		content, err = os.ReadFile(model.PackagePath.ValueString()) // #nosec G304 -- path comes from Terraform config
+		content, err = os.ReadFile(path.ValueString()) // #nosec G304 -- path comes from Terraform config
 		if err != nil {
-			return nil, "", fmt.Errorf("could not read package at %s: %w", model.PackagePath.ValueString(), err)
+			return nil, "", fmt.Errorf("could not read package at %s: %w", path.ValueString(), err)
 		}
 	case s3Present:
 		src, _, err := buildS3Source(ctx, model)
@@ -1350,16 +1366,19 @@ func readPackageContentForUpload(ctx context.Context, model *softwarePackageReso
 
 // deriveFilename returns the filename to use for the package upload.
 // Priority: explicit filename attribute > package_path basename > package_s3 key basename.
-func deriveFilename(ctx context.Context, model *softwarePackageResourceModel) string {
-	if !model.Filename.IsNull() && !model.Filename.IsUnknown() && model.Filename.ValueString() != "" {
-		return model.Filename.ValueString()
+func deriveFilename(ctx context.Context, model packageSource) string {
+	filename := model.FilenameField()
+	if !filename.IsNull() && !filename.IsUnknown() && filename.ValueString() != "" {
+		return filename.ValueString()
 	}
-	if !model.PackagePath.IsNull() && !model.PackagePath.IsUnknown() && model.PackagePath.ValueString() != "" {
-		return filepath.Base(model.PackagePath.ValueString())
+	path := model.PackagePathField()
+	if !path.IsNull() && !path.IsUnknown() && path.ValueString() != "" {
+		return filepath.Base(path.ValueString())
 	}
-	if !model.PackageS3.IsNull() && !model.PackageS3.IsUnknown() {
+	pkgS3 := model.PackageS3Field()
+	if !pkgS3.IsNull() && !pkgS3.IsUnknown() {
 		var s3Cfg packageS3Model
-		if d := model.PackageS3.As(ctx, &s3Cfg, basetypes.ObjectAsOptions{}); !d.HasError() {
+		if d := pkgS3.As(ctx, &s3Cfg, basetypes.ObjectAsOptions{}); !d.HasError() {
 			if !s3Cfg.Key.IsNull() && !s3Cfg.Key.IsUnknown() && s3Cfg.Key.ValueString() != "" {
 				return gopath.Base(s3Cfg.Key.ValueString())
 			}

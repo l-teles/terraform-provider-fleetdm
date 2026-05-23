@@ -1581,6 +1581,8 @@ func newFakeFleetForLabels(t *testing.T) *fakeFleetForLabels {
 		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == http.MethodPost:
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Errorf("ParseMultipartForm (upload): %v", err)
+				http.Error(w, "bad multipart", http.StatusBadRequest)
+				return
 			}
 			f.mu.Lock()
 			f.titleInstallScript = r.FormValue("install_script")
@@ -1616,6 +1618,8 @@ func newFakeFleetForLabels(t *testing.T) *fakeFleetForLabels {
 		case r.URL.Path == "/api/v1/fleet/software/titles/71/package" && r.Method == http.MethodPatch:
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Errorf("ParseMultipartForm (patch): %v", err)
+				http.Error(w, "bad multipart", http.StatusBadRequest)
+				return
 			}
 			f.mu.Lock()
 			f.patchCount++
