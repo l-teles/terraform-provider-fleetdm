@@ -360,10 +360,15 @@ func (r *softwareCustomPackageResource) Create(ctx context.Context, req resource
 	// set to its plan value if true so the next plan after a flip
 	// failure shows the right diff (install_during_setup: true → still
 	// true, the flip attempt will re-run).
-	preFlipPlan := plan
+	// Normalize the schema-level Unknown into Fleet's effective default (false).
+	// With `install_during_setup` left out of HCL and no schema Default, the
+	// framework hands us Unknown; the post-Create state write requires Known
+	// values on every Computed attribute, and Fleet's own default for a
+	// freshly-uploaded title is "not in the setup-experience set".
 	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
-		preFlipPlan.InstallDuringSetup = types.BoolValue(false)
+		plan.InstallDuringSetup = types.BoolValue(false)
 	}
+	preFlipPlan := plan
 	preDiags := resp.State.Set(ctx, preFlipPlan)
 	resp.Diagnostics.Append(preDiags...)
 	if resp.Diagnostics.HasError() {

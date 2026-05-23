@@ -181,12 +181,12 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		}
 	}
 
-	// Persist state before the setup-experience flip — see the analogous
-	// block in software_custom_package_resource.go for the rationale.
-	preFlipPlan := plan
+	// Normalize Unknown → false (Fleet's default for a freshly-added title).
+	// See the analogous block in software_custom_package_resource.go.
 	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
-		preFlipPlan.InstallDuringSetup = types.BoolValue(false)
+		plan.InstallDuringSetup = types.BoolValue(false)
 	}
+	preFlipPlan := plan
 	preDiags := resp.State.Set(ctx, preFlipPlan)
 	resp.Diagnostics.Append(preDiags...)
 	if resp.Diagnostics.HasError() {

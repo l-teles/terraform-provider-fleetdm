@@ -211,6 +211,10 @@ func TestAccSoftwareFleetMaintainedAppResource_basic(t *testing.T) {
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/200/available_for_install" && r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			// Delete handler enumerates policies to detach install_software /
+			// patch_software automation before issuing the DELETE.
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 		default:
 			http.NotFound(w, r)
 		}

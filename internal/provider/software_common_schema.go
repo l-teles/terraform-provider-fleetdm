@@ -130,14 +130,18 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 				"of titles flagged for setup-time installation. Distinct from `automatic_install_policy`, which creates " +
 				"a Fleet policy that installs the software on hosts missing it (the policy-based path). " +
 				"\n\n" +
+				"When the attribute is **omitted from HCL**, the provider leaves Fleet's setup-experience set " +
+				"untouched and adopts whatever value Fleet returns — managing the field is opt-in. Set it " +
+				"explicitly to `true` or `false` to drive the value from Terraform. This avoids spurious " +
+				"true → false flips after `terraform import` of a title that was previously in the set. " +
+				"\n\n" +
 				"Multi-resource race: when two `fleetdm_software_*` resources on the same team and platform both flip " +
 				"`install_during_setup = true` in a single `terraform apply`, the provider serializes the updates " +
 				"per-(team, platform) inside the API client to avoid losing one — but cross-process race conditions " +
 				"(another `terraform apply` against the same team/platform at the same time, or a concurrent Fleet UI " +
-				"change) remain a user concern. Defaults to false.",
+				"change) remain a user concern.",
 			Optional: true,
 			Computed: true,
-			Default:  booldefault.StaticBool(false),
 			PlanModifiers: []planmodifier.Bool{
 				boolplanmodifier.UseStateForUnknown(),
 			},

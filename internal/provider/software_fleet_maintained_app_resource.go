@@ -178,10 +178,12 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 	// Mirror plan's known fields; mark optional follow-up-only fields
 	// to safe zero values so the framework doesn't complain about
 	// post-apply unknown values.
-	earlyPlan := plan
+	// Normalize Unknown → false (Fleet's default for a freshly-added title).
+	// See the analogous block in software_custom_package_resource.go.
 	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
-		earlyPlan.InstallDuringSetup = types.BoolValue(false)
+		plan.InstallDuringSetup = types.BoolValue(false)
 	}
+	earlyPlan := plan
 	earlyDiags := resp.State.Set(ctx, earlyPlan)
 	resp.Diagnostics.Append(earlyDiags...)
 	if resp.Diagnostics.HasError() {

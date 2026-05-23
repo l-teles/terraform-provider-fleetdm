@@ -68,6 +68,10 @@ func TestAccSoftwarePackageResource_basic(t *testing.T) {
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/42/available_for_install" && r.Method == "DELETE":
 			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			// Delete handler enumerates policies to detach install_software /
+			// patch_software automation before issuing the DELETE.
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -121,6 +125,10 @@ func TestAccSoftwarePackageResource_vpp(t *testing.T) {
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/100/available_for_install" && r.Method == "DELETE":
 			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			// Delete handler enumerates policies to detach install_software /
+			// patch_software automation before issuing the DELETE.
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -175,6 +183,10 @@ func TestAccSoftwarePackageResource_fleet_maintained(t *testing.T) {
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/200/available_for_install" && r.Method == "DELETE":
 			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			// Delete handler enumerates policies to detach install_software /
+			// patch_software automation before issuing the DELETE.
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -1059,7 +1071,7 @@ func TestAccSoftwarePackageResource_replaceWithAttachedPolicy_reattachFailureSav
 					failReattach.Store(true)
 				},
 				Config:      testAccSoftwarePackageResourceConfig(fleetServer.URL, pkgPath),
-				ExpectError: regexp.MustCompile(`(?s)Error re-attaching install_software automation.*1.*Install Test App`),
+				ExpectError: regexp.MustCompile(`(?s)Error re-attaching policy automation.*install_software policy 1.*Install Test App`),
 			},
 			// Step 3: lift the injected failure and re-apply with the same
 			// content. If step 2 saved state correctly, this is a no-op for
