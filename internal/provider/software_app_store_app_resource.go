@@ -181,12 +181,12 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		}
 	}
 
-	// Persist state before the setup-experience flip — see the analogous
-	// block in software_custom_package_resource.go for the rationale.
-	preFlipPlan := plan
+	// Normalize Unknown → false (Fleet's default for a freshly-added title).
+	// See the analogous block in software_custom_package_resource.go.
 	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
-		preFlipPlan.InstallDuringSetup = types.BoolValue(false)
+		plan.InstallDuringSetup = types.BoolValue(false)
 	}
+	preFlipPlan := plan
 	preDiags := resp.State.Set(ctx, preFlipPlan)
 	resp.Diagnostics.Append(preDiags...)
 	if resp.Diagnostics.HasError() {
@@ -390,6 +390,15 @@ func (r *softwareAppStoreAppResource) Delete(ctx context.Context, req resource.D
 
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
+
+	// VPP titles can be the target of install_software policy automation
+	// (Fleet's policies API accepts any software_title_id, VPP included).
+	// Patch policies don't apply to VPP, but the shared helper handles the
+	// patch list as a no-op when the title has no patch references.
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
 
 	err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID)
 	if err != nil && !isNotFound(err) {

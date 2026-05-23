@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -166,5 +168,156 @@ func TestClient_SetSetupExperienceSoftwareExclude(t *testing.T) {
 	}
 	if putCount != 1 {
 		t.Errorf("expected 1 PUT (for the actual removal; the second Exclude is a no-op), got %d", putCount)
+	}
+}
+
+// TestClient_SetSetupExperienceSoftwareExclude_FiltersStale verifies the
+// helper drops setup-experience title IDs whose GET /software/titles/{id}
+// returns 404, so a sibling concurrent delete that left a dangling ID in
+// the set doesn't cause our PUT to be rejected with HTTP 400 ("at least
+// one selected software title does not exist or is not available for setup
+// experience").
+func TestClient_SetSetupExperienceSoftwareExclude_FiltersStale(t *testing.T) {
+	const (
+		liveID   = 99
+		staleID  = 7777
+		targetID = 42
+	)
+
+	var (
+		mu          sync.Mutex
+		putBody     []int
+		putCount    int
+		titleLookup int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/setup_experience/software":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_titles": []map[string]any{
+					{"id": targetID}, {"id": liveID}, {"id": staleID},
+				},
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/fleet/software/titles/"):
+			mu.Lock()
+			titleLookup++
+			mu.Unlock()
+			idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/fleet/software/titles/")
+			id, _ := strconv.Atoi(idStr)
+			if id == staleID {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "not found"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{"id": id, "name": "title"},
+			})
+		case r.Method == http.MethodPut:
+			var body struct {
+				SoftwareTitleIDs []int `json:"software_title_ids"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			putBody = append([]int{}, body.SoftwareTitleIDs...)
+			putCount++
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test", VerifyTLS: false})
+	teamID := 1
+
+	if err := client.SetSetupExperienceSoftwareExclude(context.Background(), &teamID, "darwin", targetID); err != nil {
+		t.Fatalf("Exclude(%d) failed: %v", targetID, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if putCount != 1 {
+		t.Fatalf("expected exactly 1 PUT, got %d", putCount)
+	}
+	if len(putBody) != 1 || putBody[0] != liveID {
+		t.Errorf("expected PUT body [%d] (stale %d filtered, target %d excluded), got %v", liveID, staleID, targetID, putBody)
+	}
+	// 3 ids remaining after excluding targetID locally → 2 GETs for live + stale
+	// (titleLookup count is best-effort; allow >=2 to avoid coupling to small impl changes).
+	if titleLookup < 2 {
+		t.Errorf("expected at least 2 software-title lookups (one per remaining id), got %d", titleLookup)
+	}
+}
+
+// TestClient_SetSetupExperienceSoftwareInclude_FiltersStale verifies the
+// same stale-id filter on the Include path — a sibling delete that left a
+// dangling id in the set shouldn't poison Include's PUT either.
+func TestClient_SetSetupExperienceSoftwareInclude_FiltersStale(t *testing.T) {
+	const (
+		liveID  = 99
+		staleID = 7777
+		newID   = 555
+	)
+
+	var (
+		mu       sync.Mutex
+		putBody  []int
+		putCount int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/setup_experience/software":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_titles": []map[string]any{
+					{"id": liveID}, {"id": staleID},
+				},
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/fleet/software/titles/"):
+			idStr := strings.TrimPrefix(r.URL.Path, "/api/v1/fleet/software/titles/")
+			id, _ := strconv.Atoi(idStr)
+			if id == staleID {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "not found"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{"id": id, "name": "title"},
+			})
+		case r.Method == http.MethodPut:
+			var body struct {
+				SoftwareTitleIDs []int `json:"software_title_ids"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			putBody = append([]int{}, body.SoftwareTitleIDs...)
+			putCount++
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test", VerifyTLS: false})
+	teamID := 1
+
+	if err := client.SetSetupExperienceSoftwareInclude(context.Background(), &teamID, "darwin", newID); err != nil {
+		t.Fatalf("Include(%d) failed: %v", newID, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if putCount != 1 {
+		t.Fatalf("expected exactly 1 PUT, got %d", putCount)
+	}
+	sort.Ints(putBody)
+	wantBody := []int{liveID, newID}
+	sort.Ints(wantBody)
+	if len(putBody) != 2 || putBody[0] != wantBody[0] || putBody[1] != wantBody[1] {
+		t.Errorf("expected PUT body %v (stale %d filtered, new %d added), got %v", wantBody, staleID, newID, putBody)
 	}
 }

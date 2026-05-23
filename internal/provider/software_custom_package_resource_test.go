@@ -84,6 +84,11 @@ func TestAccSoftwareCustomPackageResource_basic(t *testing.T) {
 			})
 		case r.URL.Path == "/api/v1/fleet/software/titles/42/available_for_install" && r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			// Delete handler enumerates policies to detach install_software /
+			// patch_software automation before issuing the DELETE. CI's
+			// free-tier Fleet has no teams, so only the global endpoint is hit.
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -356,6 +361,61 @@ resource "fleetdm_software_custom_package" "test" {
 						return nil
 					},
 				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_installDuringSetupOmitted verifies
+// the opt-in semantics of `install_during_setup`: when the attribute is
+// absent from HCL, the provider must NOT call Fleet's setup-experience
+// endpoint and must NOT flip the title's install-during-setup state.
+// Critical regression guard for the bug where a Default-false on the
+// schema turned imported `install_during_setup=true` titles into a
+// spurious true → false flip every apply.
+func TestAccSoftwareCustomPackageResource_installDuringSetupOmitted(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 42
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+}
+`, f.srv.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "install_during_setup", "false"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.setupExperiencePuts != 0 {
+							return fmt.Errorf("expected zero PUT /setup_experience/software calls when HCL omits install_during_setup, got %d", f.setupExperiencePuts)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Re-applying the same HCL must be a no-op for setup-experience.
+				Config:   cfg,
+				PlanOnly: true,
 			},
 		},
 	})

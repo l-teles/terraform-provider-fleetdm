@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -131,8 +132,16 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		// Policy list — needed by the binary-replace flow (custom_package only).
-		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+		// Policy list — needed by the binary-replace and delete flows on
+		// all three software resources. The Delete handler now lists policies
+		// referencing the title via both `/global/policies` and
+		// `/fleets/{teamID}/policies` to detach install_software /
+		// patch_software automation before issuing DeleteSoftwarePackage.
+		// Match both shapes with empty bodies; tests that care about real
+		// policies override this with their own mock.
+		case (r.URL.Path == "/api/v1/fleet/global/policies" ||
+			(strings.HasPrefix(r.URL.Path, "/api/v1/fleet/fleets/") && strings.HasSuffix(r.URL.Path, "/policies"))) &&
+			r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
 
 		// POST /software/package — custom-package Create (multipart upload).

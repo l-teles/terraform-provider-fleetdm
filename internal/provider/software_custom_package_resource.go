@@ -360,10 +360,15 @@ func (r *softwareCustomPackageResource) Create(ctx context.Context, req resource
 	// set to its plan value if true so the next plan after a flip
 	// failure shows the right diff (install_during_setup: true → still
 	// true, the flip attempt will re-run).
-	preFlipPlan := plan
+	// Normalize the schema-level Unknown into Fleet's effective default (false).
+	// With `install_during_setup` left out of HCL and no schema Default, the
+	// framework hands us Unknown; the post-Create state write requires Known
+	// values on every Computed attribute, and Fleet's own default for a
+	// freshly-uploaded title is "not in the setup-experience set".
 	if plan.InstallDuringSetup.IsNull() || plan.InstallDuringSetup.IsUnknown() {
-		preFlipPlan.InstallDuringSetup = types.BoolValue(false)
+		plan.InstallDuringSetup = types.BoolValue(false)
 	}
+	preFlipPlan := plan
 	preDiags := resp.State.Set(ctx, preFlipPlan)
 	resp.Diagnostics.Append(preDiags...)
 	if resp.Diagnostics.HasError() {
@@ -635,19 +640,28 @@ func (r *softwareCustomPackageResource) Update(ctx context.Context, req resource
 // from the legacy resource's replaceSoftwarePackage; the behavior is
 // identical, only the model type differs.
 func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titleID int, teamID *int, plan *softwareCustomPackageResourceModel, content []byte, sha string, resp *resource.UpdateResponse) bool {
-	attachedPolicies, err := r.client.ListPoliciesByInstallSoftwareTitleID(ctx, titleID, teamID)
+	attachedInstall, attachedPatch, err := listPoliciesBlockingTitleDelete(ctx, r.client, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error replacing software package",
-			"Could not list policies before re-upload (needed to clear install_software automation): "+err.Error(),
+			"Could not list policies before re-upload (needed to clear policy automation): "+err.Error(),
 		)
 		return false
 	}
-	for _, p := range attachedPolicies {
+	for _, p := range attachedInstall {
 		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
 			resp.Diagnostics.AddError(
 				"Error replacing software package",
 				fmt.Sprintf("Could not detach install_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
+			)
+			return false
+		}
+	}
+	for _, p := range attachedPatch {
+		if err := r.client.SetPolicyPatchSoftwareTitleID(ctx, p.ID, teamID, nil); err != nil {
+			resp.Diagnostics.AddError(
+				"Error replacing software package",
+				fmt.Sprintf("Could not detach patch_software automation from policy %d (%q) before re-upload: %s", p.ID, p.Name, err.Error()),
 			)
 			return false
 		}
@@ -729,9 +743,14 @@ func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titl
 
 	newTitleID := title.ID
 	var reattachFailed []string
-	for _, p := range attachedPolicies {
+	for _, p := range attachedInstall {
 		if err := r.client.SetPolicyInstallSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
-			reattachFailed = append(reattachFailed, fmt.Sprintf("%d (%q): %s", p.ID, p.Name, err.Error()))
+			reattachFailed = append(reattachFailed, fmt.Sprintf("install_software policy %d (%q): %s", p.ID, p.Name, err.Error()))
+		}
+	}
+	for _, p := range attachedPatch {
+		if err := r.client.SetPolicyPatchSoftwareTitleID(ctx, p.ID, teamID, &newTitleID); err != nil {
+			reattachFailed = append(reattachFailed, fmt.Sprintf("patch_software policy %d (%q): %s", p.ID, p.Name, err.Error()))
 		}
 	}
 	if len(reattachFailed) > 0 {
@@ -739,10 +758,10 @@ func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titl
 		resp.Diagnostics.Append(stateDiags...)
 
 		resp.Diagnostics.AddError(
-			"Error re-attaching install_software automation after package replace",
-			"The software package was replaced successfully (new title_id="+strconv.Itoa(newTitleID)+"), but re-attaching install_software automation to the following policies failed:\n  - "+
+			"Error re-attaching policy automation after package replace",
+			"The software package was replaced successfully (new title_id="+strconv.Itoa(newTitleID)+"), but re-attaching policy automation to the following policies failed:\n  - "+
 				strings.Join(reattachFailed, "\n  - ")+
-				"\n\nThe affected fleetdm_policy resources will show drift on `software_title_id` on the next plan; re-running 'terraform apply' should heal them automatically.",
+				"\n\nThe affected fleetdm_policy resources will show drift on `software_title_id` / `patch_software_title_id` on the next plan; re-running 'terraform apply' should heal them automatically.",
 		)
 		return false
 	}
@@ -761,6 +780,11 @@ func (r *softwareCustomPackageResource) Delete(ctx context.Context, req resource
 
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
+
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
 
 	err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID)
 	if err != nil && !isNotFound(err) {

@@ -1234,3 +1234,180 @@ func TestPolicyLabelsToStrings(t *testing.T) {
 		t.Errorf("expected %v, got: %v", want, got)
 	}
 }
+
+// TestClient_ListPoliciesByPatchSoftwareTitleID_Global verifies that the
+// helper filters on Policy.PatchSoftware (not InstallSoftware), and ignores
+// policies that don't reference the target title or have only install_software
+// attached.
+func TestClient_ListPoliciesByPatchSoftwareTitleID_Global(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/global/policies" {
+			t.Errorf("expected global policies path, got: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				{ID: 1, Name: "No automation"},
+				{ID: 2, Name: "Install only", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				{ID: 3, Name: "Patch other", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 99}},
+				{ID: 4, Name: "Patch target A", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 42}},
+				{ID: 5, Name: "Patch target B", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 42}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByPatchSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches (4 and 5), got: %d (%+v)", len(matches), matches)
+	}
+	if matches[0].ID != 4 || matches[1].ID != 5 {
+		t.Errorf("expected policy IDs [4, 5], got: [%d, %d]", matches[0].ID, matches[1].ID)
+	}
+}
+
+// TestClient_ListPoliciesByPatchSoftwareTitleID_FallbackInstallSoftware
+// verifies the fallback path: when Fleet's list response omits the
+// `patch_software` block on a type=patch policy (a documented Fleet
+// behavior — see mapPatchSoftware in the policy resource), the helper
+// still recognizes the policy via the always-echoed install_software
+// field. Without this fallback, detachPoliciesBeforeTitleDelete would
+// miss the policy and Fleet would 409 on DeleteSoftwarePackage with
+// "This software has a patch policy".
+func TestClient_ListPoliciesByPatchSoftwareTitleID_FallbackInstallSoftware(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				// type=patch policy with NO patch_software echoed — Fleet
+				// sometimes omits it; install_software is always present.
+				{ID: 11, Name: "Patch via install fallback", Type: "patch", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				// type=patch policy that DOES echo patch_software.
+				{ID: 12, Name: "Patch explicit", Type: "patch", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 42}},
+				// type=dynamic install_software policy — must NOT match here.
+				{ID: 13, Name: "Install only (dynamic)", Type: "dynamic", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				// Different title.
+				{ID: 14, Name: "Patch other title", Type: "patch", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 99}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByPatchSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches (id 11 via fallback, id 12 explicit), got %d: %+v", len(matches), matches)
+	}
+	gotIDs := []int{matches[0].ID, matches[1].ID}
+	wantIDs := []int{11, 12}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Errorf("expected ids %v, got %v", wantIDs, gotIDs)
+	}
+}
+
+// TestClient_ListPoliciesByPatchSoftwareTitleID_Team verifies team scoping
+// hits the team-scoped endpoint.
+func TestClient_ListPoliciesByPatchSoftwareTitleID_Team(t *testing.T) {
+	var sawTeamPath bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/fleet/fleets/7/policies" {
+			sawTeamPath = true
+		} else {
+			t.Errorf("expected team policies path, got: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				{ID: 10, Name: "Patch", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 42}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	teamID := 7
+	matches, err := client.ListPoliciesByPatchSoftwareTitleID(context.Background(), 42, &teamID)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !sawTeamPath {
+		t.Error("expected ListPoliciesByPatchSoftwareTitleID to hit the team-scoped endpoint")
+	}
+	if len(matches) != 1 || matches[0].ID != 10 {
+		t.Errorf("expected one match with ID 10, got: %+v", matches)
+	}
+}
+
+// TestClient_SetPolicyPatchSoftwareTitleID_Detach verifies the helper sends
+// a single-field PATCH body with patch_software_title_id=null and no other
+// fields — Fleet's PATCH semantics treat absent fields as "no change", so
+// the minimal body is enough to detach without round-tripping every field.
+func TestClient_SetPolicyPatchSoftwareTitleID_Detach(t *testing.T) {
+	var sawPatch bool
+	var rawBody map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/fleets/7/policies/55" {
+			t.Errorf("unexpected PATCH path: %s", r.URL.Path)
+		}
+		sawPatch = true
+		if err := json.NewDecoder(r.Body).Decode(&rawBody); err != nil {
+			t.Fatalf("decode patch body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	teamID := 7
+	if err := client.SetPolicyPatchSoftwareTitleID(context.Background(), 55, &teamID, nil); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !sawPatch {
+		t.Fatal("expected a PATCH request")
+	}
+	if len(rawBody) != 1 {
+		t.Errorf("expected single-field PATCH body, got %d fields: %v", len(rawBody), rawBody)
+	}
+	raw, ok := rawBody["patch_software_title_id"]
+	if !ok {
+		t.Fatal("expected patch_software_title_id field in body")
+	}
+	if string(raw) != "null" {
+		t.Errorf("expected patch_software_title_id=null, got: %s", raw)
+	}
+}
+
+// TestClient_SetPolicyPatchSoftwareTitleID_Reattach verifies the helper
+// sends patch_software_title_id=<value> when reattaching.
+func TestClient_SetPolicyPatchSoftwareTitleID_Reattach(t *testing.T) {
+	var rawBody map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/global/policies/55" {
+			t.Errorf("unexpected PATCH path (expected global): %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&rawBody); err != nil {
+			t.Fatalf("decode patch body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	newID := 77
+	if err := client.SetPolicyPatchSoftwareTitleID(context.Background(), 55, nil, &newID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if string(rawBody["patch_software_title_id"]) != "77" {
+		t.Errorf("expected patch_software_title_id=77, got: %s", rawBody["patch_software_title_id"])
+	}
+}
