@@ -452,6 +452,11 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *req.TeamID)
 	}
 
+	// Every field is sent unconditionally — empty strings included — because
+	// PATCH semantics here are "set to exactly this", not "merge": for an
+	// update, omitting a field that previously had a value would leave the
+	// stale value in place. This differs from UploadSoftwarePackage, which
+	// skips empty script fields so Fleet picks defaults on create.
 	fields := map[string]string{
 		"install_script":       req.InstallScript,
 		"uninstall_script":     req.UninstallScript,

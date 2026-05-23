@@ -3,6 +3,7 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -427,7 +428,9 @@ func TestClient_PatchSoftwarePackage_EncodesLabels(t *testing.T) {
 // TestClient_PatchSoftwarePackage_SurfacesError confirms the multipart helper
 // surfaces an HTTP 400 from Fleet correctly (this regression test guards
 // against ever re-introducing the application/json shape: the error message
-// would change to mention multipart parsing).
+// would change to mention multipart parsing). It also pins the structured
+// errors[] array decode so the sendMultipart refactor cannot silently drop
+// it.
 func TestClient_PatchSoftwarePackage_SurfacesError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -443,6 +446,20 @@ func TestClient_PatchSoftwarePackage_SurfacesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "validation failed") {
 		t.Errorf("expected error to surface Fleet message, got: %v", err)
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected error chain to contain *APIError, got: %T (%v)", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected APIError.StatusCode 400, got %d", apiErr.StatusCode)
+	}
+	if len(apiErr.Errors) != 1 {
+		t.Fatalf("expected APIError.Errors to carry 1 entry, got %d", len(apiErr.Errors))
+	}
+	if apiErr.Errors[0].Name != "install_script" || apiErr.Errors[0].Reason != "too long" {
+		t.Errorf("expected APIError.Errors[0] = {install_script, too long}, got %+v", apiErr.Errors[0])
 	}
 }
 
