@@ -522,6 +522,13 @@ func (c *Client) DeleteSoftwarePackage(ctx context.Context, titleID int, teamID 
 // or labels_exclude_any can be specified" on this endpoint, so the caller
 // must never set both label pointers non-nil (the resource layer's schema
 // validator catches this at plan time).
+//
+// Software / Filename are optional. When Software is non-nil, the request
+// becomes an in-place binary replacement (Fleet preserves the title_id):
+// no policy detach, no DELETE, no re-upload. Fleet's docs note that any
+// change to the installer package resets installation counts and cancels
+// pending installs for the old package; non-binary metadata-only PATCHes
+// (Software == nil) leave install state alone.
 type PatchSoftwarePackageRequest struct {
 	TeamID            *int   `json:"team_id,omitempty"`
 	InstallScript     string `json:"install_script"`
@@ -539,21 +546,40 @@ type PatchSoftwarePackageRequest struct {
 	LabelsIncludeAny *[]string `json:"labels_include_any"`
 	LabelsExcludeAny *[]string `json:"labels_exclude_any"`
 	LabelsIncludeAll *[]string `json:"labels_include_all"`
+	// Software, when non-nil, is the new installer binary to replace the
+	// existing one in-place. Filename must be set when Software is set.
+	// When Software is nil the request is metadata-only and Filename is
+	// ignored.
+	Software []byte `json:"-"`
+	Filename string `json:"-"`
 }
 
-// PatchSoftwarePackage updates the metadata of an existing software package (scripts, labels, flags).
-// The package binary itself cannot be changed in-place; use DeleteSoftwarePackage + UploadSoftwarePackage instead.
+// PatchSoftwarePackage updates an existing software package via Fleet's
+// PATCH /software/titles/{id}/package endpoint.
 //
-// Fleet's PATCH /software/titles/{id}/package endpoint requires
-// multipart/form-data — it rejects application/json with HTTP 400
-// ("failed to parse multipart form: request Content-Type isn't multipart/form-data").
-// We mirror UploadSoftwarePackage's field encoding (JSON-encoded strings for
-// the label arrays, "true"/"false" for booleans, raw strings for scripts).
+// Two modes:
+//
+//   - Metadata-only (req.Software == nil): updates scripts, labels, flags,
+//     display_name, categories. Fleet leaves install state alone.
+//   - Binary replacement (req.Software != nil, req.Filename != ""): replaces
+//     the installer binary in-place AND applies any metadata changes in the
+//     same request. The title_id is preserved (it's in the URL path), so
+//     every policy that references the title — install_software AND
+//     patch_software — stays linked across the upgrade. No DELETE, no
+//     detach/reattach dance. Fleet's docs flag that binary changes reset
+//     installation counts and cancel pending installs for the old package.
+//
+// Fleet's endpoint requires multipart/form-data — it rejects application/json
+// with HTTP 400 ("failed to parse multipart form: request Content-Type isn't
+// multipart/form-data"). Field encoding mirrors UploadSoftwarePackage.
 //
 // Note: install_during_setup is NOT sent here — that field belongs to the
 // separate PUT /setup_experience/software endpoint and is managed by the
 // resource layer via SetSetupExperienceSoftwareInclude / Exclude.
 func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *PatchSoftwarePackageRequest) error {
+	if req.Software != nil && req.Filename == "" {
+		return fmt.Errorf("PatchSoftwarePackage: Filename is required when Software is provided")
+	}
 	endpoint := fmt.Sprintf("/software/titles/%d/package", titleID)
 	if req.TeamID != nil {
 		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *req.TeamID)
@@ -611,6 +637,12 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 		fields["categories"] = string(categoriesJSON)
 	}
 
+	if req.Software != nil {
+		if _, err := c.doMultipartRequest(ctx, http.MethodPatch, endpoint, "software", req.Filename, req.Software, fields); err != nil {
+			return fmt.Errorf("failed to patch software package (with binary): %w", err)
+		}
+		return nil
+	}
 	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
 		return fmt.Errorf("failed to patch software package: %w", err)
 	}
