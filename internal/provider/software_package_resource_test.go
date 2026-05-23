@@ -836,7 +836,9 @@ func TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart(t *testing.T
 			// multipart upload handler already validates the request shape.
 			// Parse install_script and self_service so the subsequent GETs
 			// reflect them and the test doesn't trip on a refresh-plan diff.
-			if err := r.ParseMultipartForm(1 << 20); err == nil {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("create-side ParseMultipartForm failed: %v", err)
+			} else {
 				mu.Lock()
 				titleInstallScript = r.FormValue("install_script")
 				titleSelfService = r.FormValue("self_service") == "true"
