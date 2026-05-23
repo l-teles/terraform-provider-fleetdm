@@ -440,12 +440,51 @@ type PatchSoftwarePackageRequest struct {
 
 // PatchSoftwarePackage updates the metadata of an existing software package (scripts, labels, flags).
 // The package binary itself cannot be changed in-place; use DeleteSoftwarePackage + UploadSoftwarePackage instead.
+//
+// Fleet's PATCH /software/titles/{id}/package endpoint requires
+// multipart/form-data — it rejects application/json with HTTP 400
+// ("failed to parse multipart form: request Content-Type isn't multipart/form-data").
+// We mirror UploadSoftwarePackage's field encoding (JSON-encoded strings for
+// the label arrays, "true"/"false" for booleans, raw strings for scripts).
 func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *PatchSoftwarePackageRequest) error {
 	endpoint := fmt.Sprintf("/software/titles/%d/package", titleID)
 	if req.TeamID != nil {
 		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *req.TeamID)
 	}
-	return c.Patch(ctx, endpoint, req, nil)
+
+	fields := map[string]string{
+		"install_script":       req.InstallScript,
+		"uninstall_script":     req.UninstallScript,
+		"pre_install_query":    req.PreInstallQuery,
+		"post_install_script":  req.PostInstallScript,
+		"self_service":         strconv.FormatBool(req.SelfService),
+		"install_during_setup": strconv.FormatBool(req.InstallDuringSetup),
+	}
+
+	labelsInc := req.LabelsIncludeAny
+	if labelsInc == nil {
+		labelsInc = []string{}
+	}
+	labelsIncJSON, err := json.Marshal(labelsInc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal labels_include_any: %w", err)
+	}
+	fields["labels_include_any"] = string(labelsIncJSON)
+
+	labelsExc := req.LabelsExcludeAny
+	if labelsExc == nil {
+		labelsExc = []string{}
+	}
+	labelsExcJSON, err := json.Marshal(labelsExc)
+	if err != nil {
+		return fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
+	}
+	fields["labels_exclude_any"] = string(labelsExcJSON)
+
+	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
+		return fmt.Errorf("failed to patch software package: %w", err)
+	}
+	return nil
 }
 
 // addAppStoreAppResponse is the API response when adding a VPP app.

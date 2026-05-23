@@ -782,6 +782,135 @@ resource "fleetdm_software_package" "test" {
 `, serverURL, pkgPath)
 }
 
+func testAccSoftwarePackageResourceConfig_metadata(serverURL, pkgPath string, selfService bool) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_package" "test" {
+  package_path = %[2]q
+  filename     = "test-app.pkg"
+  self_service = %[3]t
+}
+`, serverURL, pkgPath, selfService)
+}
+
+// TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart drives a
+// create + metadata-only update and asserts that the PATCH that goes to
+// Fleet's /software/titles/{id}/package endpoint uses multipart/form-data —
+// not application/json. Fleet 4.x rejects the JSON shape with HTTP 400
+// ("failed to parse multipart form"), so this is the regression guard.
+func TestAccSoftwarePackageResource_metadataOnlyUpdateUsesMultipart(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type patchRecord struct {
+		contentType string
+		selfService string
+	}
+	var (
+		mu              sync.Mutex
+		patches         []patchRecord
+		titleSelfService bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
+		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_package": map[string]interface{}{
+					"title_id": 70,
+					"team_id":  0,
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/70" && r.Method == http.MethodGet:
+			mu.Lock()
+			selfService := titleSelfService
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_title": map[string]interface{}{
+					"id":             70,
+					"name":           "test-app.pkg",
+					"display_name":   "Test App",
+					"source":         "pkg",
+					"hosts_count":    0,
+					"versions_count": 1,
+					"software_package": map[string]interface{}{
+						"title_id":     70,
+						"platform":     "darwin",
+						"hash_sha256":  hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
+						"self_service": selfService,
+					},
+					"versions": []map[string]interface{}{
+						{"id": 1, "version": "1.0.0", "hosts_count": 0},
+					},
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/70/package" && r.Method == http.MethodPatch:
+			ct := r.Header.Get("Content-Type")
+			var selfService string
+			if strings.HasPrefix(ct, "multipart/form-data;") {
+				if err := r.ParseMultipartForm(1 << 20); err == nil {
+					selfService = r.FormValue("self_service")
+				}
+			}
+			mu.Lock()
+			patches = append(patches, patchRecord{contentType: ct, selfService: selfService})
+			titleSelfService = selfService == "true"
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/api/v1/fleet/software/titles/70/available_for_install" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSoftwarePackageResourceConfig_metadata(server.URL, pkgPath, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "self_service", "false"),
+				),
+			},
+			{
+				Config: testAccSoftwarePackageResourceConfig_metadata(server.URL, pkgPath, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_package.test", "self_service", "true"),
+					func(s *terraform.State) error {
+						mu.Lock()
+						defer mu.Unlock()
+						if len(patches) == 0 {
+							return fmt.Errorf("expected at least one PATCH on /software/titles/70/package, got none")
+						}
+						for i, p := range patches {
+							if !strings.HasPrefix(p.contentType, "multipart/form-data;") {
+								return fmt.Errorf("patch #%d Content-Type must start with multipart/form-data;, got %q", i, p.contentType)
+							}
+						}
+						last := patches[len(patches)-1]
+						if last.selfService != "true" {
+							return fmt.Errorf("expected last PATCH to carry self_service=true, got %q", last.selfService)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 // packageS3AttrTypes mirrors the attribute types of the package_s3 nested
 // block, used to construct types.Object values directly in tests.
 var packageS3AttrTypes = map[string]attr.Type{
