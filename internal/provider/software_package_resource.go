@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -22,6 +24,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -239,12 +242,23 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Default:     booldefault.StaticBool(false),
 			},
 			"labels_include_any": schema.ListAttribute{
-				Description: "List of label names. The software will be available for hosts that match any of these labels.",
+				Description: "List of label names. The software will be available for hosts that match any of these labels. " +
+					"Mutually exclusive with `labels_exclude_any` (Fleet's API rejects requests that set both). " +
+					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels. " +
+					"Fleet also supports `labels_include_all` (match hosts with *all* listed labels); that attribute is not yet exposed by this provider.",
 				Optional:    true,
 				ElementType: types.StringType,
+				Validators: []validator.List{
+					listvalidator.ConflictsWith(path.Expressions{
+						path.MatchRoot("labels_exclude_any"),
+					}...),
+				},
 			},
 			"labels_exclude_any": schema.ListAttribute{
-				Description: "List of label names. The software will not be available for hosts that match any of these labels.",
+				Description: "List of label names. The software will not be available for hosts that match any of these labels. " +
+					"Mutually exclusive with `labels_include_any` (Fleet's API rejects requests that set both); the conflict is enforced by the validator on `labels_include_any`. " +
+					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels. " +
+					"Fleet also supports `labels_include_all` (match hosts with *all* listed labels); that attribute is not yet exposed by this provider.",
 				Optional:    true,
 				ElementType: types.StringType,
 			},
@@ -486,13 +500,13 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 	// Set team_id if specified
 	uploadReq.TeamID = optionalIntPtr(plan.TeamID)
 
-	// Extract label names from lists
-	var diags = extractLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
+	// Extract label names from lists, preserving nil/empty distinction.
+	var diags = extractOptionalLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	diags = extractLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	diags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -660,6 +674,44 @@ func extractLabels(ctx context.Context, list types.List, target *[]string) diag.
 	return diags
 }
 
+// extractOptionalLabels mirrors extractLabels but preserves the nil-vs-empty
+// distinction needed for Fleet's software label endpoints. When the HCL
+// attribute is null/unknown, *target is left nil ("no change"). When the
+// HCL attribute is an empty list, *target points to an empty slice ("clear
+// all labels"). When populated, *target points to the list of names. See
+// PatchSoftwarePackageRequest / UploadSoftwarePackageRequest doc comments
+// in internal/fleetdm/software.go for the wire-level translation.
+func extractOptionalLabels(ctx context.Context, list types.List, target **[]string) diag.Diagnostics {
+	if list.IsNull() || list.IsUnknown() {
+		return nil
+	}
+	labels := []string{}
+	diags := list.ElementsAs(ctx, &labels, false)
+	if diags.HasError() {
+		return diags
+	}
+	*target = &labels
+	return nil
+}
+
+// labelsToStringListValue converts a SoftwareLabel slice from Fleet's API
+// response into a types.List of label-name strings for state. A nil
+// response slice maps to a null list — Fleet's JSON cannot distinguish
+// "field absent" from "field present and empty" once Go-decoded, so
+// "absent in response" is interpreted as "preserve prior state intent",
+// which is consistent with how other Optional fields in this resource
+// (e.g. Platform) handle empty responses.
+func labelsToStringListValue(labels []fleetdm.SoftwareLabel) types.List {
+	if labels == nil {
+		return types.ListNull(types.StringType)
+	}
+	values := make([]attr.Value, 0, len(labels))
+	for _, l := range labels {
+		values = append(values, types.StringValue(l.Name))
+	}
+	return types.ListValueMust(types.StringType, values)
+}
+
 // Read refreshes the Terraform state with the latest data.
 func (r *softwarePackageResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var state softwarePackageResourceModel
@@ -753,6 +805,20 @@ func (r *softwarePackageResource) readVPP(_ context.Context, title *fleetdm.Soft
 	// If app.Platform is empty, leave state.Platform unchanged (UseStateForUnknown handles this).
 	state.AppStoreID = types.StringValue(app.AdamID)
 	state.SelfService = types.BoolValue(app.SelfService)
+	// Refresh labels only when Fleet returned a concrete value AND the
+	// prior state already tracked the attribute. Writing into an
+	// Optional-not-Computed list whose prior state is null would: (a)
+	// trip the framework's "inconsistent result after apply" guard when
+	// the plan said null, and (b) create a perpetual diff loop because
+	// extractOptionalLabels translates HCL-null to "PATCH omits the
+	// field" — Fleet keeps the labels, Read pulls them back in, plan
+	// shows a diff that the next apply can't actually resolve.
+	if app.LabelsIncludeAny != nil && !state.LabelsIncludeAny.IsNull() {
+		state.LabelsIncludeAny = labelsToStringListValue(app.LabelsIncludeAny)
+	}
+	if app.LabelsExcludeAny != nil && !state.LabelsExcludeAny.IsNull() {
+		state.LabelsExcludeAny = labelsToStringListValue(app.LabelsExcludeAny)
+	}
 }
 
 // readPackageOrFMA populates state from a software package or Fleet Maintained App title.
@@ -786,6 +852,15 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	}
 	if pkg.HashSHA256 != "" {
 		state.PackageSHA256 = types.StringValue(pkg.HashSHA256)
+	}
+	// Refresh labels only when Fleet returned a concrete value AND the
+	// prior state already tracked the attribute (same convention and
+	// rationale as readVPP — see comment there).
+	if pkg.LabelsIncludeAny != nil && !state.LabelsIncludeAny.IsNull() {
+		state.LabelsIncludeAny = labelsToStringListValue(pkg.LabelsIncludeAny)
+	}
+	if pkg.LabelsExcludeAny != nil && !state.LabelsExcludeAny.IsNull() {
+		state.LabelsExcludeAny = labelsToStringListValue(pkg.LabelsExcludeAny)
 	}
 }
 
@@ -837,12 +912,16 @@ func (r *softwarePackageResource) updateVPP(ctx context.Context, titleID int, te
 	}
 
 	updateReq := &fleetdm.UpdateAppStoreAppRequest{
-		TeamID:           tid,
-		SelfService:      plan.SelfService.ValueBool(),
-		LabelsIncludeAny: []string{},
-		LabelsExcludeAny: []string{},
+		TeamID:      tid,
+		SelfService: plan.SelfService.ValueBool(),
 	}
 
+	// UpdateAppStoreAppRequest is JSON-encoded with no `omitempty` on the
+	// label fields, so a nil slice serializes as `null` (Fleet treats as
+	// "no change") and an empty slice as `[]` (Fleet treats as "clear").
+	// This matches the convention documented on UpdatePolicyRequest in
+	// policies.go. Pre-initializing to []string{} would force both fields
+	// to serialize as `[]`, violating Fleet's "only one of …" invariant.
 	var diags diag.Diagnostics
 	diags = extractLabels(ctx, plan.LabelsIncludeAny, &updateReq.LabelsIncludeAny)
 	resp.Diagnostics.Append(diags...)
@@ -930,7 +1009,10 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 		}
 	}
 
-	// Update metadata only (scripts, labels, self-service, etc.)
+	// Update metadata only (scripts, labels, self-service, etc.). Label
+	// pointers stay nil unless the HCL attribute is set — that's how we
+	// avoid sending both labels_include_any and labels_exclude_any in the
+	// same multipart body, which Fleet rejects ("Only one of …").
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
 		TeamID:             teamID,
 		InstallScript:      plan.InstallScript.ValueString(),
@@ -939,17 +1021,15 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 		PostInstallScript:  plan.PostInstallScript.ValueString(),
 		SelfService:        plan.SelfService.ValueBool(),
 		InstallDuringSetup: plan.AutomaticInstall.ValueBool(),
-		LabelsIncludeAny:   []string{},
-		LabelsExcludeAny:   []string{},
 	}
 
 	var diags diag.Diagnostics
-	diags = extractLabels(ctx, plan.LabelsIncludeAny, &patchReq.LabelsIncludeAny)
+	diags = extractOptionalLabels(ctx, plan.LabelsIncludeAny, &patchReq.LabelsIncludeAny)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	diags = extractLabels(ctx, plan.LabelsExcludeAny, &patchReq.LabelsExcludeAny)
+	diags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &patchReq.LabelsExcludeAny)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1025,12 +1105,12 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		AutomaticInstall:  plan.AutomaticInstall.ValueBool(),
 	}
 
-	uploadDiags := extractLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
+	uploadDiags := extractOptionalLabels(ctx, plan.LabelsIncludeAny, &uploadReq.LabelsIncludeAny)
 	resp.Diagnostics.Append(uploadDiags...)
 	if resp.Diagnostics.HasError() {
 		return false
 	}
-	uploadDiags = extractLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
+	uploadDiags = extractOptionalLabels(ctx, plan.LabelsExcludeAny, &uploadReq.LabelsExcludeAny)
 	resp.Diagnostics.Append(uploadDiags...)
 	if resp.Diagnostics.HasError() {
 		return false

@@ -372,13 +372,15 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 		if got := r.FormValue("install_during_setup"); got != "false" {
 			t.Errorf("expected install_during_setup form field 'false' (unset bool), got: %q", got)
 		}
-		// nil/unset label slices must serialize as "[]" so Fleet sees an
-		// explicit "clear" rather than an absent field.
-		if got := r.FormValue("labels_include_any"); got != "[]" {
-			t.Errorf("expected labels_include_any '[]' for unset slice, got: %q", got)
+		// When both label pointers are nil, neither field must appear
+		// in the multipart form. Fleet's API rejects requests that set
+		// both labels_include_any and labels_exclude_any (the original
+		// HTTP 400 we're guarding against).
+		if _, ok := r.MultipartForm.Value["labels_include_any"]; ok {
+			t.Errorf("expected labels_include_any absent for nil pointer, got: %q", r.FormValue("labels_include_any"))
 		}
-		if got := r.FormValue("labels_exclude_any"); got != "[]" {
-			t.Errorf("expected labels_exclude_any '[]' for unset slice, got: %q", got)
+		if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
+			t.Errorf("expected labels_exclude_any absent for nil pointer, got: %q", r.FormValue("labels_exclude_any"))
 		}
 
 		w.WriteHeader(http.StatusOK)
@@ -398,8 +400,10 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 }
 
 // TestClient_PatchSoftwarePackage_EncodesLabels verifies that a populated
-// label slice is JSON-encoded into the multipart form field (mirroring
-// UploadSoftwarePackage's encoding).
+// label slice is JSON-encoded into the multipart form field. Note: in
+// real provider usage the schema validator rejects HCL that sets both
+// labels_include_any and labels_exclude_any. This test exercises the
+// API client layer directly to pin the encoding shape.
 func TestClient_PatchSoftwarePackage_EncodesLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
@@ -416,9 +420,40 @@ func TestClient_PatchSoftwarePackage_EncodesLabels(t *testing.T) {
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	include := []string{"Macs on Sonoma", "Engineering"}
+	exclude := []string{"Exempt"}
 	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
-		LabelsIncludeAny: []string{"Macs on Sonoma", "Engineering"},
-		LabelsExcludeAny: []string{"Exempt"},
+		LabelsIncludeAny: &include,
+		LabelsExcludeAny: &exclude,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_ClearsLabelsViaEmpty verifies that a
+// pointer to an empty slice serializes as "[]" — the explicit-clear path
+// used when the user sets labels_include_any = [] in HCL.
+func TestClient_PatchSoftwarePackage_ClearsLabelsViaEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart: %v", err)
+		}
+		if got := r.FormValue("labels_include_any"); got != `[]` {
+			t.Errorf("expected labels_include_any '[]' for pointer-to-empty, got: %q", got)
+		}
+		// labels_exclude_any was never set on the request → must be absent.
+		if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
+			t.Errorf("expected labels_exclude_any absent when only include is set, got: %q", r.FormValue("labels_exclude_any"))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	empty := []string{}
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		LabelsIncludeAny: &empty,
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -539,6 +574,88 @@ func TestClient_UploadSoftwarePackage(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Errorf("expected 2 API calls (upload + get title), got: %d", callCount)
+	}
+}
+
+// TestClient_UploadSoftwarePackage_OmitsUnsetLabels verifies that nil
+// label pointers stay out of the multipart body. Mirrors the
+// PatchSoftwarePackage guarantee at the Create-path layer.
+func TestClient_UploadSoftwarePackage_OmitsUnsetLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/fleet/software/package" {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("parse multipart: %v", err)
+			}
+			if _, ok := r.MultipartForm.Value["labels_include_any"]; ok {
+				t.Errorf("expected labels_include_any absent for nil pointer, got: %q", r.FormValue("labels_include_any"))
+			}
+			if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
+				t.Errorf("expected labels_exclude_any absent for nil pointer, got: %q", r.FormValue("labels_exclude_any"))
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_package": map[string]interface{}{"team_id": 1, "title_id": 7},
+			})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/software/titles/7" {
+			json.NewEncoder(w).Encode(getSoftwareTitleResponse{SoftwareTitle: &SoftwareTitle{ID: 7, Name: "test.pkg"}})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 1
+	if _, err := client.UploadSoftwarePackage(context.Background(), &UploadSoftwarePackageRequest{
+		TeamID:   &teamID,
+		Software: []byte("x"),
+		Filename: "test.pkg",
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_UploadSoftwarePackage_ClearsLabelsViaEmpty verifies that a
+// pointer to an empty slice serializes as "[]" so a future Read can
+// faithfully reflect the explicit "no labels" intent.
+func TestClient_UploadSoftwarePackage_ClearsLabelsViaEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/fleet/software/package" {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("parse multipart: %v", err)
+			}
+			if got := r.FormValue("labels_include_any"); got != `[]` {
+				t.Errorf("expected labels_include_any '[]' for pointer-to-empty, got: %q", got)
+			}
+			if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
+				t.Errorf("expected labels_exclude_any absent when only include is set, got: %q", r.FormValue("labels_exclude_any"))
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"software_package": map[string]interface{}{"team_id": 1, "title_id": 8},
+			})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/software/titles/8" {
+			json.NewEncoder(w).Encode(getSoftwareTitleResponse{SoftwareTitle: &SoftwareTitle{ID: 8, Name: "test.pkg"}})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 1
+	empty := []string{}
+	if _, err := client.UploadSoftwarePackage(context.Background(), &UploadSoftwarePackageRequest{
+		TeamID:           &teamID,
+		Software:         []byte("x"),
+		Filename:         "test.pkg",
+		LabelsIncludeAny: &empty,
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
 }
 
