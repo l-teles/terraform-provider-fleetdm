@@ -168,11 +168,9 @@ want to try `state mv` first, do it on a copy of your state and confirm
 * The deprecated `fleetdm_software_package` continues to function during
   the deprecation window. You don't have to migrate everything in one
   go — each block can be moved independently.
-* New attributes (e.g. `labels_include_all`) and bug fixes
-  (e.g. `automatic_install` wiring on Fleet's package endpoints) are
-  planned for follow-up PRs on the new resources. The same fixes will
-  also land on the legacy resource during the deprecation window so
-  you're not stranded with broken behavior while you migrate. Track
+* New attributes and behavioral fixes will land on the new resources
+  first, and will also be backported to the legacy resource during the
+  deprecation window so you're not stranded while you migrate. Track
   the provider's release notes for specifics.
 * The legacy resource will be removed in the next major release. Plan
   to complete migrations before that release.

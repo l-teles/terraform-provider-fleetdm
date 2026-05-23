@@ -46,7 +46,7 @@ type packageSource interface {
 //   - automatic_install          — Optional+Computed bool, default false
 //     (NOTE: the wire encoding of this field is broken for type=package;
 //     parity with the legacy resource is preserved here intentionally
-//     pending the PR F follow-up that fixes the semantics per type.)
+//     pending a follow-up PR that fixes the semantics per type.)
 //   - labels_include_any         — Optional list, ConflictsWith labels_exclude_any
 //   - labels_exclude_any         — Optional list
 func softwareCommonSchemaAttributes() map[string]schema.Attribute {

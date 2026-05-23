@@ -190,7 +190,7 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	if title.AppStoreApp != nil {
 		// Fresh import vs previously-managed resource — see the VPP
 		// resource's Read for the rationale.
-		if state.Name.IsNull() || state.Name.ValueString() == "" {
+		if state.Name.IsNull() {
 			resp.Diagnostics.AddError(
 				"Wrong software type",
 				fmt.Sprintf("title %d is a VPP/App Store app; use fleetdm_software_app_store_app instead", titleID),

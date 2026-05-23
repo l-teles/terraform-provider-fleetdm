@@ -171,13 +171,14 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 	if title.AppStoreApp == nil {
 		// Two scenarios:
 		//   1. Fresh import: a custom-package / FMA title got imported into
-		//      this resource by mistake. Prior state's name is empty
-		//      (ImportState only sets id/title_id/team_id). Fail loudly so
-		//      the user can correct the resource type.
+		//      this resource by mistake. Prior state's Name is null
+		//      (ImportState only sets id/title_id/team_id; Create always
+		//      sets Name). Fail loudly so the user can correct the
+		//      resource type.
 		//   2. Previously-managed resource: this VPP title was destroyed
 		//      out of band and Fleet reused the ID for a non-VPP title.
 		//      RemoveResource so the next apply can recreate.
-		if state.Name.IsNull() || state.Name.ValueString() == "" {
+		if state.Name.IsNull() {
 			resp.Diagnostics.AddError(
 				"Wrong software type",
 				fmt.Sprintf("title %d is not a VPP/App Store app; use fleetdm_software_custom_package or fleetdm_software_fleet_maintained_app instead", titleID),
