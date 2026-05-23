@@ -1270,6 +1270,48 @@ func TestClient_ListPoliciesByPatchSoftwareTitleID_Global(t *testing.T) {
 	}
 }
 
+// TestClient_ListPoliciesByPatchSoftwareTitleID_FallbackInstallSoftware
+// verifies the fallback path: when Fleet's list response omits the
+// `patch_software` block on a type=patch policy (a documented Fleet
+// behavior — see mapPatchSoftware in the policy resource), the helper
+// still recognizes the policy via the always-echoed install_software
+// field. Without this fallback, detachPoliciesBeforeTitleDelete would
+// miss the policy and Fleet would 409 on DeleteSoftwarePackage with
+// "This software has a patch policy".
+func TestClient_ListPoliciesByPatchSoftwareTitleID_FallbackInstallSoftware(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
+			Policies: []Policy{
+				// type=patch policy with NO patch_software echoed — Fleet
+				// sometimes omits it; install_software is always present.
+				{ID: 11, Name: "Patch via install fallback", Type: "patch", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				// type=patch policy that DOES echo patch_software.
+				{ID: 12, Name: "Patch explicit", Type: "patch", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 42}},
+				// type=dynamic install_software policy — must NOT match here.
+				{ID: 13, Name: "Install only (dynamic)", Type: "dynamic", InstallSoftware: &PolicyAutomationSoftware{SoftwareTitleID: 42}},
+				// Different title.
+				{ID: 14, Name: "Patch other title", Type: "patch", PatchSoftware: &PolicyAutomationPatchSoftware{SoftwareTitleID: 99}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	matches, err := client.ListPoliciesByPatchSoftwareTitleID(context.Background(), 42, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches (id 11 via fallback, id 12 explicit), got %d: %+v", len(matches), matches)
+	}
+	gotIDs := []int{matches[0].ID, matches[1].ID}
+	wantIDs := []int{11, 12}
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Errorf("expected ids %v, got %v", wantIDs, gotIDs)
+	}
+}
+
 // TestClient_ListPoliciesByPatchSoftwareTitleID_Team verifies team scoping
 // hits the team-scoped endpoint.
 func TestClient_ListPoliciesByPatchSoftwareTitleID_Team(t *testing.T) {

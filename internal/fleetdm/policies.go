@@ -432,13 +432,22 @@ func (c *Client) SetPolicyInstallSoftwareTitleID(ctx context.Context, policyID i
 // whose patch_software automation references the given software title ID.
 // Mirrors ListPoliciesByInstallSoftwareTitleID — Fleet does not expose a
 // server-side filter, so the implementation paginates through all policies
-// in the scope and filters client-side on Policy.PatchSoftware.
+// in the scope and filters client-side.
 //
-// Note: for type=patch policies Fleet auto-creates an install_software
-// automation pointing at the same title, so most patch policies will also
-// appear in ListPoliciesByInstallSoftwareTitleID. Callers that want a full
-// picture of "everything blocking delete on this title" should call both
-// list helpers and deduplicate by policy id.
+// Fleet's list endpoint does NOT always echo the `patch_software` field on
+// `type=patch` policies, even when the policy was created with a
+// patch_software_title_id (same observation that drives the
+// install_software fallback in mapPatchSoftware on the policy resource).
+// Fleet does always echo `install_software` for `type=patch` policies — it
+// auto-creates an install_software automation pointing at the patch target,
+// and the two title_ids are equal. We use that as a fallback so callers
+// looking up "everything blocking delete on this title via patch
+// automation" don't miss those policies and run into a 409 on
+// DeleteSoftwarePackage with the "This software has a patch policy" error.
+//
+// Note: for type=patch policies the SAME policy will typically appear in
+// both ListPoliciesByPatchSoftwareTitleID and ListPoliciesByInstallSoftwareTitleID.
+// Callers that combine the two lists should deduplicate by policy id.
 func (c *Client) ListPoliciesByPatchSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
 	endpoint := "/global/policies"
 	if isTeamScoped(teamID) {
@@ -460,7 +469,13 @@ func (c *Client) ListPoliciesByPatchSoftwareTitleID(ctx context.Context, titleID
 		}
 
 		for _, p := range resp.Policies {
-			if p.PatchSoftware != nil && p.PatchSoftware.SoftwareTitleID == titleID {
+			switch {
+			case p.PatchSoftware != nil && p.PatchSoftware.SoftwareTitleID == titleID:
+				matches = append(matches, p)
+			case p.Type == "patch" && p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID:
+				// Fallback for the case where Fleet's list response omits
+				// the `patch_software` block on a type=patch policy. The
+				// install_software echo is reliable in that scenario.
 				matches = append(matches, p)
 			}
 		}

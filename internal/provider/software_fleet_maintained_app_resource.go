@@ -439,7 +439,7 @@ func (r *softwareFleetMaintainedAppResource) Delete(ctx context.Context, req res
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags != nil {
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 		return
 	}

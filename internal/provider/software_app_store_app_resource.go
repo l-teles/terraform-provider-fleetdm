@@ -391,6 +391,15 @@ func (r *softwareAppStoreAppResource) Delete(ctx context.Context, req resource.D
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
+	// VPP titles can be the target of install_software policy automation
+	// (Fleet's policies API accepts any software_title_id, VPP included).
+	// Patch policies don't apply to VPP, but the shared helper handles the
+	// patch list as a no-op when the title has no patch references.
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
+		return
+	}
+
 	err := r.client.DeleteSoftwarePackage(ctx, titleID, teamID)
 	if err != nil && !isNotFound(err) {
 		resp.Diagnostics.AddError(

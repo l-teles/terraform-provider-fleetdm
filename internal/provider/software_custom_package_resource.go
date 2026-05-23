@@ -781,8 +781,8 @@ func (r *softwareCustomPackageResource) Delete(ctx context.Context, req resource
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	if diag := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diag != nil {
-		resp.Diagnostics.Append(diag...)
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags.HasError() {
+		resp.Diagnostics.Append(diags...)
 		return
 	}
 

@@ -1730,7 +1730,7 @@ func (r *softwarePackageResource) Delete(ctx context.Context, req resource.Delet
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags != nil {
+	if diags := detachPoliciesBeforeTitleDelete(ctx, r.client, titleID, teamID); diags.HasError() {
 		resp.Diagnostics.Append(diags...)
 		return
 	}
