@@ -319,8 +319,13 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				ElementType: types.StringType,
 			},
 			"automatic_install_policies": schema.ListNestedAttribute{
-				Description: "Computed. List of Fleet policies that auto-install this software title on hosts that fail the policy.",
-				Computed:    true,
+				Description: "**Read-only.** List of Fleet policies whose `install_software` automation currently points at this title. " +
+					"This attribute is read-only because Fleet's REST API does not accept a policies array on the software-title endpoints — " +
+					"the relationship is owned on the policy side. To attach an install-software policy from Terraform, create a " +
+					"`fleetdm_policy` resource and set its `software_title_id` to this resource's `title_id`; to detach, clear that field " +
+					"or delete the policy. The list is also populated when this resource was created with `automatic_install = true` " +
+					"(for `type = \"fleet_maintained\"`) or when an admin attaches an automation via Fleet's UI.",
+				Computed: true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"id":   schema.Int64Attribute{Computed: true},

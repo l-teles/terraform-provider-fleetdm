@@ -247,7 +247,7 @@ so the local-file source has always been a no-op when content is unchanged.
 
 ### Read-Only
 
-- `automatic_install_policies` (Attributes List) Computed. List of Fleet policies that auto-install this software title on hosts that fail the policy. (see [below for nested schema](#nestedatt--automatic_install_policies))
+- `automatic_install_policies` (Attributes List) **Read-only.** List of Fleet policies whose `install_software` automation currently points at this title. This attribute is read-only because Fleet's REST API does not accept a policies array on the software-title endpoints — the relationship is owned on the policy side. To attach an install-software policy from Terraform, create a `fleetdm_policy` resource and set its `software_title_id` to this resource's `title_id`; to detach, clear that field or delete the policy. The list is also populated when this resource was created with `automatic_install = true` (for `type = "fleet_maintained"`) or when an admin attaches an automation via Fleet's UI. (see [below for nested schema](#nestedatt--automatic_install_policies))
 - `id` (Number) The unique identifier (internal, same as title_id).
 - `name` (String) The name of the software (extracted from the package or App Store).
 - `title_id` (Number) The software title ID.

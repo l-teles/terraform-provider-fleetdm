@@ -46,7 +46,13 @@ resource "fleetdm_software_fleet_maintained_app" "chrome_custom" {
 
 ### Optional
 
-- `automatic_install_policy` (Boolean) When true, Fleet automatically creates a policy that installs this software on hosts missing it. Distinct from `install_during_setup`, which flags the title for installation during the first-boot Setup Assistant flow. Forces resource replacement because Fleet only honors this flag at title creation. Computed-policy IDs are exposed via the `automatic_install_policies` attribute.
+- `automatic_install_policy` (Boolean) One-shot create-time shortcut: when `true`, Fleet itself mints a single `install_software` policy pointing at this title (via the `automatic_install` body field on the Add Package / Add Fleet Maintained App endpoint). The generated policy is owned by Fleet, not by Terraform — its IDs surface in the read-only `automatic_install_policies` attribute, but it is not represented as a `fleetdm_policy` resource in your state. 
+
+Forces resource replacement because Fleet only honors this flag at title creation; toggling it after the title exists has no supported wire path. 
+
+**To manage install-software policies as first-class Terraform resources** — multiple policies, custom queries, label scoping, drift detection on the policy itself — leave this attribute unset and instead declare one or more `fleetdm_policy` resources with `software_title_id = <this title_id>`. That is how Fleet's API models the relationship; the software-title endpoints do not accept a policy list on input. 
+
+Distinct from `install_during_setup`, which flags the title for installation during the first-boot Setup Assistant flow via a separate Fleet endpoint.
 - `categories` (List of String) Zero or more self-service categories the software appears under on the end-user's *My device* page. Supported values are documented under the `software` section at https://fleetdm.com/docs/configuration/yaml-files — at time of writing: `Browsers`, `Communication`, `Developer tools`, `Productivity`, `Security`, `Utilities`. To clear previously-set categories, set this attribute to `[]` explicitly; omitting it preserves Fleet's existing categories.
 - `display_name` (String) End-user-visible name shown for this software in Fleet's UI (e.g. on the Self Service page). Optional override for Fleet's auto-derived name (the installer's intrinsic name for custom packages, the App Store metadata for VPP, the catalog name for Fleet Maintained Apps). Computed when omitted.
 - `install_during_setup` (Boolean) Whether to install this software during the device's Setup Assistant / first-boot setup experience. Routes to Fleet's `PUT /setup_experience/software` endpoint, which manages a per-team-per-platform set of titles flagged for setup-time installation. Distinct from `automatic_install_policy`, which creates a Fleet policy that installs the software on hosts missing it (the policy-based path). 
@@ -67,7 +73,11 @@ Multi-resource race: when two `fleetdm_software_*` resources on the same team an
 
 ### Read-Only
 
-- `automatic_install_policies` (Attributes List) Computed. The list of Fleet policies that auto-install this software title on hosts that fail the policy. Populated by Fleet when `automatic_install_policy = true` is set at Create time (for resources that support it), or when an admin attaches an `install_software` policy via Fleet's UI. Each entry exposes the policy `id` and `name` so you can reference them from other Terraform resources. (see [below for nested schema](#nestedatt--automatic_install_policies))
+- `automatic_install_policies` (Attributes List) **Read-only.** List of Fleet policies whose `install_software` automation currently points at this title. Each entry exposes the policy `id` and `name` so you can reference them from other Terraform resources. 
+
+This attribute is read-only because Fleet's REST API does not accept a policies array on any of the software-title endpoints (`POST /software/package`, `PATCH /software/titles/{id}/package`, the Fleet Maintained Apps add endpoint, or the VPP add endpoint) — the relationship is owned on the *policy* side. To attach an install-software policy to this title from Terraform, create or update a `fleetdm_policy` resource and set its `software_title_id` to this resource's `title_id`. To detach, clear `software_title_id` on the policy (or delete the policy). 
+
+The list is populated when Fleet creates the auto-install policy because `automatic_install_policy = true` was set at this resource's Create time, when a `fleetdm_policy` elsewhere in your configuration points at this title, or when an admin attaches an `install_software` automation via Fleet's UI. (see [below for nested schema](#nestedatt--automatic_install_policies))
 - `id` (Number) The unique identifier (internal, same as title_id).
 - `name` (String) The name of the software, as parsed by Fleet from the installer or App Store metadata.
 - `title_id` (Number) The software title ID.
