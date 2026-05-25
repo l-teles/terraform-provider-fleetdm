@@ -335,6 +335,43 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 		state.Categories = stringSliceToStringList(pkg.Categories)
 	}
 
+	// Backfill fleet_maintained_app_id when state doesn't already know it.
+	// The title GET doesn't echo the upstream FMA catalog ID, so a freshly
+	// imported resource has this field null while HCL provides a real value.
+	// Without backfill, the next plan reads null -> <id> and the
+	// RequiresReplace plan modifier on fleet_maintained_app_id schedules a
+	// destroy/recreate of an otherwise-correct resource. Resolve by listing
+	// the team's FMA catalog and matching on software_title_id. Both the
+	// list-error and no-match paths AddError + return: writing state with
+	// FleetMaintainedAppID still null would only defer the bug to the next
+	// plan, which is the same destroy/recreate diff the backfill exists to
+	// prevent.
+	if state.FleetMaintainedAppID.IsNull() {
+		apps, err := r.client.ListFleetMaintainedApps(ctx, teamID)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Could not resolve fleet_maintained_app_id from catalog",
+				fmt.Sprintf("Listing Fleet Maintained Apps failed: %s. Retry the operation; if the failure persists, verify the API token has access to the FMA catalog endpoint.", err.Error()),
+			)
+			return
+		}
+		var matched bool
+		for _, app := range apps {
+			if app.SoftwareTitleID != nil && *app.SoftwareTitleID == titleID {
+				state.FleetMaintainedAppID = types.Int64Value(int64(app.ID))
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			resp.Diagnostics.AddError(
+				"Could not resolve fleet_maintained_app_id for imported title",
+				fmt.Sprintf("Title %d is not bound to any Fleet Maintained App in the catalog for this team. This usually means the title is a custom-uploaded package or VPP app imported into the wrong resource type, or the catalog list did not include the matching entry. Verify the title is FMA-managed and that the import was issued with the correct team_id.", titleID),
+			)
+			return
+		}
+	}
+
 	diags = resp.State.Set(ctx, state)
 	resp.Diagnostics.Append(diags...)
 }
@@ -490,7 +527,9 @@ func (r *softwareFleetMaintainedAppResource) ImportState(ctx context.Context, re
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), int64(tid))...)
 	}
 
-	// fleet_maintained_app_id can't be reconstructed from the title GET
-	// (the response doesn't echo the upstream FMA catalog ID). Users must
-	// set it in HCL after import; the next plan + apply will reconcile.
+	// fleet_maintained_app_id is left unset here; the Read that follows
+	// import resolves it by listing the team's FMA catalog and matching on
+	// software_title_id. If no match is found (e.g. a non-FMA title imported
+	// into this resource), the field stays null and the next plan will
+	// surface a forced-replacement diff against the user-provided ID.
 }
