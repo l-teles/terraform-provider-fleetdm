@@ -214,6 +214,26 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"software_title_id": id})
 
+		// GET /software/fleet_maintained_apps — catalog list. Used by Read
+		// to backfill fleet_maintained_app_id on imported resources. Returns
+		// a single entry when this fake has minted an FMA-shaped title and
+		// recorded the catalog ID on Create; otherwise an empty catalog.
+		case r.URL.Path == "/api/v1/fleet/software/fleet_maintained_apps" && r.Method == http.MethodGet:
+			f.mu.Lock()
+			apps := []map[string]any{}
+			if f.titleSource == "fma" && f.fmaCreateAppID != 0 {
+				apps = append(apps, map[string]any{
+					"id":                f.fmaCreateAppID,
+					"name":              f.titleName,
+					"slug":              "test/darwin",
+					"platform":          "darwin",
+					"version":           "1.0.0",
+					"software_title_id": f.titleID,
+				})
+			}
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"fleet_maintained_apps": apps})
+
 		// POST /software/fleet_maintained_apps — FMA Create (JSON).
 		case r.URL.Path == "/api/v1/fleet/software/fleet_maintained_apps" && r.Method == http.MethodPost:
 			var body struct {

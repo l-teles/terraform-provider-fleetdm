@@ -85,6 +85,68 @@ resource "fleetdm_software_fleet_maintained_app" "imp" {
 	})
 }
 
+// TestAccSoftwareFleetMaintainedAppResource_importBackfillsCatalogID
+// verifies the post-import Read resolves fleet_maintained_app_id by
+// listing the team's FMA catalog. Without this backfill, the imported
+// state has fleet_maintained_app_id=null while the HCL config provides
+// a real value, and the RequiresReplace plan modifier on that field
+// schedules a destroy/recreate of the freshly imported title.
+func TestAccSoftwareFleetMaintainedAppResource_importBackfillsCatalogID(t *testing.T) {
+	const catalogID = 7777
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 555
+	f.titleName = "test-app"
+	f.titleSource = "fma"
+	// Simulate a previously-created FMA title: the catalog ID would have
+	// been set on Create; we set it directly so the list endpoint reports
+	// the title-to-catalog mapping at import time.
+	f.fmaCreateAppID = catalogID
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "imp" {
+  fleet_maintained_app_id = %[2]d
+}
+`, f.srv.URL, catalogID)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:             cfg,
+				ResourceName:       "fleetdm_software_fleet_maintained_app.imp",
+				ImportState:        true,
+				ImportStateId:      "555",
+				ImportStatePersist: true,
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					if len(states) != 1 {
+						return fmt.Errorf("expected 1 imported state, got %d", len(states))
+					}
+					got := states[0].Attributes["fleet_maintained_app_id"]
+					want := fmt.Sprintf("%d", catalogID)
+					if got != want {
+						return fmt.Errorf("expected fleet_maintained_app_id=%s after import backfill, got %q", want, got)
+					}
+					return nil
+				},
+			},
+			{
+				// Locks in the actual fix: against the imported state, the HCL
+				// must produce a no-op plan. Without the Read-time backfill,
+				// fleet_maintained_app_id would still be null in state and the
+				// RequiresReplace plan modifier would schedule a destroy/recreate
+				// here, failing the step.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
 // TestAccSoftwareFleetMaintainedAppResource_labelLifecycle drives Create
 // then several Updates that switch label types. FMA Updates go through
 // the multipart PATCH /software/titles/{id}/package endpoint, so the
