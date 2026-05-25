@@ -462,6 +462,21 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Apply-side counterpart of the ValidateConfig deferral: ValidateConfig
+	// allows `patch_software_title_id` to be Unknown for type=patch policies
+	// so cross-resource references can plan. By Create time the reference
+	// has resolved — if it resolved to Null, we surface the friendlier
+	// "required" error here instead of letting Fleet's API reject the
+	// request with a less actionable 4xx.
+	if data.Type.ValueString() == "patch" && data.PatchSoftwareTitleID.IsNull() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("patch_software_title_id"),
+			"Missing required value",
+			"patch_software_title_id is required when type = \"patch\". The configured value resolved to null at apply time.",
+		)
+		return
+	}
+
 	createReq := fleetdm.CreatePolicyRequest{
 		Name:                 data.Name.ValueString(),
 		Description:          data.Description.ValueString(),
