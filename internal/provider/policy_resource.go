@@ -339,7 +339,15 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	// policy". Unknown values defer to the API's runtime check.
 	teamKnown := !data.TeamID.IsUnknown()
 	teamSet := teamKnown && !data.TeamID.IsNull() && data.TeamID.ValueInt64() > 0
-	patchTitleSet := !data.PatchSoftwareTitleID.IsNull() && !data.PatchSoftwareTitleID.IsUnknown()
+	// `patch_software_title_id` is required when type = "patch", but the
+	// "required" check must only fire when the value is KNOWN-null. Treating
+	// Unknown as "not set" rejects valid configurations where the field
+	// references another resource's attribute (e.g.,
+	// `values(fleetdm_software_fleet_maintained_app.X)[0].id`), because
+	// ValidateConfig runs before cross-resource references resolve. Mirrors
+	// the existing `query`/`type` "decided vs unknown" pattern below.
+	patchTitleDecided := !data.PatchSoftwareTitleID.IsUnknown()
+	patchTitleSet := patchTitleDecided && !data.PatchSoftwareTitleID.IsNull()
 	// Same rationale for type: only enforce patch-vs-dynamic constraints
 	// when type is known. An Unknown type (e.g., referenced from another
 	// computed value) might still resolve to "patch" at apply time.
@@ -367,7 +375,9 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	platformConfigured := !data.Platform.IsUnknown() && !data.Platform.IsNull()
 
 	if isPatchType {
-		if !patchTitleSet {
+		// Only flag the required-missing error when the value is fully known
+		// to be null. Unknown values defer to the API's runtime check.
+		if patchTitleDecided && !patchTitleSet {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("patch_software_title_id"),
 				"Missing required value",
