@@ -168,8 +168,12 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "ID of the Fleet-maintained software title to create a patch policy for. Required when `type = \"patch\"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._",
 			},
 			"software_title_id": schema.Int64Attribute{
-				Optional:            true,
-				MarkdownDescription: "ID of the software title to install if the policy fails. Set to `null` to clear the install-software automation. _Available in Fleet Premium, team policies only._",
+				Optional: true,
+				MarkdownDescription: "ID of the software title to install when this policy fails. Wires Fleet's `install_software` policy automation to a software title — this is the **canonical place to attach an install-software policy to a software title from Terraform**, because Fleet's API models the relationship on the policy side (the `fleetdm_software_custom_package` / `fleetdm_software_app_store_app` / `fleetdm_software_fleet_maintained_app` resources expose the resulting attachments through their read-only `automatic_install_policies` attribute, but do not accept them as input). " +
+					"Typically referenced as `fleetdm_software_custom_package.<name>.title_id`. " +
+					"Set to `null` to clear the install-software automation. " +
+					"Note: when a software resource is created with `automatic_install_policy = true`, Fleet mints its own policy under the hood — that policy is not managed by Terraform and should not be re-declared here. " +
+					"_Available in Fleet Premium, team policies only._",
 			},
 			"script_id": schema.Int64Attribute{
 				Optional:            true,
