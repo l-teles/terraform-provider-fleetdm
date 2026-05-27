@@ -111,6 +111,88 @@ func TestAccSoftwareCustomPackageResource_basic(t *testing.T) {
 	})
 }
 
+// TestAccSoftwareCustomPackageResource_omittedScriptsNoDiff guards the
+// install_script / uninstall_script perpetual-diff regression on the custom
+// package resource (shares softwareScriptAttributes() with FMA). When the
+// config omits both scripts, Fleet generates defaults for the package type
+// and returns them on the title GET. Because the attributes are
+// Optional+Computed, the provider must adopt Fleet's values into state without
+// a plan diff. Under the old Optional-only schema this apply failed with a
+// "was null, but now ..." inconsistent-result error.
+func TestAccSoftwareCustomPackageResource_omittedScriptsNoDiff(t *testing.T) {
+	const defaultInstall = "#!/bin/sh\ninstaller -pkg \"$INSTALLER_PATH\" -target /\n"
+	const defaultUninstall = "#!/bin/sh\n/usr/local/bin/uninstaller --quiet\n"
+
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/software/package" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_package": map[string]any{"title_id": 43, "team_id": 0},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/43" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
+					"id":             43,
+					"name":           "test-app.pkg",
+					"source":         "pkg",
+					"hosts_count":    0,
+					"versions_count": 1,
+					"software_package": map[string]any{
+						"title_id":         43,
+						"platform":         "darwin",
+						"hash_sha256":      hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
+						"install_script":   defaultInstall,
+						"uninstall_script": defaultUninstall,
+					},
+					"versions": []map[string]any{
+						{"id": 1, "version": "1.0.0", "hosts_count": 0},
+					},
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/43/available_for_install" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path = %[2]q
+  filename     = "test-app.pkg"
+}
+`, server.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "title_id", "43"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "install_script", defaultInstall),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "uninstall_script", defaultUninstall),
+				),
+			},
+		},
+	})
+}
+
 // TestAccSoftwareCustomPackageResource_metadataUpdateUsesMultipart verifies
 // that a metadata-only Update produces a PATCH that is multipart/form-data
 // (Fleet's PATCH /software/titles/{id}/package endpoint rejects JSON).

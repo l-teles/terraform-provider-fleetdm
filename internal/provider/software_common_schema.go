@@ -220,12 +220,20 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 func softwareScriptAttributes() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"install_script": schema.StringAttribute{
-			Description: "Script to run during installation. Optional — Fleet picks a default for the package type when omitted.",
+			Description: "Script to run during installation. When omitted, Fleet generates a default install command for the package type and returns it (Computed), so omitting it adopts Fleet's default without a perpetual plan diff.",
 			Optional:    true,
+			Computed:    true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.UseStateForUnknown(),
+			},
 		},
 		"uninstall_script": schema.StringAttribute{
-			Description: "Script to run during uninstallation. Optional — Fleet picks a default for the package type when omitted.",
+			Description: "Script to run during uninstallation. When omitted, Fleet generates a default uninstall command for the package type and returns it (Computed), so omitting it adopts Fleet's default without a perpetual plan diff.",
 			Optional:    true,
+			Computed:    true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.UseStateForUnknown(),
+			},
 		},
 		"pre_install_query": schema.StringAttribute{
 			Description: "An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.",
