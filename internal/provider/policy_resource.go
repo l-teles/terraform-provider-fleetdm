@@ -339,7 +339,15 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	// policy". Unknown values defer to the API's runtime check.
 	teamKnown := !data.TeamID.IsUnknown()
 	teamSet := teamKnown && !data.TeamID.IsNull() && data.TeamID.ValueInt64() > 0
-	patchTitleSet := !data.PatchSoftwareTitleID.IsNull() && !data.PatchSoftwareTitleID.IsUnknown()
+	// `patch_software_title_id` is required when type = "patch", but the
+	// "required" check must only fire when the value is KNOWN-null. Treating
+	// Unknown as "not set" rejects valid configurations where the field
+	// references another resource's attribute (e.g.,
+	// `values(fleetdm_software_fleet_maintained_app.X)[0].id`), because
+	// ValidateConfig runs before cross-resource references resolve. Mirrors
+	// the existing `query`/`type` "decided vs unknown" pattern below.
+	patchTitleDecided := !data.PatchSoftwareTitleID.IsUnknown()
+	patchTitleSet := patchTitleDecided && !data.PatchSoftwareTitleID.IsNull()
 	// Same rationale for type: only enforce patch-vs-dynamic constraints
 	// when type is known. An Unknown type (e.g., referenced from another
 	// computed value) might still resolve to "patch" at apply time.
@@ -367,7 +375,9 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	platformConfigured := !data.Platform.IsUnknown() && !data.Platform.IsNull()
 
 	if isPatchType {
-		if !patchTitleSet {
+		// Only flag the required-missing error when the value is fully known
+		// to be null. Unknown values defer to the API's runtime check.
+		if patchTitleDecided && !patchTitleSet {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("patch_software_title_id"),
 				"Missing required value",
@@ -449,6 +459,21 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Apply-side counterpart of the ValidateConfig deferral: ValidateConfig
+	// allows `patch_software_title_id` to be Unknown for type=patch policies
+	// so cross-resource references can plan. By Create time the reference
+	// has resolved — if it resolved to Null, we surface the friendlier
+	// "required" error here instead of letting Fleet's API reject the
+	// request with a less actionable 4xx.
+	if data.Type.ValueString() == "patch" && data.PatchSoftwareTitleID.IsNull() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("patch_software_title_id"),
+			"Missing required value",
+			"patch_software_title_id is required when type = \"patch\". The configured value resolved to null at apply time.",
+		)
 		return
 	}
 
