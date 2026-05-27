@@ -168,6 +168,25 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 	} else if plan.Platform.IsNull() || plan.Platform.IsUnknown() {
 		plan.Platform = types.StringValue("")
 	}
+	// install_script / uninstall_script are Optional+Computed: when the user
+	// omits them, Fleet generates a default for the package type and returns
+	// it on the GetSoftwareTitle round-trip inside AddFleetMaintainedApp.
+	// Hydrate the plan with Fleet's value so the post-apply state holds a
+	// known value (the framework rejects unknown values in saved state) and
+	// the next plan sees no diff. Mirror Read's non-empty guard, falling back
+	// to "" only if Fleet returned nothing and the value is still unknown.
+	if title.SoftwarePackage != nil && title.SoftwarePackage.InstallScript != "" {
+		plan.InstallScript = types.StringValue(title.SoftwarePackage.InstallScript)
+	}
+	if plan.InstallScript.IsUnknown() {
+		plan.InstallScript = types.StringValue("")
+	}
+	if title.SoftwarePackage != nil && title.SoftwarePackage.UninstallScript != "" {
+		plan.UninstallScript = types.StringValue(title.SoftwarePackage.UninstallScript)
+	}
+	if plan.UninstallScript.IsUnknown() {
+		plan.UninstallScript = types.StringValue("")
+	}
 	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 
 	// Persist a baseline state right after the FMA title is created in

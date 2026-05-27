@@ -135,7 +135,7 @@ Distinct from `install_during_setup`, which flags the title for installation dur
 When the attribute is **omitted from HCL**, the provider leaves Fleet's setup-experience set untouched and adopts whatever value Fleet returns — managing the field is opt-in. Set it explicitly to `true` or `false` to drive the value from Terraform. This avoids spurious true → false flips after `terraform import` of a title that was previously in the set. 
 
 Multi-resource race: when two `fleetdm_software_*` resources on the same team and platform both flip `install_during_setup = true` in a single `terraform apply`, the provider serializes the updates per-(team, platform) inside the API client to avoid losing one — but cross-process race conditions (another `terraform apply` against the same team/platform at the same time, or a concurrent Fleet UI change) remain a user concern.
-- `install_script` (String) Script to run during installation. Optional — Fleet picks a default for the package type when omitted.
+- `install_script` (String) Script to run during installation. When omitted, Fleet generates a default install command for the package type and returns it (Computed), so omitting it adopts Fleet's default without a perpetual plan diff.
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` and `labels_include_all`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `labels_include_all` (List of String) List of label names. The software will be available for hosts that match *all* of these labels. Mutually exclusive with `labels_include_any` and `labels_exclude_any`; the conflict is enforced by validators on the other two. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match *any* of these labels. Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
@@ -147,7 +147,7 @@ Multi-resource race: when two `fleetdm_software_*` resources on the same team an
 - `pre_install_query` (String) An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.
 - `self_service` (Boolean) Whether the software is available for self-service installation by end users. Defaults to false.
 - `team_id` (Number) The ID of the team this software belongs to. Required for Fleet Premium.
-- `uninstall_script` (String) Script to run during uninstallation. Optional — Fleet picks a default for the package type when omitted.
+- `uninstall_script` (String) Script to run during uninstallation. When omitted, Fleet generates a default uninstall command for the package type and returns it (Computed), so omitting it adopts Fleet's default without a perpetual plan diff.
 
 ### Read-Only
 

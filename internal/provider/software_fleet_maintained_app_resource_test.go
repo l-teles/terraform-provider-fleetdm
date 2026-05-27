@@ -299,6 +299,70 @@ func TestAccSoftwareFleetMaintainedAppResource_basic(t *testing.T) {
 	})
 }
 
+// TestAccSoftwareFleetMaintainedAppResource_omittedScriptsNoDiff guards the
+// install_script / uninstall_script perpetual-diff regression. When the config
+// omits both scripts, Fleet generates defaults and returns them on the title
+// GET. Because the attributes are Optional+Computed, the provider must adopt
+// Fleet's values into state without producing a plan diff. The terraform
+// testing harness runs an implicit plan after the apply step and fails on any
+// non-empty plan — so under the old Optional-only schema (which forced the
+// planned value back to the config's null) this step would fail with a
+// "script -> null" diff. The fix makes it converge.
+func TestAccSoftwareFleetMaintainedAppResource_omittedScriptsNoDiff(t *testing.T) {
+	const defaultInstall = "#!/bin/sh\ninstaller -pkg \"$INSTALLER_PATH\" -target /\n"
+	const defaultUninstall = "#!/bin/sh\n/usr/local/bin/uninstaller --quiet\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/fleet/software/fleet_maintained_apps" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"software_title_id": 201})
+		case r.URL.Path == "/api/v1/fleet/software/titles/201" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"software_title": map[string]any{
+					"id":             201,
+					"name":           "Firefox",
+					"source":         "pkg_packages",
+					"hosts_count":    0,
+					"versions_count": 1,
+					"software_package": map[string]any{
+						"name":             "Firefox",
+						"version":          "125.0",
+						"platform":         "darwin",
+						"self_service":     true,
+						"install_script":   defaultInstall,
+						"uninstall_script": defaultUninstall,
+					},
+					"versions": []map[string]any{
+						{"id": 1, "version": "125.0", "hosts_count": 0},
+					},
+				},
+			})
+		case r.URL.Path == "/api/v1/fleet/software/titles/201/available_for_install" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"policies": []map[string]any{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSoftwareFleetMaintainedAppConfig(server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "title_id", "201"),
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "install_script", defaultInstall),
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "uninstall_script", defaultUninstall),
+				),
+			},
+		},
+	})
+}
+
 // TestAccSoftwareFleetMaintainedAppResource_installDuringSetupLifecycle
 // drives Create-true → Update-false → Update-true again and asserts the
 // out-of-band PUT /setup_experience/software fires on each transition.
