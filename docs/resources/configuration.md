@@ -67,8 +67,8 @@ resource "fleetdm_configuration" "main" {
 - `host_expiry_enabled` (Boolean) Whether to automatically remove hosts that have not checked in.
 - `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in.
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
-- `org_logo_url` (String) URL of the organization logo.
-- `org_logo_url_light_background` (String) URL of the organization logo for light backgrounds.
+- `org_logo_url` (String) URL of the organization logo. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.
+- `org_logo_url_light_background` (String) URL of the organization logo for light backgrounds. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.
 - `query_reports_disabled` (Boolean) Whether query reports are disabled.
 - `scripts_disabled` (Boolean) Whether scripts are disabled.
 - `server_url` (String) The Fleet server URL. Changing this requires enrolled hosts to re-enroll.

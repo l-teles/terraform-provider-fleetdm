@@ -98,18 +98,24 @@ func TestAccConfigurationResource_newFields(t *testing.T) {
 					resource.TestCheckResourceAttr("fleetdm_configuration.test", "org_logo_url_light_background", "https://example.com/light-logo.png"),
 				),
 			},
-			// Update – toggle ai_features and clear the logo.
+			// Update – toggle ai_features while keeping the logo unchanged.
+			// Note: on Fleet >= 4.86 org_logo_url_light_background is a deprecated
+			// alias for org_logo_url_light_mode. Fleet rejects updating the alias to
+			// a value that diverges from org_logo_url_light_mode (HTTP 422), and an
+			// empty value is ignored rather than clearing the logo. So the logo can
+			// be set once but not changed/cleared via this field; we keep it stable
+			// here and exercise the update path through ai_features_disabled instead.
 			{
 				Config: testAccConfigurationResourceConfigNewFields(
 					"New Fields Test Org",
-					true,  // enable_analytics
-					false, // ai_features_disabled
-					"",    // org_logo_url_light_background
+					true,                                 // enable_analytics
+					false,                                // ai_features_disabled
+					"https://example.com/light-logo.png", // org_logo_url_light_background (unchanged)
 				),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_configuration.test", "enable_analytics", "true"),
 					resource.TestCheckResourceAttr("fleetdm_configuration.test", "ai_features_disabled", "false"),
-					resource.TestCheckResourceAttr("fleetdm_configuration.test", "org_logo_url_light_background", ""),
+					resource.TestCheckResourceAttr("fleetdm_configuration.test", "org_logo_url_light_background", "https://example.com/light-logo.png"),
 				),
 			},
 		},

@@ -37,7 +37,7 @@ jobs:
             - run: go mod download
             - run: go build -v .
             - name: Run linters
-              uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+              uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
 
     # -------------------------------------------------------------------------
     # Check that go generate produces no unexpected diff
@@ -89,17 +89,30 @@ jobs:
     # Acceptance tests against a live Fleet instance (Docker Compose)
     # -------------------------------------------------------------------------
     acceptance:
-        name: Acceptance Tests (Terraform ${{ matrix.terraform }})
+        name: Acceptance Tests (Terraform ${{ matrix.terraform }}${{ matrix.fleet_tag == 'latest' && ', Fleet latest (canary)' || '' }})
         needs: build
         runs-on: ubuntu-latest
         timeout-minutes: 45
+        # The `latest` Fleet job is a non-blocking canary: it surfaces upstream
+        # Fleet changes as a warning without failing unrelated PRs. The pinned
+        # jobs are the required gate.
+        continue-on-error: ${{ matrix.fleet_tag == 'latest' }}
         strategy:
             fail-fast: false
             matrix:
+                # Required gate: full Terraform matrix against a pinned Fleet.
                 terraform:
                     - "1.5.*"
                     - "1.14.*"
                     - "1.15.*"
+                fleet_tag:
+                    - "v4.86.1"
+                include:
+                    # Canary: latest Fleet release on one Terraform version, so a
+                    # breaking Fleet update is visible but isolated from the pinned
+                    # signal (telling us whether a failure is our code or Fleet).
+                    - terraform: "1.15.*"
+                      fleet_tag: "latest"
         steps:
             - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
               with:
@@ -121,6 +134,8 @@ jobs:
             # Start Fleet + MySQL + Redis via Docker Compose
             # -----------------------------------------------------------------
             - name: Start Fleet services
+              env:
+                  FLEET_IMAGE_TAG: ${{ matrix.fleet_tag }}
               run: |
                   docker compose \
                     -f .github/fleet-test/docker-compose.yml \
