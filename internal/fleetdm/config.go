@@ -192,9 +192,22 @@ type ServerSettingsUpdate struct {
 	AIFeaturesDisabled   bool    `json:"ai_features_disabled"`
 }
 
+// OrgInfoUpdate is used in PATCH requests. The logo URLs are pointers so they
+// are omitted from the payload when not explicitly configured. Fleet >= 4.86
+// hosts organization logos and ignores an empty org_logo_url* value (it keeps
+// the previously stored logo), so sending "" would not clear the logo and would
+// instead produce an "inconsistent result after apply" error. Omitting the field
+// tells Fleet to leave the current value untouched.
+type OrgInfoUpdate struct {
+	OrgName                   string  `json:"org_name"`
+	OrgLogoURL                *string `json:"org_logo_url,omitempty"`
+	OrgLogoURLLightBackground *string `json:"org_logo_url_light_background,omitempty"`
+	ContactURL                string  `json:"contact_url"`
+}
+
 // UpdateAppConfigRequest represents a partial app config update
 type UpdateAppConfigRequest struct {
-	OrgInfo                *OrgInfo                `json:"org_info,omitempty"`
+	OrgInfo                *OrgInfoUpdate          `json:"org_info,omitempty"`
 	ServerSettings         *ServerSettingsUpdate   `json:"server_settings,omitempty"`
 	HostExpirySettings     *HostExpirySettings     `json:"host_expiry_settings,omitempty"`
 	ActivityExpirySettings *ActivityExpirySettings `json:"activity_expiry_settings,omitempty"`

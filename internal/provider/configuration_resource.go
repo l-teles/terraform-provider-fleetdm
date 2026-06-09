@@ -9,7 +9,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -112,14 +114,14 @@ resource "fleetdm_configuration" "main" {
 			"org_logo_url": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "URL of the organization logo.",
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				MarkdownDescription: "URL of the organization logo. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.",
 			},
 			"org_logo_url_light_background": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "URL of the organization logo for light backgrounds.",
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				MarkdownDescription: "URL of the organization logo for light backgrounds. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.",
 			},
 			"contact_url": schema.StringAttribute{
 				Optional:            true,
@@ -316,13 +318,24 @@ func (r *ConfigurationResource) ImportState(ctx context.Context, req resource.Im
 
 // buildUpdateRequest creates an UpdateAppConfigRequest from the resource model.
 func (r *ConfigurationResource) buildUpdateRequest(data *ConfigurationResourceModel) *fleetdm.UpdateAppConfigRequest {
+	orgInfo := &fleetdm.OrgInfoUpdate{
+		OrgName:    data.OrgName.ValueString(),
+		ContactURL: data.ContactURL.ValueString(),
+	}
+	// Only send the logo URLs when the user explicitly configured a non-empty
+	// value. Omitting them tells Fleet to keep the current logo; sending "" is
+	// ignored by Fleet >= 4.86 and would cause an inconsistent-result error.
+	if v := data.OrgLogoURL; !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
+		s := v.ValueString()
+		orgInfo.OrgLogoURL = &s
+	}
+	if v := data.OrgLogoURLLightBackground; !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
+		s := v.ValueString()
+		orgInfo.OrgLogoURLLightBackground = &s
+	}
+
 	req := &fleetdm.UpdateAppConfigRequest{
-		OrgInfo: &fleetdm.OrgInfo{
-			OrgName:                   data.OrgName.ValueString(),
-			OrgLogoURL:                data.OrgLogoURL.ValueString(),
-			OrgLogoURLLightBackground: data.OrgLogoURLLightBackground.ValueString(),
-			ContactURL:                data.ContactURL.ValueString(),
-		},
+		OrgInfo:        orgInfo,
 		ServerSettings: r.buildServerSettingsUpdate(data),
 		HostExpirySettings: &fleetdm.HostExpirySettings{
 			HostExpiryEnabled: data.HostExpiryEnabled.ValueBool(),

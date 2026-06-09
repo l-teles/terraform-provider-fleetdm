@@ -305,7 +305,7 @@ func TestUpdateAppConfig(t *testing.T) {
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-token", VerifyTLS: false})
 
 	config, err := client.UpdateAppConfig(context.Background(), &UpdateAppConfigRequest{
-		OrgInfo: &OrgInfo{OrgName: "Updated Org"},
+		OrgInfo: &OrgInfoUpdate{OrgName: "Updated Org"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateAppConfig failed: %v", err)
