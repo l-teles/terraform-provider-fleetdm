@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -11,7 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -39,8 +41,10 @@ type ConfigurationResourceModel struct {
 
 	// Organization Info
 	OrgName                   types.String `tfsdk:"org_name"`
-	OrgLogoURL                types.String `tfsdk:"org_logo_url"`
-	OrgLogoURLLightBackground types.String `tfsdk:"org_logo_url_light_background"`
+	OrgLogoURL                types.String `tfsdk:"org_logo_url"`                  // deprecated alias of OrgLogoURLDarkMode
+	OrgLogoURLLightBackground types.String `tfsdk:"org_logo_url_light_background"` // deprecated alias of OrgLogoURLLightMode
+	OrgLogoURLDarkMode        types.String `tfsdk:"org_logo_url_dark_mode"`
+	OrgLogoURLLightMode       types.String `tfsdk:"org_logo_url_light_mode"`
 	ContactURL                types.String `tfsdk:"contact_url"`
 
 	// Server Settings
@@ -89,9 +93,10 @@ This resource allows you to configure global Fleet settings including organizati
 
 ` + "```hcl" + `
 resource "fleetdm_configuration" "main" {
-  org_name    = "My Organization"
-  org_logo_url = "https://example.com/logo.png"
-  contact_url  = "https://example.com/support"
+  org_name                = "My Organization"
+  org_logo_url_dark_mode  = "https://example.com/logo-dark.png"
+  org_logo_url_light_mode = "https://example.com/logo-light.png"
+  contact_url             = "https://example.com/support"
 
   host_expiry_enabled = true
   host_expiry_window  = 30
@@ -111,17 +116,31 @@ resource "fleetdm_configuration" "main" {
 				Required:            true,
 				MarkdownDescription: "The name of the organization.",
 			},
+			"org_logo_url_dark_mode": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{logoMirrorPlanModifier{sibling: path.Root("org_logo_url")}},
+				MarkdownDescription: "URL of the organization logo shown on top of dark backgrounds. When omitted, Fleet's current value is preserved.",
+			},
+			"org_logo_url_light_mode": schema.StringAttribute{
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{logoMirrorPlanModifier{sibling: path.Root("org_logo_url_light_background")}},
+				MarkdownDescription: "URL of the organization logo shown on top of light backgrounds. When omitted, Fleet's current value is preserved.",
+			},
 			"org_logo_url": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
-				MarkdownDescription: "URL of the organization logo. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.",
+				PlanModifiers:       []planmodifier.String{logoMirrorPlanModifier{sibling: path.Root("org_logo_url_dark_mode")}},
+				DeprecationMessage:  "Use org_logo_url_dark_mode instead. Fleet keeps org_logo_url as a backwards-compatible alias of org_logo_url_dark_mode.",
+				MarkdownDescription: "Deprecated alias of `org_logo_url_dark_mode`. When omitted, Fleet's current value is preserved.",
 			},
 			"org_logo_url_light_background": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
-				MarkdownDescription: "URL of the organization logo for light backgrounds. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.",
+				PlanModifiers:       []planmodifier.String{logoMirrorPlanModifier{sibling: path.Root("org_logo_url_light_mode")}},
+				DeprecationMessage:  "Use org_logo_url_light_mode instead. Fleet keeps org_logo_url_light_background as a backwards-compatible alias of org_logo_url_light_mode.",
+				MarkdownDescription: "Deprecated alias of `org_logo_url_light_mode`. When omitted, Fleet's current value is preserved.",
 			},
 			"contact_url": schema.StringAttribute{
 				Optional:            true,
@@ -235,8 +254,15 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 
 	tflog.Debug(ctx, "Creating Fleet configuration resource")
 
+	// Resolve the canonical logo URLs from config (preferring the *_mode
+	// attributes over their deprecated aliases) before building the request.
+	darkLogo, lightLogo := resolveLogos(ctx, req.Config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Build the update request
-	updateReq := r.buildUpdateRequest(&data)
+	updateReq := r.buildUpdateRequest(&data, darkLogo, lightLogo)
 
 	// Update the configuration
 	config, err := r.client.UpdateAppConfig(ctx, updateReq)
@@ -284,8 +310,15 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 
 	tflog.Debug(ctx, "Updating Fleet configuration resource")
 
+	// Resolve the canonical logo URLs from config (preferring the *_mode
+	// attributes over their deprecated aliases) before building the request.
+	darkLogo, lightLogo := resolveLogos(ctx, req.Config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Build the update request
-	updateReq := r.buildUpdateRequest(&data)
+	updateReq := r.buildUpdateRequest(&data, darkLogo, lightLogo)
 
 	// Update the configuration
 	config, err := r.client.UpdateAppConfig(ctx, updateReq)
@@ -316,22 +349,109 @@ func (r *ConfigurationResource) ImportState(ctx context.Context, req resource.Im
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
+// logoMirrorPlanModifier keeps a deprecated org logo alias and its canonical
+// org_logo_url_*_mode counterpart consistent in the plan. Fleet mirrors the two
+// server-side, so the planned value of an unconfigured field must follow whatever
+// drives it: the sibling's configured value when the sibling is set, otherwise
+// the prior state. Without this, changing one field would leave the computed
+// sibling planned as its old value and trigger "inconsistent result after apply".
+type logoMirrorPlanModifier struct {
+	sibling path.Path
+}
+
+func (m logoMirrorPlanModifier) Description(context.Context) string {
+	return "Mirrors the sibling org logo attribute so the deprecated alias and its canonical *_mode field stay consistent."
+}
+
+func (m logoMirrorPlanModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m logoMirrorPlanModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// If this attribute is explicitly configured, keep its configured value.
+	var thisConfig types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, req.Path, &thisConfig)...)
+	if resp.Diagnostics.HasError() || !thisConfig.IsNull() {
+		return
+	}
+	// Not configured: mirror the sibling's configured value when it is set.
+	var siblingConfig types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, m.sibling, &siblingConfig)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !siblingConfig.IsNull() && !siblingConfig.IsUnknown() {
+		resp.PlanValue = siblingConfig
+		return
+	}
+	// Neither configured: keep the prior state value to avoid a perpetual diff.
+	// On the initial create there is no prior state, so resp.PlanValue is left as
+	// the framework default (unknown) and Fleet's response fills it in.
+	if !req.StateValue.IsNull() {
+		resp.PlanValue = req.StateValue
+	}
+}
+
+// resolveLogos reads the configuration and returns the canonical dark- and
+// light-mode logo URLs to send to Fleet. It reads from config (not plan) so that
+// values populated by UseStateForUnknown are not mistaken for user input.
+func resolveLogos(ctx context.Context, config tfsdk.Config, diags *diag.Diagnostics) (dark, light *string) {
+	var cfg ConfigurationResourceModel
+	diags.Append(config.Get(ctx, &cfg)...)
+	if diags.HasError() {
+		return nil, nil
+	}
+	dark = resolveLogoURL(cfg.OrgLogoURLDarkMode, cfg.OrgLogoURL, "org_logo_url_dark_mode", "org_logo_url", diags)
+	light = resolveLogoURL(cfg.OrgLogoURLLightMode, cfg.OrgLogoURLLightBackground, "org_logo_url_light_mode", "org_logo_url_light_background", diags)
+	return dark, light
+}
+
+// resolveLogoURL picks the logo URL to send for one mode, preferring the
+// canonical *_mode attribute over its deprecated alias. A nil return omits the
+// field (Fleet keeps its current logo); a non-nil pointer is sent verbatim (a
+// pointer to "" clears the logo). If both attributes are set to different
+// values, an error is added and nil is returned.
+func resolveLogoURL(modeVal, aliasVal types.String, modeName, aliasName string, diags *diag.Diagnostics) *string {
+	modeSet := !modeVal.IsNull() && !modeVal.IsUnknown()
+	aliasSet := !aliasVal.IsNull() && !aliasVal.IsUnknown()
+	switch {
+	case modeSet && aliasSet:
+		if modeVal.ValueString() != aliasVal.ValueString() {
+			diags.AddError(
+				"Conflicting organization logo configuration",
+				fmt.Sprintf("%q and its deprecated alias %q are both set, to different values. Set only %q.", modeName, aliasName, modeName),
+			)
+			return nil
+		}
+		s := modeVal.ValueString()
+		return &s
+	case modeSet:
+		s := modeVal.ValueString()
+		return &s
+	case aliasSet:
+		s := aliasVal.ValueString()
+		return &s
+	default:
+		return nil
+	}
+}
+
 // buildUpdateRequest creates an UpdateAppConfigRequest from the resource model.
-func (r *ConfigurationResource) buildUpdateRequest(data *ConfigurationResourceModel) *fleetdm.UpdateAppConfigRequest {
+//
+// darkLogo and lightLogo are the canonical logo URLs resolved from config (see
+// resolveLogoURL). A nil value omits the field so Fleet keeps its current logo;
+// a non-nil pointer (including to "") is sent. Each canonical field is sent
+// together with its deprecated alias set to the same value, because Fleet rejects
+// a PATCH where the incoming value of one differs from the stored value of the
+// other.
+func (r *ConfigurationResource) buildUpdateRequest(data *ConfigurationResourceModel, darkLogo, lightLogo *string) *fleetdm.UpdateAppConfigRequest {
 	orgInfo := &fleetdm.OrgInfoUpdate{
-		OrgName:    data.OrgName.ValueString(),
-		ContactURL: data.ContactURL.ValueString(),
-	}
-	// Only send the logo URLs when the user explicitly configured a non-empty
-	// value. Omitting them tells Fleet to keep the current logo; sending "" is
-	// ignored by Fleet >= 4.86 and would cause an inconsistent-result error.
-	if v := data.OrgLogoURL; !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
-		s := v.ValueString()
-		orgInfo.OrgLogoURL = &s
-	}
-	if v := data.OrgLogoURLLightBackground; !v.IsNull() && !v.IsUnknown() && v.ValueString() != "" {
-		s := v.ValueString()
-		orgInfo.OrgLogoURLLightBackground = &s
+		OrgName:                   data.OrgName.ValueString(),
+		ContactURL:                data.ContactURL.ValueString(),
+		OrgLogoURLDarkMode:        darkLogo,
+		OrgLogoURL:                darkLogo,
+		OrgLogoURLLightMode:       lightLogo,
+		OrgLogoURLLightBackground: lightLogo,
 	}
 
 	req := &fleetdm.UpdateAppConfigRequest{
@@ -388,8 +508,11 @@ func (r *ConfigurationResource) buildServerSettingsUpdate(data *ConfigurationRes
 
 // updateModelFromConfig updates the resource model from the API response.
 func (r *ConfigurationResource) updateModelFromConfig(data *ConfigurationResourceModel, config *fleetdm.AppConfig) {
-	// Organization Info
+	// Organization Info. Fleet mirrors the deprecated aliases to their canonical
+	// *_mode counterparts, so both are populated from the response.
 	data.OrgName = types.StringValue(config.OrgInfo.OrgName)
+	data.OrgLogoURLDarkMode = types.StringValue(config.OrgInfo.OrgLogoURLDarkMode)
+	data.OrgLogoURLLightMode = types.StringValue(config.OrgInfo.OrgLogoURLLightMode)
 	data.OrgLogoURL = types.StringValue(config.OrgInfo.OrgLogoURL)
 	data.OrgLogoURLLightBackground = types.StringValue(config.OrgInfo.OrgLogoURLLightBackground)
 	data.ContactURL = types.StringValue(config.OrgInfo.ContactURL)

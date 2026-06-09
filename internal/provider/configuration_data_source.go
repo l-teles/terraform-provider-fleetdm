@@ -28,6 +28,8 @@ type ConfigurationDataSourceModel struct {
 	OrgName                   types.String `tfsdk:"org_name"`
 	OrgLogoURL                types.String `tfsdk:"org_logo_url"`
 	OrgLogoURLLightBackground types.String `tfsdk:"org_logo_url_light_background"`
+	OrgLogoURLDarkMode        types.String `tfsdk:"org_logo_url_dark_mode"`
+	OrgLogoURLLightMode       types.String `tfsdk:"org_logo_url_light_mode"`
 	ContactURL                types.String `tfsdk:"contact_url"`
 
 	// Server Settings
@@ -82,12 +84,20 @@ func (d *ConfigurationDataSource) Schema(ctx context.Context, req datasource.Sch
 				MarkdownDescription: "The name of the organization using Fleet.",
 				Computed:            true,
 			},
+			"org_logo_url_dark_mode": schema.StringAttribute{
+				MarkdownDescription: "The URL of the organization logo shown on top of dark backgrounds.",
+				Computed:            true,
+			},
+			"org_logo_url_light_mode": schema.StringAttribute{
+				MarkdownDescription: "The URL of the organization logo shown on top of light backgrounds.",
+				Computed:            true,
+			},
 			"org_logo_url": schema.StringAttribute{
-				MarkdownDescription: "The URL of the organization logo.",
+				MarkdownDescription: "Deprecated alias of `org_logo_url_dark_mode`.",
 				Computed:            true,
 			},
 			"org_logo_url_light_background": schema.StringAttribute{
-				MarkdownDescription: "The URL of the organization logo for light backgrounds.",
+				MarkdownDescription: "Deprecated alias of `org_logo_url_light_mode`.",
 				Computed:            true,
 			},
 			"contact_url": schema.StringAttribute{
@@ -222,6 +232,8 @@ func (d *ConfigurationDataSource) Read(ctx context.Context, req datasource.ReadR
 	// Map response to model
 	// Organization Info
 	data.OrgName = types.StringValue(config.OrgInfo.OrgName)
+	data.OrgLogoURLDarkMode = types.StringValue(config.OrgInfo.OrgLogoURLDarkMode)
+	data.OrgLogoURLLightMode = types.StringValue(config.OrgInfo.OrgLogoURLLightMode)
 	data.OrgLogoURL = types.StringValue(config.OrgInfo.OrgLogoURL)
 	data.OrgLogoURLLightBackground = types.StringValue(config.OrgInfo.OrgLogoURLLightBackground)
 	data.ContactURL = types.StringValue(config.OrgInfo.ContactURL)

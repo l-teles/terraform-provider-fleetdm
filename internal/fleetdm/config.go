@@ -6,11 +6,18 @@ import (
 	"fmt"
 )
 
-// OrgInfo contains organization information
+// OrgInfo contains organization information.
+//
+// org_logo_url and org_logo_url_light_background are deprecated aliases that
+// Fleet keeps for backwards compatibility; org_logo_url_dark_mode and
+// org_logo_url_light_mode are the canonical fields. Fleet mirrors each alias to
+// its canonical field, so the pairs always hold the same value in responses.
 type OrgInfo struct {
 	OrgName                   string `json:"org_name"`
 	OrgLogoURL                string `json:"org_logo_url"`
 	OrgLogoURLLightBackground string `json:"org_logo_url_light_background"`
+	OrgLogoURLDarkMode        string `json:"org_logo_url_dark_mode"`
+	OrgLogoURLLightMode       string `json:"org_logo_url_light_mode"`
 	ContactURL                string `json:"contact_url"`
 }
 
@@ -192,16 +199,19 @@ type ServerSettingsUpdate struct {
 	AIFeaturesDisabled   bool    `json:"ai_features_disabled"`
 }
 
-// OrgInfoUpdate is used in PATCH requests. The logo URLs are pointers so they
-// are omitted from the payload when not explicitly configured. Fleet >= 4.86
-// hosts organization logos and ignores an empty org_logo_url* value (it keeps
-// the previously stored logo), so sending "" would not clear the logo and would
-// instead produce an "inconsistent result after apply" error. Omitting the field
-// tells Fleet to leave the current value untouched.
+// OrgInfoUpdate is used in PATCH requests. Each canonical org_logo_url_*_mode key
+// is always sent together with its deprecated alias set to the SAME value: Fleet
+// rejects a PATCH whose incoming value for one differs from the stored value of
+// the other ("cannot specify both ... with different values"), even when only one
+// is supplied. The logo URLs are pointers so they are omitted when the user did
+// not configure a logo, telling Fleet to leave the current value untouched; a
+// non-nil pointer to "" clears the logo.
 type OrgInfoUpdate struct {
 	OrgName                   string  `json:"org_name"`
 	OrgLogoURL                *string `json:"org_logo_url,omitempty"`
 	OrgLogoURLLightBackground *string `json:"org_logo_url_light_background,omitempty"`
+	OrgLogoURLDarkMode        *string `json:"org_logo_url_dark_mode,omitempty"`
+	OrgLogoURLLightMode       *string `json:"org_logo_url_light_mode,omitempty"`
 	ContactURL                string  `json:"contact_url"`
 }
 

@@ -67,8 +67,10 @@ resource "fleetdm_team" "example" {
 - `mdm_apple_bm_enabled_and_configured` (Boolean) Whether Apple Business Manager is enabled and configured.
 - `mdm_apple_bm_terms_expired` (Boolean) Whether Apple Business Manager terms have expired.
 - `mdm_enabled_and_configured` (Boolean) Whether MDM is enabled and configured.
-- `org_logo_url` (String) The URL of the organization logo.
-- `org_logo_url_light_background` (String) The URL of the organization logo for light backgrounds.
+- `org_logo_url` (String) Deprecated alias of `org_logo_url_dark_mode`.
+- `org_logo_url_dark_mode` (String) The URL of the organization logo shown on top of dark backgrounds.
+- `org_logo_url_light_background` (String) Deprecated alias of `org_logo_url_light_mode`.
+- `org_logo_url_light_mode` (String) The URL of the organization logo shown on top of light backgrounds.
 - `org_name` (String) The name of the organization using Fleet.
 - `query_reports_disabled` (Boolean) Whether query reports are disabled.
 - `sandbox_enabled` (Boolean) Whether this is a sandbox instance.

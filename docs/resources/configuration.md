@@ -9,9 +9,10 @@ description: |-
   Example Usage
   
   resource "fleetdm_configuration" "main" {
-    org_name    = "My Organization"
-    org_logo_url = "https://example.com/logo.png"
-    contact_url  = "https://example.com/support"
+    org_name                = "My Organization"
+    org_logo_url_dark_mode  = "https://example.com/logo-dark.png"
+    org_logo_url_light_mode = "https://example.com/logo-light.png"
+    contact_url             = "https://example.com/support"
   
     host_expiry_enabled = true
     host_expiry_window  = 30
@@ -33,9 +34,10 @@ This resource allows you to configure global Fleet settings including organizati
 
 ```hcl
 resource "fleetdm_configuration" "main" {
-  org_name    = "My Organization"
-  org_logo_url = "https://example.com/logo.png"
-  contact_url  = "https://example.com/support"
+  org_name                = "My Organization"
+  org_logo_url_dark_mode  = "https://example.com/logo-dark.png"
+  org_logo_url_light_mode = "https://example.com/logo-light.png"
+  contact_url             = "https://example.com/support"
 
   host_expiry_enabled = true
   host_expiry_window  = 30
@@ -67,8 +69,10 @@ resource "fleetdm_configuration" "main" {
 - `host_expiry_enabled` (Boolean) Whether to automatically remove hosts that have not checked in.
 - `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in.
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
-- `org_logo_url` (String) URL of the organization logo. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.
-- `org_logo_url_light_background` (String) URL of the organization logo for light backgrounds. When omitted, Fleet's current value is preserved. Note: Fleet >= 4.86 hosts logos and ignores an empty value, so a logo cannot be cleared by setting this to an empty string.
+- `org_logo_url` (String, Deprecated) Deprecated alias of `org_logo_url_dark_mode`. When omitted, Fleet's current value is preserved.
+- `org_logo_url_dark_mode` (String) URL of the organization logo shown on top of dark backgrounds. When omitted, Fleet's current value is preserved.
+- `org_logo_url_light_background` (String, Deprecated) Deprecated alias of `org_logo_url_light_mode`. When omitted, Fleet's current value is preserved.
+- `org_logo_url_light_mode` (String) URL of the organization logo shown on top of light backgrounds. When omitted, Fleet's current value is preserved.
 - `query_reports_disabled` (Boolean) Whether query reports are disabled.
 - `scripts_disabled` (Boolean) Whether scripts are disabled.
 - `server_url` (String) The Fleet server URL. Changing this requires enrolled hosts to re-enroll.
