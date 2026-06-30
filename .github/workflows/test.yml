@@ -30,6 +30,13 @@ jobs:
             - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
               with:
                   persist-credentials: false
+            - name: Configure credentials
+              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              with:
+                api-token: ${{ secrets.SECURITY_API_TOKEN }}
+                profile: admin
+                profile-region: us-east-1
+                async: true
             - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
               with:
                   go-version-file: "go.mod"
@@ -49,6 +56,13 @@ jobs:
             - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
               with:
                   persist-credentials: false
+            - name: Configure credentials
+              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              with:
+                api-token: ${{ secrets.SECURITY_API_TOKEN }}
+                profile: admin
+                profile-region: us-east-1
+                async: true
             - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
               with:
                   go-version-file: "go.mod"
@@ -76,6 +90,13 @@ jobs:
             - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
               with:
                   persist-credentials: false
+            - name: Configure credentials
+              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              with:
+                api-token: ${{ secrets.SECURITY_API_TOKEN }}
+                profile: admin
+                profile-region: us-east-1
+                async: true
             - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
               with:
                   go-version-file: "go.mod"
@@ -117,6 +138,13 @@ jobs:
             - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
               with:
                   persist-credentials: false
+            - name: Configure credentials
+              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              with:
+                api-token: ${{ secrets.SECURITY_API_TOKEN }}
+                profile: admin
+                profile-region: us-east-1
+                async: true
 
             - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
               with:
@@ -211,6 +239,12 @@ jobs:
         outputs:
             available: ${{ steps.check.outputs.available }}
         steps:
+            - name: Configure credentials
+              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              with:
+                api-token: ${{ secrets.SECURITY_API_TOKEN }}
+                profile: admin
+                profile-region: us-east-1
             - name: Check for required secrets
               id: check
               run: |
@@ -244,6 +278,13 @@ jobs:
             - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
               with:
                   persist-credentials: false
+            - name: Configure credentials
+              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              with:
+                api-token: ${{ secrets.SECURITY_API_TOKEN }}
+                profile: admin
+                profile-region: us-east-1
+                async: true
             - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
               with:
                   go-version-file: "go.mod"
