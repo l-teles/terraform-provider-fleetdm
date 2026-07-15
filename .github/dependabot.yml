@@ -10,10 +10,15 @@ updates:
       open-pull-requests-limit: 10
       labels:
           - dependencies
+      # Group minor + patch bumps into a single PR; major bumps are left
+      # ungrouped so each arrives as its own PR for individual review.
       groups:
           go-dependencies:
               patterns:
                   - "*"
+              update-types:
+                  - "minor"
+                  - "patch"
       cooldown:
           default-days: 7
 
@@ -28,6 +33,13 @@ updates:
       labels:
           - chore
           - dependencies
+      groups:
+          security-tools:
+              patterns:
+                  - "*"
+              update-types:
+                  - "minor"
+                  - "patch"
       cooldown:
           default-days: 7
 
@@ -41,5 +53,12 @@ updates:
       open-pull-requests-limit: 5
       labels:
           - chore
+      groups:
+          github-actions:
+              patterns:
+                  - "*"
+              update-types:
+                  - "minor"
+                  - "patch"
       cooldown:
           default-days: 7
