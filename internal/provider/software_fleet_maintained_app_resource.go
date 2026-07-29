@@ -338,7 +338,13 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	if pkg.InstallDuringSetup != nil {
 		state.InstallDuringSetup = types.BoolValue(*pkg.InstallDuringSetup)
 	}
-	state.AutomaticInstallPolicy = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+	// Create-time input with no read-side wire field — preserve the stored
+	// value so titles with attached `fleetdm_policy` resources don't flap
+	// to true and force replacement; derive only on import (null state).
+	// See the custom-package resource's Read for the full rationale.
+	if state.AutomaticInstallPolicy.IsNull() {
+		state.AutomaticInstallPolicy = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+	}
 	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 	state.DisplayName = types.StringValue(title.DisplayName)
 	if pkg.LabelsIncludeAny != nil && !state.LabelsIncludeAny.IsNull() {

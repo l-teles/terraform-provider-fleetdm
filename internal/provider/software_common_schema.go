@@ -268,6 +268,12 @@ func softwareAutomaticInstallPolicyAttribute() schema.Attribute {
 			"how Fleet's API models the relationship; the software-title endpoints do not accept a policy list on " +
 			"input. " +
 			"\n\n" +
+			"Fleet never returns this flag on read, so refresh preserves the configured value — policies attached " +
+			"through other means (`fleetdm_policy` resources, the Fleet UI) surface in `automatic_install_policies` " +
+			"without flipping this attribute or forcing a replacement. On `terraform import` the value is unknowable " +
+			"and is seeded from whether any install policies are attached; set the attribute in HCL to match your " +
+			"intent before importing a title that has them. " +
+			"\n\n" +
 			"Distinct from `install_during_setup`, which flags the title for installation during the first-boot " +
 			"Setup Assistant flow via a separate Fleet endpoint.",
 		Optional: true,

@@ -1072,8 +1072,15 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	state.SelfService = types.BoolValue(pkg.SelfService)
 	switch state.Type.ValueString() {
 	case "fleet_maintained":
-		// Policy-based auto-install is the legacy FMA semantic.
-		state.AutomaticInstall = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+		// Policy-based auto-install is the legacy FMA semantic. Like the
+		// type-specific resources' `automatic_install_policy`, this is a
+		// create-time input with no read-side wire field — preserve the
+		// stored value so titles with attached `fleetdm_policy` resources
+		// don't flap to true; derive only on import (null state). See the
+		// custom-package resource's Read for the full rationale.
+		if state.AutomaticInstall.IsNull() {
+			state.AutomaticInstall = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+		}
 	default:
 		// type=package — setup-experience semantic.
 		if pkg.InstallDuringSetup != nil {

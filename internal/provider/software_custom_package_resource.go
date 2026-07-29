@@ -487,9 +487,17 @@ func (r *softwareCustomPackageResource) Read(ctx context.Context, req resource.R
 	if pkg.InstallDuringSetup != nil {
 		state.InstallDuringSetup = types.BoolValue(*pkg.InstallDuringSetup)
 	}
-	// Policy-based auto-install is inferred from presence of any
-	// auto-install policies attached to the title.
-	state.AutomaticInstallPolicy = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+	// `automatic_install_policy` is a create-time input with no wire
+	// representation on read — Fleet never returns it, and the attached
+	// policies list also includes first-class `fleetdm_policy` resources
+	// and UI-attached automations. Deriving the flag from that list made
+	// any title with such a policy flap to true on refresh and, because
+	// the attribute is ForceNew, plan a destroy/recreate on every run.
+	// Preserve the stored value; fall back to the presence-derived guess
+	// only on import, when there is no prior value.
+	if state.AutomaticInstallPolicy.IsNull() {
+		state.AutomaticInstallPolicy = types.BoolValue(len(pkg.AutomaticInstallPolicies) > 0)
+	}
 	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 	if pkg.HashSHA256 != "" {
 		state.PackageSHA256 = types.StringValue(pkg.HashSHA256)
