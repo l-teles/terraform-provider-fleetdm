@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -554,6 +555,85 @@ resource "fleetdm_software_custom_package" "test" {
 						return nil
 					},
 				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_attachedPolicyDoesNotForceReplacement
+// is a drift regression test: a package created with automatic_install_policy
+// unset (default false) must not flip the attribute to true — and, since the
+// attribute is ForceNew, plan a destroy/recreate on every run — when an
+// install-software policy is attached to the title out-of-band (a
+// first-class fleetdm_policy resource or the Fleet UI). The attached policy
+// must still surface in the Computed automatic_install_policies list.
+func TestAccSoftwareCustomPackageResource_attachedPolicyDoesNotForceReplacement(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 52
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+}
+`, f.srv.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policy", "false"),
+					func(_ *terraform.State) error {
+						// Attach an install policy out-of-band, as a
+						// fleetdm_policy resource or a UI admin would.
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						f.titleAutomaticInstallPolicies = []map[string]any{
+							{"id": 9, "name": "[Install software] test-app"},
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Refresh + plan must be a no-op: the attached policy must
+				// not flip automatic_install_policy into a replacement.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policy", "false"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policies.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "automatic_install_policies.0.id", "9"),
+				),
+			},
+			{
+				// An EXPLICIT config change of the ForceNew attribute must
+				// still plan a replacement — the drift fix only stops
+				// refresh-side flapping, not deliberate reconfiguration
+				// (Fleet only honors the flag at create).
+				Config: strings.Replace(cfg, "  install_script = \"echo install\"\n",
+					"  install_script           = \"echo install\"\n  automatic_install_policy = true\n", 1),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("fleetdm_software_custom_package.test", plancheck.ResourceActionReplace),
+					},
+				},
 			},
 		},
 	})

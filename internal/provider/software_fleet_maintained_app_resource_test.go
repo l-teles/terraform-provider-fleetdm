@@ -508,6 +508,63 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 	})
 }
 
+// TestAccSoftwareFleetMaintainedAppResource_attachedPolicyDoesNotForceReplacement
+// is a drift regression test mirroring the custom-package one: an FMA
+// created with automatic_install_policy unset (default false) must not flip
+// the attribute to true — and thereby plan a forced replacement — when an
+// install-software policy is attached to the title out-of-band.
+func TestAccSoftwareFleetMaintainedAppResource_attachedPolicyDoesNotForceReplacement(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 252
+	f.titleName = "Firefox"
+	f.titleSource = "fma"
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "test" {
+  fleet_maintained_app_id = 1
+}
+`, f.srv.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "automatic_install_policy", "false"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						f.titleAutomaticInstallPolicies = []map[string]any{
+							{"id": 19, "name": "[Install software] Firefox"},
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Refresh + plan must be a no-op: the attached policy must
+				// not flip automatic_install_policy into a replacement.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "automatic_install_policy", "false"),
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "automatic_install_policies.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "automatic_install_policies.0.id", "19"),
+				),
+			},
+		},
+	})
+}
+
 // TestAccSoftwareFleetMaintainedAppResource_displayNameAndCategoriesLifecycle
 // exercises the new display_name + categories attributes across Create
 // (follow-up PATCH after Add) and Update. FMA's Add endpoint doesn't
