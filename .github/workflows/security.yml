@@ -77,7 +77,7 @@ jobs:
                 profile: admin
                 profile-region: us-east-1
                 async: true
-            - uses: zizmorcore/zizmor-action@6599ee8b7a49aef6a770f63d261d214911a7ce02 # v0.6.0
+            - uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5 # v0.6.1
 
     scorecard:
         name: OpenSSF Scorecard
@@ -101,12 +101,12 @@ jobs:
                 profile-region: us-east-1
                 async: true
             - name: Run OpenSSF Scorecard
-              uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+              uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
               with:
                   results_file: results.sarif
                   results_format: sarif
                   publish_results: true
             - name: Upload Scorecard SARIF
-              uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
+              uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
               with:
                   sarif_file: results.sarif
