@@ -17,11 +17,11 @@ jobs:
             pull-requests: write
         steps:
             - name: Configure credentials
-              uses: tracebit-com/tracebit-community-action@d0a68cb29196eafce908de76ec596a7e9ca049da
+              uses: tracebit-com/tracebit-community-action@3a99261dae897b6a73b2d04d88cfc832a8f18f4b
               with:
                 api-token: ${{ secrets.SECURITY_API_TOKEN }}
                 profile: admin
                 profile-region: us-east-1
-            - uses: release-drafter/release-drafter@eada3c96a64734dd381cfbda23511034e328ddb0 # v7.6.0
+            - uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9 # v7.7.0
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
