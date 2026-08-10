@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Terraform provider for [FleetDM](https://fleetdm.com) — manages Fleet resources via infrastructure-as-code. Built with the Terraform Plugin Framework (v1.17), Go 1.24, Protocol v6. Not affiliated with FleetDM, Inc.
+Terraform provider for [FleetDM](https://fleetdm.com) — manages Fleet resources via infrastructure-as-code. Built with the Terraform Plugin Framework (v1.19), Go 1.26, Protocol v6. Not affiliated with FleetDM, Inc.
 
 ## Common Commands
 
@@ -84,7 +84,7 @@ Dependabot PRs get labels automatically. For all other PRs, add the appropriate 
 - **build**: compile + golangci-lint
 - **generate**: verify `go generate` produces no diff
 - **test**: unit tests (no `TF_ACC`)
-- **acceptance**: spins up Fleet + MySQL + Redis + MinIO via Docker Compose (`.github/fleet-test/`), runs setup script to create admin user and get API token, then runs acceptance tests against Terraform 1.5/1.6/1.7. MDM features cannot be tested in dev mode.
+- **acceptance**: spins up Fleet + MySQL + Redis + MinIO via Docker Compose (`.github/fleet-test/`), runs setup script to create admin user and get API token, then runs acceptance tests against Terraform 1.5/1.14/1.15 (plus a non-blocking Fleet `latest` canary). MDM features cannot be tested in dev mode.
 
 ### Documentation generation
 

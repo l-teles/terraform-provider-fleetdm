@@ -203,7 +203,7 @@ resource "fleetdm_script" "system_update" {
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - Make
 
 ### Building

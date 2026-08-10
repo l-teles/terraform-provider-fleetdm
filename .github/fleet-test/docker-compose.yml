@@ -51,7 +51,7 @@ services:
       start_period: 5s
 
   fleet-migrate:
-    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.86.1}
+    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.90.0}
     network_mode: "host"
     command: fleet prepare db
     environment:
@@ -69,7 +69,7 @@ services:
     # Exits 0 on success; compose treats it as a one-shot service.
 
   fleet:
-    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.86.1}
+    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.90.0}
     network_mode: "host"
     # --dev    : sets Fleet development defaults (logging, TLS cert, etc.)
     # --dev_license: enables Fleet Premium via the built-in development license
@@ -84,6 +84,11 @@ services:
       # Override --dev's forced TLS so tests can connect over plain HTTP.
       FLEET_SERVER_TLS: "false"
       FLEET_LOGGING_JSON: "true"
+      # Test-only encryption key (NOT a real secret): Fleet requires a server
+      # private key (>= 32 bytes) to store certificate-authority credentials
+      # and custom variables. This throwaway instance holds only fake test
+      # fixtures, so a static value is fine here.
+      FLEET_SERVER_PRIVATE_KEY: test-only-private-key-0123456789abcdef
     depends_on:
       mysql:
         condition: service_healthy

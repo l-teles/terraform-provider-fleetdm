@@ -10,6 +10,9 @@ description: |-
   ~> Note: This resource manages the complete set of enrollment secrets. When you apply this resource,
   it will replace all existing enrollment secrets for the specified scope (global or team) with the
   secrets defined in this resource.
+  ~> Note: Fleet 4.90+ masks enrollment secret values in API responses when the caller's role lacks
+  permission to read secrets. Use an API token with secret-read permission (e.g. admin or maintainer);
+  otherwise drift in secret values cannot be detected and the configured values are kept in state.
   Example Usage
   Global Enrollment Secrets
   
@@ -38,9 +41,13 @@ Enrollment secrets are used by hosts to authenticate when enrolling with Fleet. 
 either global enrollment secrets (when team_id is not specified) or team-specific enrollment secrets 
 (when team_id is specified). Note: Team enrollment secrets require FleetDM Premium.
 
-~> **Note:** This resource manages the complete set of enrollment secrets. When you apply this resource, 
-it will replace all existing enrollment secrets for the specified scope (global or team) with the 
+~> **Note:** This resource manages the complete set of enrollment secrets. When you apply this resource,
+it will replace all existing enrollment secrets for the specified scope (global or team) with the
 secrets defined in this resource.
+
+~> **Note:** Fleet 4.90+ masks enrollment secret values in API responses when the caller's role lacks
+permission to read secrets. Use an API token with secret-read permission (e.g. admin or maintainer);
+otherwise drift in secret values cannot be detected and the configured values are kept in state.
 
 ## Example Usage
 
