@@ -219,6 +219,11 @@ func (c *Client) Patch(ctx context.Context, endpoint string, body interface{}, r
 	return c.doRequest(ctx, http.MethodPatch, endpoint, body, result)
 }
 
+// Put performs a PUT request to the specified endpoint.
+func (c *Client) Put(ctx context.Context, endpoint string, body interface{}, result interface{}) error {
+	return c.doRequest(ctx, http.MethodPut, endpoint, body, result)
+}
+
 // Delete performs a DELETE request to the specified endpoint.
 func (c *Client) Delete(ctx context.Context, endpoint string, body interface{}, result interface{}) error {
 	return c.doRequest(ctx, http.MethodDelete, endpoint, body, result)

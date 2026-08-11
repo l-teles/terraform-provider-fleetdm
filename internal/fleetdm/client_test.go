@@ -213,6 +213,49 @@ func TestClient_Patch(t *testing.T) {
 	}
 }
 
+func TestClient_Put(t *testing.T) {
+	var gotBody map[string]string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT request, got: %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/spec/teams" {
+			t.Errorf("expected path /api/v1/fleet/spec/teams, got: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "replaced"})
+	}))
+	defer server.Close()
+
+	config := ClientConfig{
+		ServerAddress: server.URL,
+		APIKey:        "test-api-key",
+	}
+
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	var result map[string]string
+	err = client.Put(context.Background(), "/spec/teams", map[string]string{"name": "replaced"}, &result)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if gotBody["name"] != "replaced" {
+		t.Errorf("expected the request body to be forwarded, got: %v", gotBody)
+	}
+	if result["status"] != "replaced" {
+		t.Errorf("expected the response to be decoded, got: %v", result)
+	}
+}
+
 func TestClient_Delete(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
