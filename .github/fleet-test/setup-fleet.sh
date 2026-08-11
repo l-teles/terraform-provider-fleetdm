@@ -98,7 +98,24 @@ fi
 echo "Login successful." >&2
 
 # ---------------------------------------------------------------------------
-# 4. Emit KEY=VALUE lines for the caller to append to $GITHUB_ENV
+# 4. Enable Windows MDM so acceptance tests can exercise live configuration
+#    profile CRUD. Works because the compose stack provides a self-signed
+#    WSTEP identity cert (see docker-compose.yml). Non-fatal: tests that need
+#    MDM skip or fail visibly if this does not stick.
+# ---------------------------------------------------------------------------
+mdm_http=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PATCH "${FLEET_URL}/api/v1/fleet/config" \
+  -H "Authorization: Bearer ${token}" \
+  -H "Content-Type: application/json" \
+  -d '{"mdm":{"windows_enabled_and_configured":true}}')
+if [ "$mdm_http" = "200" ]; then
+  echo "Windows MDM enabled." >&2
+else
+  echo "WARNING: could not enable Windows MDM (HTTP ${mdm_http}); live profile tests may not run." >&2
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Emit KEY=VALUE lines for the caller to append to $GITHUB_ENV
 # ---------------------------------------------------------------------------
 echo "FLEETDM_URL=${FLEET_URL}"
 echo "FLEETDM_API_TOKEN=${token}"
