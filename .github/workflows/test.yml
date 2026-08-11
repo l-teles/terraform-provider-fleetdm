@@ -69,7 +69,12 @@ jobs:
                   cache: true
             - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
               with:
-                  terraform_version: "1.7.*"
+                  # tfplugindocs renders write-only attribute annotations only
+                  # when the terraform CLI producing the schema JSON understands
+                  # them (Terraform >= 1.11) — an older pin here regenerates
+                  # degraded docs and fails this job on any resource with a
+                  # write-only attribute.
+                  terraform_version: "1.15.*"
                   terraform_wrapper: false
             - run: go mod download
             - run: go generate ./...
