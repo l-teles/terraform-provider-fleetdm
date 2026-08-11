@@ -130,6 +130,29 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("FleetDM API error (status %d): %s", e.StatusCode, e.Message)
 }
 
+// newAPIError builds an *APIError from a >=400 response, preferring Fleet's
+// JSON {message, errors} envelope and falling back to the raw body when the
+// response isn't JSON.
+func newAPIError(statusCode int, respBody []byte) *APIError {
+	apiErr := &APIError{
+		StatusCode: statusCode,
+		Message:    string(respBody),
+	}
+
+	var errResp struct {
+		Message string        `json:"message"`
+		Errors  []ErrorDetail `json:"errors"`
+	}
+	if json.Unmarshal(respBody, &errResp) == nil {
+		if errResp.Message != "" {
+			apiErr.Message = errResp.Message
+		}
+		apiErr.Errors = errResp.Errors
+	}
+
+	return apiErr
+}
+
 // doRequest performs an HTTP request to the FleetDM API.
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body interface{}, result interface{}) error {
 	reqURL := c.BaseURL + endpoint
@@ -165,23 +188,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body in
 	}
 
 	if resp.StatusCode >= 400 {
-		var apiErr APIError
-		apiErr.StatusCode = resp.StatusCode
-		apiErr.Message = string(respBody)
-
-		// Try to parse as JSON error
-		var errResp struct {
-			Message string        `json:"message"`
-			Errors  []ErrorDetail `json:"errors"`
-		}
-		if json.Unmarshal(respBody, &errResp) == nil {
-			if errResp.Message != "" {
-				apiErr.Message = errResp.Message
-			}
-			apiErr.Errors = errResp.Errors
-		}
-
-		return &apiErr
+		return newAPIError(resp.StatusCode, respBody)
 	}
 
 	if result != nil && len(respBody) > 0 {
