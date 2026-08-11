@@ -92,6 +92,64 @@ func optionalBoolPtr(val types.Bool) *bool {
 	return &v
 }
 
+// optionalStringPtr converts an optional types.String to a *string.
+// Returns nil if the value is null or unknown. Note that an explicitly
+// configured empty string yields a pointer to "", which is how a setting is
+// cleared on Fleet's PATCH endpoints.
+func optionalStringPtr(val types.String) *string {
+	if val.IsNull() || val.IsUnknown() {
+		return nil
+	}
+	v := val.ValueString()
+	return &v
+}
+
+// The refreshOptional* helpers implement the opt-in convention used by the
+// nested settings blocks on fleetdm_fleet: an attribute that is Optional but
+// not Computed must stay null when the practitioner never configured it.
+//
+// Fleet returns a concrete value for every field regardless of whether it was
+// ever set (an unset host_batch_size reads back as 0), so refreshing
+// unconditionally would write that 0 into state. For an Optional-only
+// attribute that makes state disagree with config, which Terraform rejects as
+// "provider produced inconsistent result after apply". Keeping the prior null
+// also means these attributes never manufacture a permanent diff.
+//
+// A nil apiValue likewise leaves the prior value alone: the API omitted the
+// field rather than reporting it as absent.
+
+// refreshOptionalBool refreshes a bool attribute only if it was already set.
+func refreshOptionalBool(prior types.Bool, apiValue *bool) types.Bool {
+	if prior.IsNull() || apiValue == nil {
+		return prior
+	}
+	return types.BoolValue(*apiValue)
+}
+
+// refreshOptionalString refreshes a string attribute only if it was already set.
+func refreshOptionalString(prior types.String, apiValue *string) types.String {
+	if prior.IsNull() || apiValue == nil {
+		return prior
+	}
+	return types.StringValue(*apiValue)
+}
+
+// refreshOptionalInt64 refreshes an int attribute only if it was already set.
+func refreshOptionalInt64(prior types.Int64, apiValue *int) types.Int64 {
+	if prior.IsNull() || apiValue == nil {
+		return prior
+	}
+	return types.Int64Value(int64(*apiValue))
+}
+
+// refreshOptionalFloat64 refreshes a float attribute only if it was already set.
+func refreshOptionalFloat64(prior types.Float64, apiValue *float64) types.Float64 {
+	if prior.IsNull() || apiValue == nil {
+		return prior
+	}
+	return types.Float64Value(*apiValue)
+}
+
 // intPtrToInt64 converts a *int to a types.Int64, returning Null for nil pointers.
 func intPtrToInt64(val *int) types.Int64 {
 	if val != nil {

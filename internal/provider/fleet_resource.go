@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -53,6 +54,14 @@ type FleetResourceModel struct {
 	// MDM Settings
 	EnableDiskEncryption types.Bool `tfsdk:"enable_disk_encryption"`
 
+	// Opt-in nested settings blocks. Nil means the practitioner did not declare
+	// the block, in which case it is neither sent to nor read back from Fleet.
+	// See fleet_resource_settings.go.
+	WebhookSettings *fleetWebhookSettingsModel `tfsdk:"webhook_settings"`
+	MDM             *fleetMDMModel             `tfsdk:"mdm"`
+	Integrations    *fleetIntegrationsModel    `tfsdk:"integrations"`
+	Features        *fleetFeaturesModel        `tfsdk:"features"`
+
 	// Computed fields
 	UserCount types.Int64 `tfsdk:"user_count"`
 	HostCount types.Int64 `tfsdk:"host_count"`
@@ -75,10 +84,14 @@ func (r *FleetResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 	}
 
 	resp.Schema = schema.Schema{
-		DeprecationMessage:  deprecationMsg,
-		Description:         "Manages a FleetDM fleet.",
-		MarkdownDescription: "Manages a FleetDM fleet.\n\nFleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.",
-		Attributes:          fleetSchemaAttributes(),
+		DeprecationMessage: deprecationMsg,
+		Description:        "Manages a FleetDM fleet.",
+		MarkdownDescription: "Manages a FleetDM fleet.\n\n" +
+			"Fleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.\n\n" +
+			"The `webhook_settings`, `mdm`, `integrations` and `features` blocks are opt-in: a block you do not declare is neither written to Fleet nor read into state, so this resource can coexist with settings managed in the Fleet UI or through GitOps. " +
+			"Within a block, attributes you omit are left alone too, with one exception: inside a declared `webhook_settings` sub-block or inside `integrations.google_calendar`, Fleet replaces the whole object, so every attribute of that sub-block goes on the wire and the ones you omit are sent as zero values. Declare those sub-blocks in full. " +
+			"One consequence of the opt-in design is that `terraform import` brings a fleet in with all four blocks null, since which of them you intend to manage is only expressed in your configuration.",
+		Attributes: fleetSchemaAttributes(),
 	}
 }
 
@@ -121,12 +134,22 @@ func fleetSchemaAttributes() map[string]schema.Attribute {
 			Default:             int64default.StaticInt64(0),
 		},
 		"enable_disk_encryption": schema.BoolAttribute{
-			Description:         "Whether disk encryption is enforced for hosts in this fleet.",
-			MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.",
-			Optional:            true,
-			Computed:            true,
-			Default:             booldefault.StaticBool(false),
+			Description: "Whether disk encryption is enforced for hosts in this fleet. " +
+				"Unlike the opt-in mdm block, this attribute defaults to false and is written on every apply, so leaving it out of your configuration actively DISABLES disk encryption -- including encryption an operator turned on in the Fleet UI. " +
+				"Set it to true explicitly if this fleet should have disk encryption enforced. " +
+				"Making it opt-in like the mdm block would change that behaviour and is deferred to the next major version.",
+			MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.\n\n" +
+				"~> **Warning:** unlike the opt-in `mdm` block, this attribute defaults to `false` and is written on every apply, so leaving it out of your configuration actively **disables** disk encryption -- including encryption an operator turned on in the Fleet UI. " +
+				"Set it to `true` explicitly if this fleet should have disk encryption enforced. " +
+				"Making it opt-in like the `mdm` block would change that behaviour and is deferred to the next major version.",
+			Optional: true,
+			Computed: true,
+			Default:  booldefault.StaticBool(false),
 		},
+		"webhook_settings": fleetWebhookSettingsAttribute(),
+		"mdm":              fleetMDMAttribute(),
+		"integrations":     fleetIntegrationsAttribute(),
+		"features":         fleetFeaturesAttribute(),
 		"user_count": schema.Int64Attribute{
 			Description:         "The number of users in the fleet.",
 			MarkdownDescription: "The number of users in the fleet.",
@@ -215,41 +238,27 @@ func (r *FleetResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	// Update the fleet with additional settings if needed
-	needsUpdate := false
-	updateReq := fleetdm.UpdateTeamRequest{
-		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
+	// POST /fleets only accepts name and description, so everything else needs a
+	// follow-up PATCH. That PATCH is unconditional: host_expiry_enabled,
+	// host_expiry_window and enable_disk_encryption are Computed with defaults,
+	// so the plan always carries values for them and there is always something
+	// to write.
+	updateReq := buildUpdateTeamRequest(ctx, &plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
-	if !plan.HostExpiryEnabled.IsNull() || !plan.HostExpiryWindow.IsNull() {
-		needsUpdate = true
-		updateReq.HostExpirySettings = &fleetdm.HostExpirySettings{
-			HostExpiryEnabled: plan.HostExpiryEnabled.ValueBool(),
-			HostExpiryWindow:  int(plan.HostExpiryWindow.ValueInt64()),
-		}
-	}
-
-	if !plan.EnableDiskEncryption.IsNull() {
-		needsUpdate = true
-		updateReq.MDM = &fleetdm.TeamMDMSettings{
-			EnableDiskEncryption: plan.EnableDiskEncryption.ValueBool(),
-		}
-	}
-
-	if needsUpdate {
-		team, err = r.client.UpdateTeam(ctx, team.ID, updateReq)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Error Updating FleetDM Fleet Settings",
-				"Fleet was created but settings could not be applied (fleet ID saved to state). Run 'terraform apply' again to retry. Error: "+err.Error(),
-			)
-			return
-		}
+	team, err = r.client.UpdateTeam(ctx, team.ID, updateReq)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Updating FleetDM Fleet Settings",
+			"Fleet was created but settings could not be applied (fleet ID saved to state). Run 'terraform apply' again to retry. Error: "+err.Error(),
+		)
+		return
 	}
 
 	// Map final response to model
-	r.mapTeamToModel(team, &plan)
+	r.mapTeamToModel(ctx, team, &plan, &resp.Diagnostics)
 
 	// Save final data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -289,7 +298,7 @@ func (r *FleetResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	// Map response to model
-	r.mapTeamToModel(team, &state)
+	r.mapTeamToModel(ctx, team, &state, &resp.Diagnostics)
 
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
@@ -312,22 +321,9 @@ func (r *FleetResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	})
 
 	// Build update request
-	updateReq := fleetdm.UpdateTeamRequest{
-		Name:        plan.Name.ValueString(),
-		Description: plan.Description.ValueString(),
-	}
-
-	if !plan.HostExpiryEnabled.IsNull() {
-		updateReq.HostExpirySettings = &fleetdm.HostExpirySettings{
-			HostExpiryEnabled: plan.HostExpiryEnabled.ValueBool(),
-			HostExpiryWindow:  int(plan.HostExpiryWindow.ValueInt64()),
-		}
-	}
-
-	if !plan.EnableDiskEncryption.IsNull() {
-		updateReq.MDM = &fleetdm.TeamMDMSettings{
-			EnableDiskEncryption: plan.EnableDiskEncryption.ValueBool(),
-		}
+	updateReq := buildUpdateTeamRequest(ctx, &plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	// Update the fleet
@@ -341,7 +337,7 @@ func (r *FleetResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	// Map response to model
-	r.mapTeamToModel(team, &plan)
+	r.mapTeamToModel(ctx, team, &plan, &resp.Diagnostics)
 
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
@@ -385,8 +381,32 @@ func (r *FleetResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 	})
 }
 
+// buildUpdateTeamRequest assembles the PATCH body from the plan. Shared by
+// Create and Update so the two can never drift apart on which attributes make
+// it onto the wire.
+func buildUpdateTeamRequest(ctx context.Context, plan *FleetResourceModel, diags *diag.Diagnostics) fleetdm.UpdateTeamRequest {
+	req := fleetdm.UpdateTeamRequest{
+		Name:        plan.Name.ValueString(),
+		Description: plan.Description.ValueString(),
+	}
+
+	if !plan.HostExpiryEnabled.IsNull() || !plan.HostExpiryWindow.IsNull() {
+		req.HostExpirySettings = &fleetdm.HostExpirySettings{
+			HostExpiryEnabled: plan.HostExpiryEnabled.ValueBool(),
+			HostExpiryWindow:  int(plan.HostExpiryWindow.ValueInt64()),
+		}
+	}
+
+	req.MDM = buildMDMSettings(plan.EnableDiskEncryption, plan.MDM)
+	req.WebhookSettings = buildWebhookSettings(ctx, plan.WebhookSettings, diags)
+	req.Integrations = buildIntegrations(plan.Integrations)
+	req.Features = buildFeatures(plan.Features)
+
+	return req
+}
+
 // mapTeamToModel maps a FleetDM Team to the Terraform model.
-func (r *FleetResource) mapTeamToModel(team *fleetdm.Team, model *FleetResourceModel) {
+func (r *FleetResource) mapTeamToModel(ctx context.Context, team *fleetdm.Team, model *FleetResourceModel, diags *diag.Diagnostics) {
 	model.ID = types.Int64Value(team.ID)
 	model.Name = types.StringValue(team.Name)
 	model.Description = types.StringValue(team.Description)
@@ -401,11 +421,18 @@ func (r *FleetResource) mapTeamToModel(team *fleetdm.Team, model *FleetResourceM
 		model.HostExpiryWindow = types.Int64Value(0)
 	}
 
-	if team.MDM != nil {
-		model.EnableDiskEncryption = types.BoolValue(team.MDM.EnableDiskEncryption)
+	// enable_disk_encryption is Computed with a default, so unlike the nested
+	// blocks it always carries a concrete value.
+	if team.MDM != nil && team.MDM.EnableDiskEncryption != nil {
+		model.EnableDiskEncryption = types.BoolValue(*team.MDM.EnableDiskEncryption)
 	} else {
 		model.EnableDiskEncryption = types.BoolValue(false)
 	}
+
+	refreshWebhookSettings(ctx, model.WebhookSettings, team.WebhookSettings, diags)
+	refreshMDM(model.MDM, team.MDM)
+	refreshIntegrations(model.Integrations, team.Integrations)
+	refreshFeatures(model.Features, team.Features)
 }
 
 // ImportState imports an existing resource by ID.
