@@ -290,8 +290,10 @@ func newEnrollDiagAdapter(diags *diag.Diagnostics) diagWriter {
 	return enrollDiagAdapter{diags: diags}
 }
 
+// #nosec G101 -- user-facing warning message, not a credential
 const secretReadDeniedWarning = "Fleet denied reading enrollment secrets (the API token's role lacks secret-read permission, enforced by Fleet 4.90+). The configured values were kept in state; drift in secret values cannot be detected."
 
+// #nosec G101 -- user-facing warning message, not a credential
 const secretsMaskedWarning = "Fleet returned masked enrollment secret values (the API token's role lacks secret-read permission, enforced by Fleet 4.90+). Masked entries were ignored; drift in secret values cannot be detected."
 
 // validateSecretValues re-checks secret values at apply time. ValidateConfig
