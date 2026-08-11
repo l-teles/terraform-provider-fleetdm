@@ -33,6 +33,29 @@ resource "fleetdm_user" "api_user" {
   api_only    = true
 }
 
+# Create an API-only user restricted to specific REST API endpoints.
+# Calls to anything outside the scope are rejected with a 403. Omit
+# api_endpoints to leave the user able to reach every endpoint its role allows.
+# Fleet Premium only, and requires Fleet 4.90 or later.
+resource "fleetdm_user" "host_reader" {
+  name        = "Host Inventory Reader"
+  email       = "host-reader@example.com"
+  password    = var.host_reader_password
+  global_role = "observer"
+  api_only    = true
+
+  api_endpoints = [
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts"
+    },
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts/:id"
+    },
+  ]
+}
+
 # Create a team-specific user (no global role, assigned to teams)
 resource "fleetdm_user" "team_admin" {
   name     = "Engineering Team Admin"
@@ -77,6 +100,11 @@ variable "team_admin_password" {
   sensitive = true
 }
 
+variable "host_reader_password" {
+  type      = string
+  sensitive = true
+}
+
 # Output user IDs
 output "admin_user_id" {
   description = "ID of the admin user"
@@ -86,4 +114,13 @@ output "admin_user_id" {
 output "api_user_id" {
   description = "ID of the API automation user"
   value       = fleetdm_user.api_user.id
+}
+
+# Fleet mints an API token for API-only users and returns it only once, when
+# the user is created. It is stored in Terraform state and cannot be recovered
+# by re-reading the user.
+output "api_user_token" {
+  description = "API token of the API automation user"
+  value       = fleetdm_user.api_user.token
+  sensitive   = true
 }
