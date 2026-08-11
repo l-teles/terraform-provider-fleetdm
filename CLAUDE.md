@@ -84,7 +84,7 @@ Dependabot PRs get labels automatically. For all other PRs, add the appropriate 
 - **build**: compile + golangci-lint
 - **generate**: verify `go generate` produces no diff
 - **test**: unit tests (no `TF_ACC`)
-- **acceptance**: spins up Fleet + MySQL + Redis + MinIO via Docker Compose (`.github/fleet-test/`), runs setup script to create admin user and get API token, then runs acceptance tests against Terraform 1.5/1.14/1.15 (plus a non-blocking Fleet `latest` canary). MDM features cannot be tested in dev mode.
+- **acceptance**: spins up Fleet + MySQL + Redis + RustFS (S3) via Docker Compose (`.github/fleet-test/`), runs setup script to create admin user and get API token, then runs acceptance tests against Terraform 1.5/1.14/1.15 (plus a non-blocking Fleet `latest` canary). MDM features cannot be tested in dev mode.
 
 ### Documentation generation
 

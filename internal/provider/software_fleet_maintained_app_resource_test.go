@@ -921,3 +921,37 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 }
 `, serverURL, appID, extra)
 }
+
+// TestAccSoftwareFleetMaintainedAppResource_pinnedVersionCaretValidation pins
+// the plan-time guard for the one caret mistake Fleet rejects: a caret
+// constraint naming more than the major version ("only the major version can
+// be specified with a caret (^), without including minor and patch versions",
+// verified against a live Fleet v4.90.0). Valid shapes — exact versions,
+// bare-major carets, and the empty unpin — must pass validation untouched.
+func TestAccSoftwareFleetMaintainedAppResource_pinnedVersionCaretValidation(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 307
+
+	invalid := []struct {
+		name string
+		pin  string
+	}{
+		{name: "caret with minor", pin: "^147.2"},
+		{name: "caret with minor and patch", pin: "^147.2.1"},
+		{name: "bare caret", pin: "^"},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config:      testAccFMAPinnedVersionConfig(f.srv.URL, fmt.Sprintf("pinned_version = %q", tt.pin)),
+						PlanOnly:    true,
+						ExpectError: regexp.MustCompile(`(?is)caret constraint may only specify the major\s+version`),
+					},
+				},
+			})
+		})
+	}
+}

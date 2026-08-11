@@ -325,10 +325,15 @@ func TestClient_DeleteSoftwarePackage(t *testing.T) {
 	}
 }
 
+// TestClient_DeleteSoftwarePackage_NoTeam pins that a nil team still puts
+// team_id=0 on the wire. Fleet 4.90 rejects a delete without the param
+// ("Param team_id is required"), and 0 is Fleet's "No team" value —
+// discovered live when the .py installer acceptance test first exercised a
+// real delete of a team-less package.
 func TestClient_DeleteSoftwarePackage_NoTeam(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("team_id") != "" {
-			t.Errorf("expected no team_id, got: %s", r.URL.Query().Get("team_id"))
+		if r.URL.Query().Get("team_id") != "0" {
+			t.Errorf("expected team_id=0 for a team-less delete, got: %q", r.URL.Query().Get("team_id"))
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1665,6 +1670,101 @@ func TestEncodeDecodeAppConfiguration(t *testing.T) {
 			// applies, Fleet gets the original bytes back.
 			if got := DecodeAppConfiguration(encoded); got != tt.raw {
 				t.Errorf("round trip failed\n got: %q\nwant: %q", got, tt.raw)
+			}
+		})
+	}
+}
+
+// TestEncodeAppConfiguration_malformedJSON pins the encoder's rejection of
+// input that clearly means to be JSON but doesn't parse. Without this guard
+// the encoder would wrap the broken document in a JSON string and Fleet's
+// Android path would complain about the configuration not being an object —
+// an error pointing at the wrong problem.
+func TestEncodeAppConfiguration_malformedJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "trailing comma", raw: `{"a":1,}`},
+		{name: "bom prefixed json", raw: "\uFEFF" + `{"a":1}`},
+		{name: "unclosed object", raw: `{"managedConfiguration":`},
+		{name: "leading whitespace then broken object", raw: "  \n\t" + `{"a":}`},
+		{name: "broken array", raw: `[1,2,`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := EncodeAppConfiguration(tt.raw); err == nil {
+				t.Errorf("expected an invalid-JSON error for %q, got nil", tt.raw)
+			}
+		})
+	}
+}
+
+// TestSameAppConfiguration pins the semantic comparison Read uses to decide
+// whether Fleet's echoed configuration differs from what the user wrote. The
+// pre-quoted case is the regression that motivated it: Encode passes an
+// already-quoted JSON string through, Decode unquotes it, so a byte comparison
+// between config and echo would never converge.
+func TestSameAppConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{
+			name: "identical xml",
+			a:    `<dict><key>a</key><string>b</string></dict>`,
+			b:    `<dict><key>a</key><string>b</string></dict>`,
+			want: true,
+		},
+		{
+			name: "pre-quoted xml equals its unquoted echo",
+			a:    `"<dict><key>a</key><string>b</string></dict>"`,
+			b:    `<dict><key>a</key><string>b</string></dict>`,
+			want: true,
+		},
+		{
+			name: "json key order is insignificant",
+			a:    `{"b":2,"a":1}`,
+			b:    `{"a":1,"b":2}`,
+			want: true,
+		},
+		{
+			name: "json whitespace is insignificant",
+			a:    `{ "a": 1 }`,
+			b:    `{"a":1}`,
+			want: true,
+		},
+		{
+			name: "different xml payloads differ",
+			a:    `<dict><key>a</key><string>b</string></dict>`,
+			b:    `<dict><key>a</key><string>c</string></dict>`,
+			want: false,
+		},
+		{
+			name: "different json values differ",
+			a:    `{"a":1}`,
+			b:    `{"a":2}`,
+			want: false,
+		},
+		{
+			name: "empty equals empty",
+			a:    "",
+			b:    "",
+			want: true,
+		},
+		{
+			name: "empty differs from non-empty",
+			a:    "",
+			b:    `{"a":1}`,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SameAppConfiguration(tt.a, tt.b); got != tt.want {
+				t.Errorf("SameAppConfiguration(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 			}
 		})
 	}

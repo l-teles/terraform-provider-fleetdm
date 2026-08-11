@@ -785,3 +785,80 @@ func TestAccSoftwareAppStoreAppResource_fleet490FieldsOptIn(t *testing.T) {
 		},
 	})
 }
+
+// TestAccSoftwareAppStoreAppResource_preQuotedConfigurationConverges pins the
+// semantic Read comparison for `configuration`. A value that is already an
+// encoded JSON string (someone ran their XML through jsonencode()) passes
+// through Encode untouched but comes back from Decode unquoted — a byte
+// comparison would rewrite state to the unquoted form and plan a diff forever.
+// With SameAppConfiguration deciding adoption, the user's value is kept
+// verbatim and the post-apply plan is empty.
+func TestAccSoftwareAppStoreAppResource_preQuotedConfigurationConverges(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 305
+	f.titleName = "Logic Pro"
+
+	// What jsonencode("<dict>…</dict>") produces: quotes included.
+	const preQuoted = `"<dict><key>a</key><string>b</string></dict>"`
+
+	cfg := testAccVPPConfig(f.srv.URL, fmt.Sprintf(`platform      = "ios"
+  configuration = %q`, preQuoted))
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The harness plans again after apply and fails the step on a
+				// non-empty plan — exactly the perpetual diff being guarded against.
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "configuration", preQuoted),
+				),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_autoUpdateDisabledOutOfBandDrifts proves
+// the absent→false Read mapping does real work: when automatic updates are
+// switched off in the Fleet UI, Fleet's GET response omits the
+// auto_update_enabled key entirely (omitempty), and a managed `true` must
+// surface that as drift rather than keeping stale state and a clean plan.
+func TestAccSoftwareAppStoreAppResource_autoUpdateDisabledOutOfBandDrifts(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 306
+	f.titleName = "Logic Pro"
+
+	cfg := testAccVPPConfig(f.srv.URL, `platform                 = "ios"
+  auto_update_enabled      = true
+  auto_update_window_start = "01:30"
+  auto_update_window_end   = "04:00"`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check:  resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_enabled", "true"),
+			},
+			{
+				// Simulate the UI disable: Fleet drops all three keys from the
+				// title response.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.titleAutoUpdateEnabled = nil
+					f.titleAutoUpdateStart = nil
+					f.titleAutoUpdateEnd = nil
+					f.mu.Unlock()
+				},
+				Config:             cfg,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}

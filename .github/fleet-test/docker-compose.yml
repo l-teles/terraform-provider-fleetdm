@@ -2,7 +2,8 @@
 # Used by the CI acceptance-test workflow and for local development testing.
 #
 # All services use network_mode: "host" so that Fleet's --dev flag can reach
-# MinIO via localhost:9000 (as it expects) rather than a Docker bridge hostname.
+# the S3 store via localhost:9000 (as it expects) rather than a Docker bridge
+# hostname.
 #
 # Usage:
 #   docker compose -f .github/fleet-test/docker-compose.yml up -d --wait
@@ -35,16 +36,23 @@ services:
       timeout: 5s
       retries: 6
 
-  # MinIO provides the S3-compatible storage that Fleet --dev expects at localhost:9000.
-  minio:
-    image: minio/minio
+  # RustFS provides the S3-compatible storage Fleet --dev expects at
+  # localhost:9000 — the same server Fleet's own dev compose uses. The
+  # credentials must be exactly `locals3`/`locals3`: Fleet --dev hardcodes
+  # them client-side (cmd/fleet/main.go) and auto-creates its buckets at
+  # startup with them. MinIO can't take this role — it rejects root passwords
+  # shorter than 8 characters, so Fleet's bucket auto-create fails and every
+  # installer upload 403s. Test-only credentials for an ephemeral local store,
+  # not a real secret.
+  s3:
+    image: rustfs/rustfs:1.0.0-alpha.85@sha256:23ff2af1ec2d64e0fb9608a1c39b5eb96fcff3a8efecf332986c948b0e3e4f8a
     network_mode: "host"
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio123
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_ACCESS_KEY: locals3
+      RUSTFS_SECRET_KEY: locals3
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
       interval: 5s
       timeout: 10s
       retries: 12
@@ -122,7 +130,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
+      s3:
         condition: service_healthy
       fleet-migrate:
         condition: service_completed_successfully

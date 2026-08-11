@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -169,11 +170,11 @@ type UpdateAppStoreAppRequest struct {
 //     "expected configuration as a JSON string containing the XML" otherwise.
 //
 // The provider exposes a single raw string attribute for both, so this helper
-// picks the encoding from the content: anything that is already valid JSON is
-// passed through untouched (the Android case, and any caller who pre-quoted
-// their XML), and anything else — notably raw XML — is marshalled into a JSON
-// string. That makes the common "paste your XML / paste your JSON" ergonomics
-// work without asking users to double-encode.
+// picks the encoding from the content: JSON (the Android case) is passed
+// through untouched, and anything else — notably raw XML — is marshalled into a
+// JSON string. Callers pass the payload in its natural form; pre-encoding XML
+// with jsonencode() is NOT the supported contract (see
+// SameAppConfiguration for how an already-encoded value is kept stable).
 func EncodeAppConfiguration(raw string) (json.RawMessage, error) {
 	if raw == "" {
 		return nil, nil
@@ -181,6 +182,25 @@ func EncodeAppConfiguration(raw string) (json.RawMessage, error) {
 	if json.Valid([]byte(raw)) {
 		return json.RawMessage(raw), nil
 	}
+	// Input that clearly means to be a JSON object/array but doesn't parse must
+	// fail here. Wrapping it in a JSON string would "succeed" and then draw a
+	// confusing complaint from Fleet about the configuration not being an
+	// object — pointing at the wrong problem. A leading byte-order mark is the
+	// classic offender (a BOM-prefixed document is not valid JSON), so it gets
+	// named explicitly. Detection trims leading whitespace and a BOM; the
+	// payload itself is never silently rewritten.
+	trimmed := strings.TrimLeft(raw, " \t\r\n")
+	const bom = "\uFEFF"
+	hadBOM := strings.HasPrefix(trimmed, bom)
+	trimmed = strings.TrimLeft(strings.TrimPrefix(trimmed, bom), " \t\r\n")
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		hint := ""
+		if hadBOM {
+			hint = " The value starts with a byte-order mark (BOM), which is not valid JSON — strip it (for example with a file() read of a UTF-8 file without a BOM)."
+		}
+		return nil, fmt.Errorf("invalid JSON configuration: the value looks like JSON (it starts with %q) but does not parse.%s", trimmed[:1], hint)
+	}
+
 	encoded, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode app configuration: %w", err)
@@ -192,6 +212,59 @@ func EncodeAppConfiguration(raw string) (json.RawMessage, error) {
 	// anyway, because the request body is marshalled again as a whole struct by
 	// the shared doRequest helper, which re-escapes it.
 	return encoded, nil
+}
+
+// SameAppConfiguration reports whether two provider-side `configuration`
+// strings mean the same thing to Fleet.
+//
+// It exists because Encode and Decode are not inverses for every input, so a
+// byte comparison between what the user wrote and what Fleet echoes back can
+// report a difference where there is none, producing a diff that no apply can
+// ever settle. Two cases:
+//
+//   - A value that is already an encoded JSON string — `jsonencode("<dict/>")`,
+//     i.e. `"<dict/>"` quotes included — encodes as a passthrough but decodes to
+//     the *unquoted* XML. Byte-comparing the echo against state would flip
+//     state between the two forms forever.
+//   - Android JSON objects are semantically insensitive to key order and
+//     whitespace, but Fleet may return them normalized.
+//
+// The fix is to compare canonical forms rather than bytes: the decoded payload,
+// and for JSON payloads a key-sorted re-encoding of it. Callers use this to
+// decide whether to adopt Fleet's echo at all — when the answer is "same", the
+// stored value is left exactly as the user wrote it.
+func SameAppConfiguration(a, b string) bool {
+	return canonicalAppConfiguration(a) == canonicalAppConfiguration(b)
+}
+
+// canonicalAppConfiguration reduces a raw configuration string to a comparable
+// form: run it through the same encoding Fleet receives, decode it back (which
+// collapses "raw XML" and "pre-encoded XML" onto the same value), then, if the
+// result is JSON, re-marshal it so map keys are sorted and whitespace is
+// normalized. Any error along the way falls back to the input unchanged —
+// this is a comparison helper, so a failure to canonicalize must never be
+// mistaken for equality.
+func canonicalAppConfiguration(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	encoded, err := EncodeAppConfiguration(raw)
+	if err != nil {
+		return raw
+	}
+	decoded := DecodeAppConfiguration(encoded)
+	var parsed any
+	if err := json.Unmarshal([]byte(decoded), &parsed); err != nil {
+		// Not JSON (the XML case) — the decoded string is already canonical.
+		return decoded
+	}
+	// reflect is not needed for equality here: marshalling a decoded value
+	// sorts object keys, so the resulting strings compare directly.
+	normalized, err := json.Marshal(parsed)
+	if err != nil {
+		return decoded
+	}
+	return string(normalized)
 }
 
 // DecodeAppConfiguration is the inverse of EncodeAppConfiguration: it turns
@@ -600,11 +673,17 @@ func (c *Client) GetSoftwareInstaller(ctx context.Context, titleID int, teamID *
 }
 
 // DeleteSoftwarePackage deletes a software package by title ID.
+//
+// team_id is always sent: Fleet 4.90 rejects the request outright with
+// "Param team_id is required" when it is absent, and 0 is Fleet's value for
+// "No team" (verified against a live Fleet v4.90.0 — a delete that used to
+// omit the param for team-less packages now 400s).
 func (c *Client) DeleteSoftwarePackage(ctx context.Context, titleID int, teamID *int) error {
-	endpoint := fmt.Sprintf("/software/titles/%d/available_for_install", titleID)
+	tid := 0
 	if teamID != nil {
-		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *teamID)
+		tid = *teamID
 	}
+	endpoint := fmt.Sprintf("/software/titles/%d/available_for_install?team_id=%d", titleID, tid)
 
 	return c.Delete(ctx, endpoint, nil, nil)
 }

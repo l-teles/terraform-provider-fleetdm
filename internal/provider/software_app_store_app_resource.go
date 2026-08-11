@@ -155,13 +155,20 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 			"`android` apps only (Fleet ignores it for `darwin`). Fleet Premium, Fleet 4.90 or later. " +
 			"\n\n" +
 			"The expected format depends on the platform: **XML** for iOS and iPadOS (the managed-configuration " +
-			"dictionary), and **JSON** for Android Play Store apps. The provider passes the value through without " +
-			"parsing or validating it beyond requiring it to be non-empty — configuration keys vary per app, so " +
-			"consult the app vendor's documentation. For Android, Fleet accepts only the `managedConfiguration` " +
+			"dictionary), and **JSON** for Android Play Store apps. Supply the payload in that natural form — the " +
+			"provider performs whatever encoding Fleet's API requires. Do **not** wrap it in `jsonencode()`. " +
+			"Configuration keys vary per app, so consult the app vendor's documentation; the provider does not " +
+			"validate the contents beyond requiring the value to be non-empty and, for a value that looks like " +
+			"JSON, that it parses. For Android, Fleet accepts only the `managedConfiguration` " +
 			"and `workProfileWidgets` keys from Google's " +
 			"[application policy](https://developers.google.com/android/management/reference/rest/v1/enterprises.policies#ApplicationPolicy). " +
-			"Use `file()` to keep the payload in its own file, and note that Fleet may normalize whitespace and key " +
-			"ordering, so prefer a canonical form to avoid cosmetic diffs. " +
+			"Use `file()` to keep the payload in its own file. Whitespace and JSON key ordering are not significant: " +
+			"the provider compares your value against Fleet's semantically, so a differently-formatted response " +
+			"does not produce a diff. " +
+			"\n\n" +
+			"**Do not embed secrets** (license keys, API tokens, pre-shared values) in the payload: the value is " +
+			"stored in plaintext in Terraform state and displayed in plan output. Keep secrets in the app vendor's " +
+			"server-side configuration where possible. " +
 			"\n\n" +
 			"Managing this is **opt-in** in the same way as `auto_update_enabled`: omit the attribute to leave " +
 			"Fleet's stored configuration alone.",
@@ -454,22 +461,45 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 	// UI on a resource whose HCL omits them never materialize into state.
 	//
 	// Fleet returns the automatic-update settings at the *title* level rather
-	// than inside app_store_app, and omits them entirely when unset — so a nil
-	// pointer on a managed attribute means Fleet has no value and state keeps
-	// what it had rather than flapping to a zero value.
-	if !state.AutoUpdateEnabled.IsNull() && title.AutoUpdateEnabled != nil {
-		state.AutoUpdateEnabled = types.BoolValue(*title.AutoUpdateEnabled)
+	// than inside app_store_app.
+	//
+	// auto_update_enabled maps an absent value to false, mirroring the
+	// pinned_version absent → "" convention. Fleet's response struct tags the
+	// field `omitempty`, so a title whose automatic updates were switched off in
+	// the Fleet UI can come back with the key missing rather than set to false.
+	// Preserving state on nil would make that specific transition — the one
+	// users most need to see — permanently invisible to drift detection.
+	if !state.AutoUpdateEnabled.IsNull() {
+		if title.AutoUpdateEnabled != nil {
+			state.AutoUpdateEnabled = types.BoolValue(*title.AutoUpdateEnabled)
+		} else {
+			state.AutoUpdateEnabled = types.BoolValue(false)
+		}
 	}
+	// The window bounds deliberately do NOT map absent → "". Fleet documents
+	// them as "only applicable when viewing a title in the context of a team",
+	// so absence has meanings other than "cleared", and inventing a "" here
+	// would manufacture drift on a config that is actually in sync. Whether
+	// Fleet keeps echoing the bounds once automatic updates are disabled is
+	// unverified — VPP needs a real Apple token — so this stays conservative:
+	// a present value is adopted, an absent one leaves state alone.
 	if !state.AutoUpdateWindowStart.IsNull() && title.AutoUpdateWindowStart != nil {
 		state.AutoUpdateWindowStart = types.StringValue(*title.AutoUpdateWindowStart)
 	}
 	if !state.AutoUpdateWindowEnd.IsNull() && title.AutoUpdateWindowEnd != nil {
 		state.AutoUpdateWindowEnd = types.StringValue(*title.AutoUpdateWindowEnd)
 	}
-	// Fleet may normalize the managed configuration (whitespace, key order), so
-	// adopting its version verbatim is what keeps the next plan quiet.
+	// Adopt Fleet's echoed configuration only when it actually differs in
+	// meaning. A byte comparison would be wrong in both directions: the stored
+	// value may be written in a different but equivalent form (pre-encoded XML,
+	// or JSON with different key order/whitespace than Fleet returns), and
+	// overwriting it with the echo would leave a diff that no apply can settle.
+	// See SameAppConfiguration.
 	if !state.Configuration.IsNull() && len(app.Configuration) > 0 {
-		state.Configuration = types.StringValue(fleetdm.DecodeAppConfiguration(app.Configuration))
+		echoed := fleetdm.DecodeAppConfiguration(app.Configuration)
+		if !fleetdm.SameAppConfiguration(state.Configuration.ValueString(), echoed) {
+			state.Configuration = types.StringValue(echoed)
+		}
 	}
 
 	diags = resp.State.Set(ctx, state)

@@ -3,19 +3,32 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
+
+// pinnedVersionRegex accepts the three shapes Fleet allows for a version pin:
+// an empty string (unpin), a caret constraint naming ONLY a major version, or
+// any other literal version string. Fleet rejects a caret with a minor or patch
+// component — "only the major version can be specified with a caret (^),
+// without including minor and patch versions. For example, \"^32\"." (verified
+// against a live Fleet v4.90.0) — and that is the one mistake worth catching at
+// plan time. Everything else is left to Fleet, which validates the version
+// against the app's catalog entry.
+var pinnedVersionRegex = regexp.MustCompile(`^(|\^[0-9]+|[^^\s][^\s]*)$`)
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
@@ -82,13 +95,21 @@ func (r *softwareFleetMaintainedAppResource) Schema(_ context.Context, _ resourc
 	attrs["categories"] = softwareCategoriesAttribute()
 	attrs["automatic_install_policy"] = softwareAutomaticInstallPolicyAttribute()
 	attrs["pinned_version"] = schema.StringAttribute{
+		Validators: []validator.String{
+			stringvalidator.RegexMatches(
+				pinnedVersionRegex,
+				`a caret constraint may only specify the major version, without minor or patch (for example "^32")`,
+			),
+		},
 		Description: "Pins this Fleet Maintained App to a specific version instead of tracking the latest version in " +
 			"[Fleet's catalog](https://fleetdm.com/software-catalog). Fleet Premium, Fleet 4.90 or later. " +
 			"\n\n" +
 			"Accepted values: an exact catalog version (`\"2.5.1\"`), a caret major-version constraint " +
 			"(`\"^147\"` — Fleet keeps updating within major version 147 and stops before 148), or an empty " +
 			"string (`\"\"`) to explicitly return the title to automatic latest-version tracking. Available " +
-			"versions are listed in the Fleet UI under **Actions > Versions**. " +
+			"versions are listed in the Fleet UI under **Actions > Versions**. A caret constraint may name only " +
+			"the major version: `\"^147.2\"` is rejected. Fleet stores a caret constraint as written rather than " +
+			"resolving it to the version currently installed, so `\"^147\"` stays `\"^147\"` and does not drift. " +
 			"\n\n" +
 			"Fleet rejects a request that changes the version alongside any other field, so the provider issues " +
 			"the pin as its own dedicated request — metadata first, then the pin — whenever both change in the " +
