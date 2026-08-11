@@ -81,6 +81,17 @@ func optionalIntPtr(val types.Int64) *int {
 	return &v
 }
 
+// optionalBoolPtr converts an optional types.Bool to a *bool.
+// Returns nil if the value is null or unknown, so the field is either omitted
+// or marshalled as `null` depending on the request struct's tags.
+func optionalBoolPtr(val types.Bool) *bool {
+	if val.IsNull() || val.IsUnknown() {
+		return nil
+	}
+	v := val.ValueBool()
+	return &v
+}
+
 // intPtrToInt64 converts a *int to a types.Int64, returning Null for nil pointers.
 func intPtrToInt64(val *int) types.Int64 {
 	if val != nil {

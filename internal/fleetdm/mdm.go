@@ -428,45 +428,123 @@ func (c *Client) DeleteBootstrapPackage(ctx context.Context, teamID int) error {
 	return c.Delete(ctx, fmt.Sprintf("/bootstrap/%d", teamID), nil, nil)
 }
 
-// SetupExperience represents the setup experience settings for a team.
+// SetupExperience represents the setup experience settings Fleet reports for a
+// team, or for the "no team" scope, under mdm.macos_setup. The newer settings
+// are pointers so a missing value (older Fleet, or a setting Fleet has never
+// had written) stays distinguishable from false.
 type SetupExperience struct {
-	EnableEndUserAuth     bool            `json:"enable_end_user_authentication"`
-	EnableReleaseManually bool            `json:"enable_release_device_manually"`
-	Script                *SetupScript    `json:"script,omitempty"`
-	Software              []SetupSoftware `json:"software,omitempty"`
-	SoftwareTitles        []SetupSoftware `json:"software_titles,omitempty"`
+	EnableEndUserAuth         bool  `json:"enable_end_user_authentication"`
+	EnableReleaseManually     bool  `json:"enable_release_device_manually"`
+	LockEndUserInfo           *bool `json:"lock_end_user_info,omitempty"`
+	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
+	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
+	ManualAgentInstall        *bool `json:"manual_agent_install,omitempty"`
 }
 
-// SetupScript represents a script in setup experience.
-type SetupScript struct {
-	ID   int    `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
+// renamedSetupExperience is the same object under the names Fleet 4.90
+// introduced alongside the team-to-fleet rename, where it is reported as
+// mdm.setup_experience. Fleet 4.90 serves both spellings; this one is the
+// fallback so a Fleet that drops the legacy names still reads correctly.
+type renamedSetupExperience struct {
+	EnableEndUserAuth         bool  `json:"enable_end_user_authentication"`
+	EnableReleaseManually     bool  `json:"apple_enable_release_device_manually"`
+	LockEndUserInfo           *bool `json:"lock_end_user_info,omitempty"`
+	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
+	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
+	ManualAgentInstall        *bool `json:"macos_manual_agent_install,omitempty"`
 }
 
-// SetupSoftware represents software in setup experience.
-type SetupSoftware struct {
-	ID   int    `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
+func (s renamedSetupExperience) toSetupExperience() *SetupExperience {
+	return &SetupExperience{
+		EnableEndUserAuth:         s.EnableEndUserAuth,
+		EnableReleaseManually:     s.EnableReleaseManually,
+		LockEndUserInfo:           s.LockEndUserInfo,
+		RequireAllSoftwareMacOS:   s.RequireAllSoftwareMacOS,
+		RequireAllSoftwareWindows: s.RequireAllSoftwareWindows,
+		ManualAgentInstall:        s.ManualAgentInstall,
+	}
+}
+
+// setupExperienceMDMHolder decodes the mdm object of a team or app config
+// response, accepting either spelling of the setup experience settings.
+type setupExperienceMDMHolder struct {
+	MDM struct {
+		MacOSSetup      *SetupExperience        `json:"macos_setup"`
+		SetupExperience *renamedSetupExperience `json:"setup_experience"`
+	} `json:"mdm"`
+}
+
+func (h *setupExperienceMDMHolder) settings() *SetupExperience {
+	if h == nil {
+		return nil
+	}
+	if h.MDM.MacOSSetup != nil {
+		return h.MDM.MacOSSetup
+	}
+	if h.MDM.SetupExperience != nil {
+		return h.MDM.SetupExperience.toSetupExperience()
+	}
+	return nil
+}
+
+// getTeamSetupExperienceResponse decodes a team response. Fleet 4.90 wraps the
+// team in both "team" and "fleet", and only the legacy "team" wrapper carries
+// the legacy mdm.macos_setup names, so both wrappers are tried.
+type getTeamSetupExperienceResponse struct {
+	Team  *setupExperienceMDMHolder `json:"team"`
+	Fleet *setupExperienceMDMHolder `json:"fleet"`
+}
+
+func (r getTeamSetupExperienceResponse) settings() *SetupExperience {
+	if settings := r.Team.settings(); settings != nil {
+		return settings
+	}
+	return r.Fleet.settings()
 }
 
 // UpdateSetupExperienceRequest represents the request to update setup experience.
+// Every setting is a pointer: nil is omitted from the request body so Fleet
+// keeps its current value. Fleet gates several of these fields on presence
+// alone (not value), so sending a field the caller does not manage can turn a
+// working request into an error on a Fleet without MDM turned on.
 type UpdateSetupExperienceRequest struct {
-	TeamID                int   `json:"team_id"`
-	EnableEndUserAuth     *bool `json:"enable_end_user_authentication,omitempty"`
-	EnableReleaseManually *bool `json:"enable_release_device_manually,omitempty"`
+	TeamID                    int   `json:"team_id"`
+	EnableEndUserAuth         *bool `json:"enable_end_user_authentication,omitempty"`
+	EnableReleaseManually     *bool `json:"enable_release_device_manually,omitempty"`
+	LockEndUserInfo           *bool `json:"lock_end_user_info,omitempty"`
+	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
+	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
+	ManualAgentInstall        *bool `json:"manual_agent_install,omitempty"`
 }
 
 // GetSetupExperience retrieves setup experience settings for a team.
+//
+// Fleet has no GET /setup_experience route — the endpoint only answers PATCH,
+// and a GET returns 405 — so the settings are read where Fleet actually
+// reports them: on the team, or on the app config for team 0, Fleet's "no
+// team" scope.
 func (c *Client) GetSetupExperience(ctx context.Context, teamID int) (*SetupExperience, error) {
-	params := map[string]string{
-		"team_id": strconv.Itoa(teamID),
+	if teamID == 0 {
+		var response setupExperienceMDMHolder
+		if err := c.Get(ctx, "/config", nil, &response); err != nil {
+			return nil, fmt.Errorf("failed to get setup experience for no team: %w", err)
+		}
+		settings := response.settings()
+		if settings == nil {
+			return nil, errors.New("failed to get setup experience for no team: app config carries no setup experience settings")
+		}
+		return settings, nil
 	}
-	var response SetupExperience
-	err := c.Get(ctx, "/setup_experience", params, &response)
-	if err != nil {
+
+	var response getTeamSetupExperienceResponse
+	if err := c.Get(ctx, fmt.Sprintf("/fleets/%d", teamID), nil, &response); err != nil {
 		return nil, fmt.Errorf("failed to get setup experience for team %d: %w", teamID, err)
 	}
-	return &response, nil
+	settings := response.settings()
+	if settings == nil {
+		return nil, fmt.Errorf("failed to get setup experience for team %d: team carries no setup experience settings", teamID)
+	}
+	return settings, nil
 }
 
 // UpdateSetupExperience updates setup experience settings for a team.

@@ -18,6 +18,20 @@ resource "fleetdm_setup_experience" "engineering" {
   # Enable both authentication and manual release
   enable_end_user_authentication = true
   enable_release_device_manually = true
+
+  # Opt-in settings: omit any of them to leave Fleet's current value alone.
+  lock_end_user_info           = true
+  require_all_software_macos   = true
+  require_all_software_windows = true
+}
+
+# Install fleetd from the team's bootstrap package instead of during
+# Setup Assistant. Requires a bootstrap package, and no setup experience
+# software or script on the team.
+resource "fleetdm_setup_experience" "kiosks" {
+  team_id = fleetdm_team.kiosks.id
+
+  manual_agent_install = true
 }
 
 # Default setup experience (no authentication required)

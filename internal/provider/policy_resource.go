@@ -947,14 +947,3 @@ func mapPatchSoftware(policy *fleetdm.Policy, diags *diag.Diagnostics) (types.In
 	}
 	return types.Int64Null(), types.ObjectNull(policyPatchSoftwareAttrTypes)
 }
-
-// optionalBoolPtr converts an optional types.Bool to a *bool, returning nil
-// for null/unknown so the JSON marshaler emits `null` (per the no-omitempty
-// design on UpdatePolicyRequest).
-func optionalBoolPtr(val types.Bool) *bool {
-	if val.IsNull() || val.IsUnknown() {
-		return nil
-	}
-	v := val.ValueBool()
-	return &v
-}

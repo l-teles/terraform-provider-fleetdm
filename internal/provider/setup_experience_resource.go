@@ -15,10 +15,15 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource                = &setupExperienceResource{}
-	_ resource.ResourceWithConfigure   = &setupExperienceResource{}
-	_ resource.ResourceWithImportState = &setupExperienceResource{}
+	_ resource.Resource                   = &setupExperienceResource{}
+	_ resource.ResourceWithConfigure      = &setupExperienceResource{}
+	_ resource.ResourceWithImportState    = &setupExperienceResource{}
+	_ resource.ResourceWithValidateConfig = &setupExperienceResource{}
 )
+
+// setupExperienceOptInNote marks the opt-in settings whose semantics are
+// described in the resource description.
+const setupExperienceOptInNote = " Opt-in: omitting the attribute leaves Fleet's own value alone."
 
 // NewSetupExperienceResource is a helper function to simplify the provider implementation.
 func NewSetupExperienceResource() resource.Resource {
@@ -32,10 +37,14 @@ type setupExperienceResource struct {
 
 // setupExperienceResourceModel maps the resource schema data.
 type setupExperienceResourceModel struct {
-	ID                    types.Int64 `tfsdk:"id"`
-	TeamID                types.Int64 `tfsdk:"team_id"`
-	EnableEndUserAuth     types.Bool  `tfsdk:"enable_end_user_authentication"`
-	EnableReleaseManually types.Bool  `tfsdk:"enable_release_device_manually"`
+	ID                        types.Int64 `tfsdk:"id"`
+	TeamID                    types.Int64 `tfsdk:"team_id"`
+	EnableEndUserAuth         types.Bool  `tfsdk:"enable_end_user_authentication"`
+	EnableReleaseManually     types.Bool  `tfsdk:"enable_release_device_manually"`
+	LockEndUserInfo           types.Bool  `tfsdk:"lock_end_user_info"`
+	RequireAllSoftwareMacOS   types.Bool  `tfsdk:"require_all_software_macos"`
+	RequireAllSoftwareWindows types.Bool  `tfsdk:"require_all_software_windows"`
+	ManualAgentInstall        types.Bool  `tfsdk:"manual_agent_install"`
 }
 
 // Metadata returns the resource type name.
@@ -46,7 +55,12 @@ func (r *setupExperienceResource) Metadata(_ context.Context, req resource.Metad
 // Schema defines the schema for the resource.
 func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages FleetDM setup experience settings for a team. This is a Premium feature. Setup experience controls the enrollment flow for macOS devices enrolled via DEP.",
+		MarkdownDescription: "Manages FleetDM setup experience settings for a team. This is a Premium feature. " +
+			"Setup experience controls the enrollment flow for macOS devices enrolled via DEP.\n\n" +
+			"The attributes marked *opt-in* are only sent to Fleet when they are set in HCL, and are only " +
+			"tracked in state once set. Omitting one leaves whatever value Fleet holds — including a value set " +
+			"in Fleet's UI — untouched, which also keeps this resource usable against Fleet versions that " +
+			"predate the setting. Destroying the resource resets only the settings Terraform managed.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The unique identifier (same as team_id).",
@@ -74,6 +88,32 @@ func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaReq
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
 			},
+			"lock_end_user_info": schema.BoolAttribute{
+				Description: "Whether to prevent end users from editing the macOS local account Account Name and " +
+					"Full Name during Setup Assistant, locking both to the values Fleet collected from the IdP. " +
+					"macOS only, and the end user's email is not locked. Requires " +
+					"`enable_end_user_authentication = true` — Fleet rejects the combination otherwise. " +
+					"Requires Fleet 4.83 or later." + setupExperienceOptInNote,
+				Optional: true,
+			},
+			"require_all_software_macos": schema.BoolAttribute{
+				Description: "Whether macOS hosts must finish installing every setup-experience software title " +
+					"before the device is released. Requires Fleet 4.82 or later." + setupExperienceOptInNote,
+				Optional: true,
+			},
+			"require_all_software_windows": schema.BoolAttribute{
+				Description: "Whether Windows hosts must finish installing every setup-experience software title " +
+					"before the device is released. Requires Fleet 4.86 or later, and Windows MDM turned on when " +
+					"set to `true`." + setupExperienceOptInNote,
+				Optional: true,
+			},
+			"manual_agent_install": schema.BoolAttribute{
+				Description: "Whether fleetd is installed by the team's bootstrap package instead of by Fleet " +
+					"during Setup Assistant. Fleet rejects `true` unless the team has a bootstrap package and has " +
+					"no setup-experience software or script configured. Requires Fleet 4.82 or later." +
+					setupExperienceOptInNote,
+				Optional: true,
+			},
 		},
 	}
 }
@@ -81,6 +121,60 @@ func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaReq
 // Configure adds the provider configured client to the resource.
 func (r *setupExperienceResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
+}
+
+// ValidateConfig rejects lock_end_user_info without end user authentication at
+// plan time. Fleet rejects the same combination with a 422.
+func (r *setupExperienceResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var config setupExperienceResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if config.LockEndUserInfo.IsNull() || config.LockEndUserInfo.IsUnknown() || !config.LockEndUserInfo.ValueBool() {
+		return
+	}
+	if config.EnableEndUserAuth.IsUnknown() {
+		return
+	}
+	// A null config value means the attribute was omitted, which Fleet reads as
+	// end user authentication being off regardless of this schema's default.
+	if config.EnableEndUserAuth.IsNull() || !config.EnableEndUserAuth.ValueBool() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("lock_end_user_info"),
+			"Invalid setup experience configuration",
+			"lock_end_user_info can only be enabled when enable_end_user_authentication is set to true.",
+		)
+	}
+}
+
+// setupExperienceUpdateRequest builds the update payload for a plan. The
+// opt-in settings are only sent when the plan holds a value: Fleet gates
+// some of them on presence alone, so sending an unmanaged field would break
+// the request on a Fleet without MDM turned on.
+func setupExperienceUpdateRequest(teamID int, plan setupExperienceResourceModel) *fleetdm.UpdateSetupExperienceRequest {
+	enableEndUserAuth := plan.EnableEndUserAuth.ValueBool()
+	enableReleaseManually := plan.EnableReleaseManually.ValueBool()
+
+	return &fleetdm.UpdateSetupExperienceRequest{
+		TeamID:                    teamID,
+		EnableEndUserAuth:         &enableEndUserAuth,
+		EnableReleaseManually:     &enableReleaseManually,
+		LockEndUserInfo:           optionalBoolPtr(plan.LockEndUserInfo),
+		RequireAllSoftwareMacOS:   optionalBoolPtr(plan.RequireAllSoftwareMacOS),
+		RequireAllSoftwareWindows: optionalBoolPtr(plan.RequireAllSoftwareWindows),
+		ManualAgentInstall:        optionalBoolPtr(plan.ManualAgentInstall),
+	}
+}
+
+// readOptionalBool adopts a value Fleet returned only for a setting Terraform
+// already manages, keeping omitted attributes null in state.
+func readOptionalBool(current types.Bool, remote *bool) types.Bool {
+	if current.IsNull() || remote == nil {
+		return current
+	}
+	return types.BoolValue(*remote)
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -93,17 +187,9 @@ func (r *setupExperienceResource) Create(ctx context.Context, req resource.Creat
 	}
 
 	teamID := int(plan.TeamID.ValueInt64())
-	enableEndUserAuth := plan.EnableEndUserAuth.ValueBool()
-	enableReleaseManually := plan.EnableReleaseManually.ValueBool()
 
 	// Update the setup experience
-	updateReq := &fleetdm.UpdateSetupExperienceRequest{
-		TeamID:                teamID,
-		EnableEndUserAuth:     &enableEndUserAuth,
-		EnableReleaseManually: &enableReleaseManually,
-	}
-
-	err := r.client.UpdateSetupExperience(ctx, updateReq)
+	err := r.client.UpdateSetupExperience(ctx, setupExperienceUpdateRequest(teamID, plan))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating setup experience",
@@ -145,9 +231,15 @@ func (r *setupExperienceResource) Read(ctx context.Context, req resource.ReadReq
 		return
 	}
 
-	// Update state with read values
+	// Update state with read values. The opt-in settings are only adopted
+	// when state already holds a value for them, so an omitted attribute keeps
+	// tracking Fleet's own value instead of drifting into the plan.
 	state.EnableEndUserAuth = types.BoolValue(experience.EnableEndUserAuth)
 	state.EnableReleaseManually = types.BoolValue(experience.EnableReleaseManually)
+	state.LockEndUserInfo = readOptionalBool(state.LockEndUserInfo, experience.LockEndUserInfo)
+	state.RequireAllSoftwareMacOS = readOptionalBool(state.RequireAllSoftwareMacOS, experience.RequireAllSoftwareMacOS)
+	state.RequireAllSoftwareWindows = readOptionalBool(state.RequireAllSoftwareWindows, experience.RequireAllSoftwareWindows)
+	state.ManualAgentInstall = readOptionalBool(state.ManualAgentInstall, experience.ManualAgentInstall)
 
 	// Set the state
 	diags = resp.State.Set(ctx, state)
@@ -164,17 +256,9 @@ func (r *setupExperienceResource) Update(ctx context.Context, req resource.Updat
 	}
 
 	teamID := int(plan.TeamID.ValueInt64())
-	enableEndUserAuth := plan.EnableEndUserAuth.ValueBool()
-	enableReleaseManually := plan.EnableReleaseManually.ValueBool()
 
 	// Update the setup experience
-	updateReq := &fleetdm.UpdateSetupExperienceRequest{
-		TeamID:                teamID,
-		EnableEndUserAuth:     &enableEndUserAuth,
-		EnableReleaseManually: &enableReleaseManually,
-	}
-
-	err := r.client.UpdateSetupExperience(ctx, updateReq)
+	err := r.client.UpdateSetupExperience(ctx, setupExperienceUpdateRequest(teamID, plan))
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating setup experience",
@@ -199,13 +283,27 @@ func (r *setupExperienceResource) Delete(ctx context.Context, req resource.Delet
 
 	teamID := int(state.TeamID.ValueInt64())
 
-	// Reset setup experience to defaults
+	// Reset setup experience to defaults, clearing only the opt-in settings
+	// this resource was managing.
 	enableEndUserAuth := false
 	enableReleaseManually := false
+	cleared := false
 	updateReq := &fleetdm.UpdateSetupExperienceRequest{
 		TeamID:                teamID,
 		EnableEndUserAuth:     &enableEndUserAuth,
 		EnableReleaseManually: &enableReleaseManually,
+	}
+	if !state.LockEndUserInfo.IsNull() {
+		updateReq.LockEndUserInfo = &cleared
+	}
+	if !state.RequireAllSoftwareMacOS.IsNull() {
+		updateReq.RequireAllSoftwareMacOS = &cleared
+	}
+	if !state.RequireAllSoftwareWindows.IsNull() {
+		updateReq.RequireAllSoftwareWindows = &cleared
+	}
+	if !state.ManualAgentInstall.IsNull() {
+		updateReq.ManualAgentInstall = &cleared
 	}
 
 	err := r.client.UpdateSetupExperience(ctx, updateReq)
