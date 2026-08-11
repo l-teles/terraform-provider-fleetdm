@@ -3,8 +3,10 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -287,6 +289,126 @@ func TestClient_CreateQuery(t *testing.T) {
 
 	if query.Name != "New Query" {
 		t.Errorf("expected query name 'New Query', got: %s", query.Name)
+	}
+}
+
+// TestClient_CreateQuery_LabelSelectors covers the Fleet 4.90 report label
+// scoping on create: the selector in use goes out as a name array, and
+// omitempty keeps the unused one off the wire (Fleet rejects a request whose
+// labels_include_any and labels_include_all are both non-empty).
+func TestClient_CreateQuery_LabelSelectors(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rawBody = string(body)
+
+		var req CreateQueryRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		labels := make([]ReportLabel, 0, len(req.LabelsIncludeAll))
+		for i, n := range req.LabelsIncludeAll {
+			labels = append(labels, ReportLabel{ID: i + 1, Name: n})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreateQueryResponse{
+			Report: Query{ID: 9, Name: req.Name, Report: req.Query, LabelsIncludeAll: labels},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	query, err := client.CreateQuery(context.Background(), CreateQueryRequest{
+		Name:             "Scoped report",
+		Query:            "SELECT 1;",
+		LabelsIncludeAll: []string{"Macs on Sonoma", "Engineering"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if !strings.Contains(rawBody, `"labels_include_all":["Macs on Sonoma","Engineering"]`) {
+		t.Errorf("expected labels_include_all on the wire, body was: %s", rawBody)
+	}
+	if strings.Contains(rawBody, "labels_include_any") {
+		t.Errorf("expected labels_include_any to be omitted, body was: %s", rawBody)
+	}
+	if len(query.LabelsIncludeAll) != 2 || query.LabelsIncludeAll[0].Name != "Macs on Sonoma" {
+		t.Errorf("expected labels_include_all echo, got: %+v", query.LabelsIncludeAll)
+	}
+}
+
+// TestClient_UpdateQuery_LabelClearVsNoChange asserts the report PATCH
+// endpoint's nil-vs-empty label convention, which matches the policy
+// endpoints: null preserves Fleet's existing labels, [] clears them.
+func TestClient_UpdateQuery_LabelClearVsNoChange(t *testing.T) {
+	captured := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(UpdateQueryResponse{Report: Query{ID: 3, Name: "ok"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	if _, err := client.UpdateQuery(context.Background(), 3, UpdateQueryRequest{Name: "ok"}); err != nil {
+		t.Fatalf("nil-labels update failed: %v", err)
+	}
+	body := <-captured
+	for _, want := range []string{`"labels_include_any":null`, `"labels_include_all":null`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, body)
+		}
+	}
+
+	if _, err := client.UpdateQuery(context.Background(), 3, UpdateQueryRequest{
+		Name:             "ok",
+		LabelsIncludeAny: []string{"Macs on Sonoma"},
+		LabelsIncludeAll: []string{},
+	}); err != nil {
+		t.Fatalf("selector-swap update failed: %v", err)
+	}
+	body = <-captured
+	for _, want := range []string{`"labels_include_any":["Macs on Sonoma"]`, `"labels_include_all":[]`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, body)
+		}
+	}
+}
+
+// TestClient_GetQuery_LabelSelectors decodes a report response carrying both
+// label arrays, mirroring the shape Fleet 4.90 returns.
+func TestClient_GetQuery_LabelSelectors(t *testing.T) {
+	body := `{
+	  "report": {
+	    "id": 93,
+	    "name": "Scoped report",
+	    "report": "SELECT 1;",
+	    "labels_include_any": [{"id": 51, "name": "probe-a"}],
+	    "labels_include_all": null
+	  }
+	}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	query, err := client.GetQuery(context.Background(), 93)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(query.LabelsIncludeAny) != 1 || query.LabelsIncludeAny[0].Name != "probe-a" {
+		t.Errorf("expected labels_include_any [{id:51,name:\"probe-a\"}], got: %+v", query.LabelsIncludeAny)
+	}
+	if query.LabelsIncludeAll != nil {
+		t.Errorf("expected nil labels_include_all, got: %+v", query.LabelsIncludeAll)
 	}
 }
 

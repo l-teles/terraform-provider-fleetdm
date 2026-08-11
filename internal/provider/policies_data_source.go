@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -27,6 +29,7 @@ type PoliciesDataSource struct {
 // PoliciesDataSourceModel describes the data source data model.
 type PoliciesDataSourceModel struct {
 	TeamID   types.Int64   `tfsdk:"team_id"`
+	Platform types.String  `tfsdk:"platform"`
 	Policies []PolicyModel `tfsdk:"policies"`
 }
 
@@ -62,6 +65,13 @@ func (d *PoliciesDataSource) Schema(ctx context.Context, req datasource.SchemaRe
 			"team_id": schema.Int64Attribute{
 				Optional:            true,
 				MarkdownDescription: "Filter policies by team ID. If not specified, global policies are returned.",
+			},
+			"platform": schema.StringAttribute{
+				Optional:            true,
+				MarkdownDescription: "Filter policies by the platform they target. One of `darwin`, `windows`, `linux` or `chrome`. If not specified, policies for all platforms are returned. _Requires Fleet 4.90+._",
+				Validators: []validator.String{
+					stringvalidator.OneOf("darwin", "windows", "linux", "chrome"),
+				},
 			},
 			"policies": schema.ListNestedAttribute{
 				Computed:            true,
@@ -152,9 +162,10 @@ func (d *PoliciesDataSource) Read(ctx context.Context, req datasource.ReadReques
 		return
 	}
 
-	teamID := optionalIntPtr(data.TeamID)
-
-	policies, err := d.client.ListPolicies(ctx, teamID)
+	policies, err := d.client.ListPolicies(ctx, fleetdm.ListPoliciesOptions{
+		TeamID:   optionalIntPtr(data.TeamID),
+		Platform: data.Platform.ValueString(),
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list policies: %s", err))
 		return

@@ -64,6 +64,7 @@ output "compliance_rate" {
 - `author_name` (String) The name of the user who created the policy.
 - `calendar_events_enabled` (Boolean) Whether calendar events are triggered when the policy fails.
 - `conditional_access_enabled` (Boolean) Whether conditional access (SSO blocking) is enabled for failing hosts.
+- `continuous_automations_enabled` (Boolean) Whether the policy's automations re-run on every failing check instead of only on the transition into failing. Always `false` for global policies — Fleet only supports the flag on team policies. _Fleet 4.90+._
 - `created_at` (String) Timestamp when the policy was created.
 - `critical` (Boolean) Whether the policy is critical.
 - `description` (String) A description of the policy.
@@ -71,7 +72,9 @@ output "compliance_rate" {
 - `fleet_maintained` (Boolean) Whether the policy is maintained by Fleet.
 - `host_count_updated_at` (String) Timestamp when the passing/failing host counts were last refreshed.
 - `install_software` (Attributes) Echo of the install-software automation attached to this policy. (see [below for nested schema](#nestedatt--install_software))
+- `labels_exclude_all` (Set of String) Labels whose hosts are excluded from this policy (all-of semantics). _Fleet 4.90+._
 - `labels_exclude_any` (Set of String) Labels whose hosts are excluded from this policy (any-of semantics).
+- `labels_include_all` (Set of String) Labels whose hosts are targeted by this policy (all-of semantics). _Fleet 4.90+._
 - `labels_include_any` (Set of String) Labels whose hosts are targeted by this policy (any-of semantics).
 - `name` (String) The name of the policy.
 - `passing_host_count` (Number) The number of hosts passing this policy.

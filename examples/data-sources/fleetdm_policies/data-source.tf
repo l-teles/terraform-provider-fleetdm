@@ -6,6 +6,11 @@ data "fleetdm_policies" "team" {
   team_id = fleetdm_team.workstations.id
 }
 
+# Get only the policies targeting one platform (Fleet 4.90+)
+data "fleetdm_policies" "macos" {
+  platform = "darwin"
+}
+
 # Output all policy names
 output "all_policy_names" {
   value = [for policy in data.fleetdm_policies.global.policies : policy.name]

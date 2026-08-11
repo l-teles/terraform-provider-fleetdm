@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -12,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -47,6 +50,8 @@ type ReportResourceModel struct {
 	Logging            types.String `tfsdk:"logging"`
 	DiscardData        types.Bool   `tfsdk:"discard_data"`
 	FleetID            types.Int64  `tfsdk:"fleet_id"`
+	LabelsIncludeAny   types.Set    `tfsdk:"labels_include_any"`
+	LabelsIncludeAll   types.Set    `tfsdk:"labels_include_all"`
 	AuthorID           types.Int64  `tfsdk:"author_id"`
 	AuthorName         types.String `tfsdk:"author_name"`
 	AuthorEmail        types.String `tfsdk:"author_email"`
@@ -134,6 +139,23 @@ func (r *ReportResource) Schema(ctx context.Context, req resource.SchemaRequest,
 					int64planmodifier.RequiresReplace(),
 				},
 			},
+			"labels_include_any": schema.SetAttribute{
+				Optional:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Run this report only on hosts that have any of the specified labels. Mutually exclusive with `labels_include_all`. Order-insensitive. To stop scoping by label, omit the attribute (or set it to null) — an explicit empty set is rejected because it would never converge with the null Fleet returns for an unscoped report. _Available in Fleet Premium 4.90+._",
+				Validators: []validator.Set{
+					setvalidator.SizeAtLeast(1),
+					setvalidator.ConflictsWith(path.MatchRoot("labels_include_all")),
+				},
+			},
+			"labels_include_all": schema.SetAttribute{
+				Optional:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Run this report only on hosts that have all of the specified labels. Mutually exclusive with `labels_include_any` — the conflict is enforced by the validator on that attribute. Order-insensitive. To stop scoping by label, omit the attribute (or set it to null). _Available in Fleet Premium 4.90+._",
+				Validators: []validator.Set{
+					setvalidator.SizeAtLeast(1),
+				},
+			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
 				MarkdownDescription: "The ID of the user who created the report.",
@@ -173,6 +195,11 @@ func (r *ReportResource) Create(ctx context.Context, req resource.CreateRequest,
 		AutomationsEnabled: data.AutomationsEnabled.ValueBool(),
 		Logging:            data.Logging.ValueString(),
 		DiscardData:        data.DiscardData.ValueBool(),
+		LabelsIncludeAny:   stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
+		LabelsIncludeAll:   stringSetToSlice(ctx, data.LabelsIncludeAll, &resp.Diagnostics),
+	}
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	createReq.TeamID = optionalIntPtr(data.FleetID)
@@ -230,6 +257,11 @@ func (r *ReportResource) Update(ctx context.Context, req resource.UpdateRequest,
 		AutomationsEnabled: data.AutomationsEnabled.ValueBool(),
 		Logging:            data.Logging.ValueString(),
 		DiscardData:        data.DiscardData.ValueBool(),
+		LabelsIncludeAny:   stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
+		LabelsIncludeAll:   stringSetToSlice(ctx, data.LabelsIncludeAll, &resp.Diagnostics),
+	}
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	query, err := r.client.UpdateQuery(ctx, int(data.ID.ValueInt64()), updateReq)
@@ -270,7 +302,11 @@ func (r *ReportResource) ImportState(ctx context.Context, req resource.ImportSta
 }
 
 // MoveState supports moving state from the deprecated fleetdm_query resource to fleetdm_report.
-// The only schema difference is that fleetdm_query used "team_id" while fleetdm_report uses "fleet_id".
+// fleetdm_query used "team_id" where fleetdm_report uses "fleet_id", and has no
+// counterpart for the label-scoping attributes — those are seeded as explicit
+// null sets. The zero value of types.Set carries no element type, which the
+// framework cannot serialize into the target schema, so every attribute on
+// ReportResourceModel must be assigned here.
 func (r *ReportResource) MoveState(ctx context.Context) []resource.StateMover {
 	return []resource.StateMover{
 		{
@@ -294,6 +330,8 @@ func (r *ReportResource) MoveState(ctx context.Context) []resource.StateMover {
 					Logging:            src.Logging,
 					DiscardData:        src.DiscardData,
 					FleetID:            src.TeamID,
+					LabelsIncludeAny:   types.SetNull(types.StringType),
+					LabelsIncludeAll:   types.SetNull(types.StringType),
 					AuthorID:           src.AuthorID,
 					AuthorName:         src.AuthorName,
 					AuthorEmail:        src.AuthorEmail,
@@ -320,4 +358,22 @@ func (r *ReportResource) mapQueryToModel(query *fleetdm.Query, data *ReportResou
 	data.AuthorName = types.StringValue(query.AuthorName)
 	data.AuthorEmail = types.StringValue(query.AuthorEmail)
 	data.FleetID = intPtrToInt64(query.TeamID)
+	data.LabelsIncludeAny = reportLabelsToSet(query.LabelsIncludeAny)
+	data.LabelsIncludeAll = reportLabelsToSet(query.LabelsIncludeAll)
+}
+
+// reportLabelsToSet flattens Fleet's per-label response objects (id+name)
+// into a types.Set of label names — what the user-facing schema exposes.
+// Mirrors policyLabelsToSet: a Set (rather than a List) because Fleet returns
+// labels in nondeterministic order, and SetNull for empty input because Fleet
+// reports an unscoped report as a null label array.
+func reportLabelsToSet(labels []fleetdm.ReportLabel) types.Set {
+	if len(labels) == 0 {
+		return types.SetNull(types.StringType)
+	}
+	values := make([]attr.Value, 0, len(labels))
+	for _, l := range labels {
+		values = append(values, types.StringValue(l.Name))
+	}
+	return types.SetValueMust(types.StringType, values)
 }

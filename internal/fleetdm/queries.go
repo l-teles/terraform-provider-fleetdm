@@ -6,6 +6,14 @@ import (
 	"strconv"
 )
 
+// ReportLabel is the per-label echo Fleet returns inside labels_include_any
+// and labels_include_all on report responses. The request side takes a
+// `[]string` of label names, so this struct is response-only.
+type ReportLabel struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 // Query represents a FleetDM report (query).
 //
 // Fleet's API is transitioning field names: the "report" response wrapper uses
@@ -35,6 +43,10 @@ type Query struct {
 	Stats              *Stats `json:"stats,omitempty"`
 	CreatedAt          string `json:"created_at,omitempty"`
 	UpdatedAt          string `json:"updated_at,omitempty"`
+	// Label scoping (Fleet 4.90+). Reports support the two "include"
+	// selectors only — an exclude field on the request is silently ignored.
+	LabelsIncludeAny []ReportLabel `json:"labels_include_any,omitempty"`
+	LabelsIncludeAll []ReportLabel `json:"labels_include_all,omitempty"`
 }
 
 // normalizeQuery consolidates the dual field names after deserialization.
@@ -104,18 +116,24 @@ func (r *GetQueryResponse) resolve() Query {
 }
 
 // CreateQueryRequest represents the request to create a report.
+//
+// Fleet rejects a request whose labels_include_any and labels_include_all are
+// both non-empty with "report can include at most one of labels_include_any
+// or labels_include_all".
 type CreateQueryRequest struct {
-	Name               string `json:"name"`
-	Description        string `json:"description,omitempty"`
-	Query              string `json:"query"`
-	Platform           string `json:"platform,omitempty"`
-	MinOsqueryVersion  string `json:"min_osquery_version,omitempty"`
-	Interval           int    `json:"interval,omitempty"`
-	ObserverCanRun     bool   `json:"observer_can_run,omitempty"`
-	AutomationsEnabled bool   `json:"automations_enabled,omitempty"`
-	Logging            string `json:"logging,omitempty"`
-	DiscardData        bool   `json:"discard_data,omitempty"`
-	TeamID             *int   `json:"fleet_id,omitempty"`
+	Name               string   `json:"name"`
+	Description        string   `json:"description,omitempty"`
+	Query              string   `json:"query"`
+	Platform           string   `json:"platform,omitempty"`
+	MinOsqueryVersion  string   `json:"min_osquery_version,omitempty"`
+	Interval           int      `json:"interval,omitempty"`
+	ObserverCanRun     bool     `json:"observer_can_run,omitempty"`
+	AutomationsEnabled bool     `json:"automations_enabled,omitempty"`
+	Logging            string   `json:"logging,omitempty"`
+	DiscardData        bool     `json:"discard_data,omitempty"`
+	TeamID             *int     `json:"fleet_id,omitempty"`
+	LabelsIncludeAny   []string `json:"labels_include_any,omitempty"`
+	LabelsIncludeAll   []string `json:"labels_include_all,omitempty"`
 }
 
 // CreateQueryResponse represents the response from the create report endpoint.
@@ -132,17 +150,25 @@ func (r *CreateQueryResponse) resolve() Query {
 }
 
 // UpdateQueryRequest represents the request to update a report.
+//
+// The label slice fields deliberately drop `omitempty` so the wire format can
+// express both intents Fleet distinguishes: a `nil` slice serializes as JSON
+// `null`, which Fleet reads as "no change" (preserve the existing labels),
+// while an empty slice serializes as `[]`, which clears them. As on create,
+// the two fields cannot both be non-empty in one request.
 type UpdateQueryRequest struct {
-	Name               string `json:"name,omitempty"`
-	Description        string `json:"description,omitempty"`
-	Query              string `json:"query,omitempty"`
-	Platform           string `json:"platform,omitempty"`
-	MinOsqueryVersion  string `json:"min_osquery_version,omitempty"`
-	Interval           int    `json:"interval,omitempty"`
-	ObserverCanRun     bool   `json:"observer_can_run,omitempty"`
-	AutomationsEnabled bool   `json:"automations_enabled,omitempty"`
-	Logging            string `json:"logging,omitempty"`
-	DiscardData        bool   `json:"discard_data,omitempty"`
+	Name               string   `json:"name,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	Query              string   `json:"query,omitempty"`
+	Platform           string   `json:"platform,omitempty"`
+	MinOsqueryVersion  string   `json:"min_osquery_version,omitempty"`
+	Interval           int      `json:"interval,omitempty"`
+	ObserverCanRun     bool     `json:"observer_can_run,omitempty"`
+	AutomationsEnabled bool     `json:"automations_enabled,omitempty"`
+	Logging            string   `json:"logging,omitempty"`
+	DiscardData        bool     `json:"discard_data,omitempty"`
+	LabelsIncludeAny   []string `json:"labels_include_any"`
+	LabelsIncludeAll   []string `json:"labels_include_all"`
 }
 
 // UpdateQueryResponse represents the response from the update report endpoint.
