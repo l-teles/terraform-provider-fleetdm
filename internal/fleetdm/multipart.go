@@ -14,6 +14,14 @@ import (
 // and optional text fields, executes it, and returns the raw response body.
 // Callers are responsible for unmarshalling the response.
 func (c *Client) doMultipartRequest(ctx context.Context, method, endpoint, fileField, fileName string, fileContent []byte, fields map[string]string) ([]byte, error) {
+	return c.doMultipartRequestMulti(ctx, method, endpoint, fileField, fileName, fileContent, singleValueFields(fields))
+}
+
+// doMultipartRequestMulti is doMultipartRequest with repeated text fields:
+// each value of a key is written as its own form field. Fleet's
+// configuration-profile endpoints require this shape for label targeting
+// (comma-joined values are rejected as a single unknown label name).
+func (c *Client) doMultipartRequestMulti(ctx context.Context, method, endpoint, fileField, fileName string, fileContent []byte, fields map[string][]string) ([]byte, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -26,11 +34,8 @@ func (c *Client) doMultipartRequest(ctx context.Context, method, endpoint, fileF
 		return nil, fmt.Errorf("failed to write file content: %w", err)
 	}
 
-	// Add text fields
-	for k, v := range fields {
-		if err := writer.WriteField(k, v); err != nil {
-			return nil, fmt.Errorf("failed to write field %s: %w", k, err)
-		}
+	if err := writeMultiFields(writer, fields); err != nil {
+		return nil, err
 	}
 
 	if err := writer.Close(); err != nil {
@@ -49,13 +54,17 @@ func (c *Client) doMultipartRequest(ctx context.Context, method, endpoint, fileF
 // replace the installer binary in-place, the caller switches to
 // doMultipartRequest with the "software" file field instead.
 func (c *Client) doMultipartFormRequest(ctx context.Context, method, endpoint string, fields map[string]string) ([]byte, error) {
+	return c.doMultipartFormRequestMulti(ctx, method, endpoint, singleValueFields(fields))
+}
+
+// doMultipartFormRequestMulti is doMultipartFormRequest with repeated text
+// fields; see doMultipartRequestMulti.
+func (c *Client) doMultipartFormRequestMulti(ctx context.Context, method, endpoint string, fields map[string][]string) ([]byte, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	for k, v := range fields {
-		if err := writer.WriteField(k, v); err != nil {
-			return nil, fmt.Errorf("failed to write field %s: %w", k, err)
-		}
+	if err := writeMultiFields(writer, fields); err != nil {
+		return nil, err
 	}
 
 	if err := writer.Close(); err != nil {
@@ -63,6 +72,31 @@ func (c *Client) doMultipartFormRequest(ctx context.Context, method, endpoint st
 	}
 
 	return c.sendMultipart(ctx, method, endpoint, &body, writer.FormDataContentType())
+}
+
+// singleValueFields converts a single-value field map to the multi-value
+// shape used by the *Multi helpers.
+func singleValueFields(fields map[string]string) map[string][]string {
+	if fields == nil {
+		return nil
+	}
+	multi := make(map[string][]string, len(fields))
+	for k, v := range fields {
+		multi[k] = []string{v}
+	}
+	return multi
+}
+
+// writeMultiFields writes each value of every key as its own form field.
+func writeMultiFields(writer *multipart.Writer, fields map[string][]string) error {
+	for k, values := range fields {
+		for _, v := range values {
+			if err := writer.WriteField(k, v); err != nil {
+				return fmt.Errorf("failed to write field %s: %w", k, err)
+			}
+		}
+	}
+	return nil
 }
 
 // sendMultipart executes a multipart/form-data request whose body has already

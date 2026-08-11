@@ -3,6 +3,7 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -641,5 +642,186 @@ func TestClient_GetConfigProfileContent_Error(t *testing.T) {
 	_, err := client.GetConfigProfileContent(context.Background(), "p-does-not-exist")
 	if err == nil {
 		t.Fatal("expected error for 404 response, got nil")
+	}
+}
+
+func TestProfileIdentifierFromContent(t *testing.T) {
+	mobileconfig := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadIdentifier</key>
+      <string>com.example.nested.payload</string>
+      <key>PayloadType</key>
+      <string>com.apple.dock</string>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>Test Profile</string>
+  <key>PayloadIdentifier</key>
+  <string>com.example.toplevel</string>
+</dict>
+</plist>`
+
+	cases := []struct {
+		name    string
+		content string
+		wantID  string
+		wantOK  bool
+	}{
+		{"mobileconfig top-level wins over nested", mobileconfig, "com.example.toplevel", true},
+		{"mobileconfig with BOM", "\xef\xbb\xbf" + mobileconfig, "com.example.toplevel", true},
+		{"ddm json declaration", `{"Type":"com.apple.configuration.management.test","Identifier":"com.example.ddm"}`, "com.example.ddm", true},
+		{"ddm json without identifier", `{"Type":"com.apple.configuration.management.test"}`, "", false},
+		{"windows xml has no identifier", `<Replace><Item><Target><LocURI>./Device/X</LocURI></Target></Item></Replace>`, "", false},
+		{"garbage", "not a profile", "", false},
+		{"malformed plist", `<plist><dict><key>PayloadIdentifier</key>`, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id, ok := ProfileIdentifierFromContent([]byte(c.content))
+			if id != c.wantID || ok != c.wantOK {
+				t.Errorf("got (%q, %v), want (%q, %v)", id, ok, c.wantID, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestClient_CreateConfigProfile_RepeatedLabelFields is a regression test:
+// Fleet rejects comma-joined label values as a single unknown label name, so
+// each label must be its own form field.
+func TestClient_CreateConfigProfile_RepeatedLabelFields(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		got := r.MultipartForm.Value["labels_include_all"]
+		want := []string{"label one", "label two"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("expected repeated labels_include_all fields %v, got %v", want, got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-lbl-1"})
+	})
+	mux.HandleFunc("/api/v1/fleet/configuration_profiles/p-lbl-1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(MDMConfigProfile{ProfileUUID: "p-lbl-1"})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.CreateConfigProfile(context.Background(), &CreateConfigProfileRequest{
+		Filename:         "test.xml",
+		Profile:          []byte(`<Replace></Replace>`),
+		LabelsIncludeAll: []string{"label one", "label two"},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfigProfile failed: %v", err)
+	}
+}
+
+func TestClient_UpdateConfigProfile_LabelsOnly(t *testing.T) {
+	var gotMethod string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/configuration_profiles/p-upd-1" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		gotMethod = r.Method
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if _, _, err := r.FormFile("profile"); err == nil {
+			t.Error("expected no file part on labels-only update")
+		}
+		got := r.MultipartForm.Value["labels_exclude_any"]
+		if len(got) != 2 || got[0] != "lbl-a" || got[1] != "lbl-b" {
+			t.Errorf("expected repeated labels_exclude_any [lbl-a lbl-b], got %v", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.UpdateConfigProfile(context.Background(), "p-upd-1", &UpdateConfigProfileRequest{
+		LabelsExcludeAny: []string{"lbl-a", "lbl-b"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfigProfile failed: %v", err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Errorf("expected PATCH, got %s", gotMethod)
+	}
+}
+
+func TestClient_UpdateConfigProfile_WithContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		file, header, err := r.FormFile("profile")
+		if err != nil {
+			t.Fatalf("expected file part: %v", err)
+		}
+		defer file.Close()
+		if header.Filename != "updated.xml" {
+			t.Errorf("expected filename 'updated.xml', got %q", header.Filename)
+		}
+		if got := r.MultipartForm.Value["labels_include_any"]; len(got) != 1 || got[0] != "keep-me" {
+			t.Errorf("expected labels_include_any [keep-me] alongside content, got %v", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.UpdateConfigProfile(context.Background(), "p-upd-2", &UpdateConfigProfileRequest{
+		Profile:          []byte(`<Replace><Item></Item></Replace>`),
+		Filename:         "updated.xml",
+		LabelsIncludeAny: []string{"keep-me"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfigProfile failed: %v", err)
+	}
+}
+
+func TestClient_UpdateConfigProfile_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Resource Not Found"})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	err = client.UpdateConfigProfile(context.Background(), "p-missing", &UpdateConfigProfileRequest{})
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 404 {
+		t.Errorf("expected APIError with 404, got %v", err)
 	}
 }

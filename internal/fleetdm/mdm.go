@@ -6,11 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 // MDMConfigProfile represents an MDM configuration profile.
@@ -156,6 +157,89 @@ func ProfileExtensionFromContent(content []byte) string {
 	}
 }
 
+// ProfileIdentifierFromContent extracts the identity Fleet uses to match a
+// profile across in-place updates: the top-level PayloadIdentifier of a
+// .mobileconfig plist, or the top-level "Identifier" of a DDM JSON
+// declaration. Windows XML profiles carry no embedded identifier, so ok is
+// false for them and for any content the identifier cannot be parsed from.
+func ProfileIdentifierFromContent(content []byte) (identifier string, ok bool) {
+	trimmed := bytes.TrimLeft(content, " \t\r\n\xef\xbb\xbf")
+	switch {
+	case bytes.HasPrefix(trimmed, []byte("{")):
+		var decl struct {
+			Identifier string `json:"Identifier"`
+		}
+		if err := json.Unmarshal(trimmed, &decl); err != nil || decl.Identifier == "" {
+			return "", false
+		}
+		return decl.Identifier, true
+	case bytes.Contains(trimmed, []byte("<plist")):
+		id, err := plistTopLevelString(trimmed, "PayloadIdentifier")
+		if err != nil || id == "" {
+			return "", false
+		}
+		return id, true
+	default:
+		return "", false
+	}
+}
+
+// plistTopLevelString returns the string value for a key in the top-level
+// dict of a plist document, ignoring nested dicts (e.g. PayloadContent
+// items, which carry their own PayloadIdentifier).
+func plistTopLevelString(content []byte, key string) (string, error) {
+	dec := xml.NewDecoder(bytes.NewReader(content))
+	dictDepth := 0
+	keyMatched := false
+	for {
+		tok, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "plist":
+				// container, descend
+			case "dict":
+				dictDepth++
+				keyMatched = false
+			case "key":
+				var k string
+				if err := dec.DecodeElement(&k, &t); err != nil {
+					return "", err
+				}
+				keyMatched = dictDepth == 1 && k == key
+			case "string":
+				if keyMatched {
+					var v string
+					if err := dec.DecodeElement(&v, &t); err != nil {
+						return "", err
+					}
+					return v, nil
+				}
+				if err := dec.Skip(); err != nil {
+					return "", err
+				}
+			default:
+				// Skip whole subtrees (arrays with nested payload dicts,
+				// data blobs, booleans, ...) so nested keys never match.
+				if err := dec.Skip(); err != nil {
+					return "", err
+				}
+				keyMatched = false
+			}
+		case xml.EndElement:
+			if t.Name.Local == "dict" {
+				dictDepth--
+			}
+		}
+	}
+}
+
 // CreateConfigProfileRequest contains the parameters for creating a configuration profile.
 type CreateConfigProfileRequest struct {
 	TeamID           *int     // Optional team ID
@@ -168,23 +252,25 @@ type CreateConfigProfileRequest struct {
 }
 
 // CreateConfigProfile creates a new MDM configuration profile.
-// This uses multipart/form-data as required by the FleetDM API.
+// This uses multipart/form-data as required by the FleetDM API. Label values
+// must be sent as repeated form fields: Fleet treats a comma-joined value as
+// a single (unknown) label name and rejects the request.
 func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfileRequest) (*MDMConfigProfile, error) {
-	fields := make(map[string]string)
+	fields := make(map[string][]string)
 	if req.TeamID != nil {
-		fields["team_id"] = strconv.Itoa(*req.TeamID)
+		fields["team_id"] = []string{strconv.Itoa(*req.TeamID)}
 	}
 	if len(req.Labels) > 0 {
-		fields["labels"] = strings.Join(req.Labels, ",")
+		fields["labels"] = req.Labels
 	}
 	if len(req.LabelsIncludeAll) > 0 {
-		fields["labels_include_all"] = strings.Join(req.LabelsIncludeAll, ",")
+		fields["labels_include_all"] = req.LabelsIncludeAll
 	}
 	if len(req.LabelsIncludeAny) > 0 {
-		fields["labels_include_any"] = strings.Join(req.LabelsIncludeAny, ",")
+		fields["labels_include_any"] = req.LabelsIncludeAny
 	}
 	if len(req.LabelsExcludeAny) > 0 {
-		fields["labels_exclude_any"] = strings.Join(req.LabelsExcludeAny, ",")
+		fields["labels_exclude_any"] = req.LabelsExcludeAny
 	}
 
 	filename := req.Filename
@@ -196,7 +282,7 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 		filename = "tf_" + hex.EncodeToString(b) + ProfileExtensionFromContent(req.Profile)
 	}
 
-	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/configuration_profiles", "profile", filename, req.Profile, fields)
+	respBody, err := c.doMultipartRequestMulti(ctx, http.MethodPost, "/configuration_profiles", "profile", filename, req.Profile, fields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config profile: %w", err)
 	}
@@ -209,6 +295,55 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 	}
 
 	return c.GetMDMConfigProfile(ctx, response.ProfileUUID)
+}
+
+// UpdateConfigProfileRequest contains the parameters for updating a
+// configuration profile in place (Fleet 4.90+, Premium).
+//
+// Label targeting is FULL-REPLACE on every PATCH: Fleet clears any label
+// fields absent from the request (a content-only PATCH wipes targeting), so
+// callers must always pass the complete desired label set.
+type UpdateConfigProfileRequest struct {
+	Profile          []byte // Optional new profile content; nil = labels-only update
+	Filename         string // Upload filename when Profile is set
+	LabelsIncludeAll []string
+	LabelsIncludeAny []string
+	LabelsExcludeAny []string
+}
+
+// UpdateConfigProfile updates an existing MDM configuration profile in place
+// via PATCH /configuration_profiles/{uuid}. Requires Fleet 4.90+ (Premium);
+// older Fleet versions return 404 for this route. For Apple (.mobileconfig)
+// and DDM (.json) profiles Fleet requires replacement content to keep the
+// same PayloadIdentifier/Identifier; Windows XML content can change freely.
+func (c *Client) UpdateConfigProfile(ctx context.Context, profileUUID string, req *UpdateConfigProfileRequest) error {
+	fields := make(map[string][]string)
+	if len(req.LabelsIncludeAll) > 0 {
+		fields["labels_include_all"] = req.LabelsIncludeAll
+	}
+	if len(req.LabelsIncludeAny) > 0 {
+		fields["labels_include_any"] = req.LabelsIncludeAny
+	}
+	if len(req.LabelsExcludeAny) > 0 {
+		fields["labels_exclude_any"] = req.LabelsExcludeAny
+	}
+
+	endpoint := fmt.Sprintf("/configuration_profiles/%s", profileUUID)
+
+	var err error
+	if req.Profile != nil {
+		filename := req.Filename
+		if filename == "" {
+			filename = "tf_update" + ProfileExtensionFromContent(req.Profile)
+		}
+		_, err = c.doMultipartRequestMulti(ctx, http.MethodPatch, endpoint, "profile", filename, req.Profile, fields)
+	} else {
+		_, err = c.doMultipartFormRequestMulti(ctx, http.MethodPatch, endpoint, fields)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update config profile %s: %w", profileUUID, err)
+	}
+	return nil
 }
 
 // GetConfigProfileContent retrieves the raw content of a configuration profile by UUID using the alt=media query parameter.

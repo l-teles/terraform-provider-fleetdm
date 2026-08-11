@@ -5,7 +5,12 @@ subcategory: ""
 description: |-
   Manages a FleetDM MDM configuration profile.
   Configuration profiles are used to configure settings on macOS and Windows devices enrolled in FleetDM's MDM.
-  ~> Note: Configuration profiles cannot be modified after creation. Any changes to the profile content will force recreation of the resource.
+  ~> Note: On Fleet 4.90+ (Premium), label targeting and profile content are updated in place without
+  re-creating the profile. Content updates keep the same profile UUID when the profile identity is unchanged:
+  for macOS profiles the PayloadIdentifier must stay the same, for Apple declaration (DDM) profiles the
+  Identifier must stay the same, and Windows XML content can change freely. Changing the identifier, the
+  profile type, or team_id still forces replacement. On Fleet versions before 4.90 in-place updates are not
+  available; taint the resource (or revert the change) to force a delete-and-recreate instead.
   Example Usage
   macOS Profile
   
@@ -46,7 +51,12 @@ Manages a FleetDM MDM configuration profile.
 
 Configuration profiles are used to configure settings on macOS and Windows devices enrolled in FleetDM's MDM.
 
-~> **Note:** Configuration profiles cannot be modified after creation. Any changes to the profile content will force recreation of the resource.
+~> **Note:** On Fleet 4.90+ (Premium), label targeting and profile content are updated **in place** without
+re-creating the profile. Content updates keep the same profile UUID when the profile identity is unchanged:
+for macOS profiles the `PayloadIdentifier` must stay the same, for Apple declaration (DDM) profiles the
+`Identifier` must stay the same, and Windows XML content can change freely. Changing the identifier, the
+profile type, or `team_id` still forces replacement. On Fleet versions before 4.90 in-place updates are not
+available; taint the resource (or revert the change) to force a delete-and-recreate instead.
 
 ## Example Usage
 
@@ -141,14 +151,14 @@ output "wifi_profile_name" {
 
 ### Required
 
-- `profile_content` (String) The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations).
+- `profile_content` (String) The content of the configuration profile (mobileconfig XML for macOS, XML for Windows, or JSON for Apple declarations). Updated in place on Fleet 4.90+ when the profile identity (`PayloadIdentifier`/`Identifier`) is unchanged; otherwise forces replacement.
 
 ### Optional
 
 - `display_name` (String) The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\`) or file extensions. Only applicable to Windows profiles; for macOS and declaration profiles the name is derived from the profile content.
-- `labels_exclude_any` (List of String) Labels where hosts with **ANY** of these will **NOT** receive this profile.
-- `labels_include_all` (List of String) Labels that hosts must have **ALL** of to receive this profile.
-- `labels_include_any` (List of String) Labels where hosts must have **ANY** of to receive this profile.
+- `labels_exclude_any` (List of String) Labels where hosts with **ANY** of these will **NOT** receive this profile. Updated in place on Fleet 4.90+.
+- `labels_include_all` (List of String) Labels that hosts must have **ALL** of to receive this profile. Updated in place on Fleet 4.90+.
+- `labels_include_any` (List of String) Labels where hosts must have **ANY** of to receive this profile. Updated in place on Fleet 4.90+.
 - `team_id` (Number) The ID of the team this profile belongs to. Use `0` or omit for 'No team'.
 
 ### Read-Only
