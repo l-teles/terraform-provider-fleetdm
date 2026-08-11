@@ -125,6 +125,12 @@ type MDMConfig struct {
 	EnabledAndConfigured        bool `json:"enabled_and_configured"`
 	AppleBMEnabledAndConfigured bool `json:"apple_bm_enabled_and_configured"`
 	AppleBMTermsExpired         bool `json:"apple_bm_terms_expired"`
+
+	// AndroidEnabledAndConfigured reports whether an Android enterprise is
+	// bound to this Fleet instance. Android-only endpoints such as
+	// POST /software/web_apps sit behind Fleet's VerifyAndroidMDM middleware
+	// and answer 400 "Android MDM isn't turned on." when this is false.
+	AndroidEnabledAndConfigured bool `json:"android_enabled_and_configured"`
 }
 
 // AppConfig represents the Fleet application configuration

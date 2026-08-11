@@ -19,7 +19,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 
 > **Requires Fleet 4.82.0+.** All resources and data sources in this provider version — including the deprecated `fleetdm_team` and `fleetdm_query` aliases — route through the new Fleet API endpoints (`/fleets`, `/reports`). These endpoints are only available on Fleet 4.82.0+.
 
-### Resources (14)
+### Resources (15)
 
 | Resource                        | Description                                                |
 | ------------------------------- | ---------------------------------------------------------- |
@@ -33,6 +33,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_software_custom_package`       | Upload custom installer packages — `.pkg`, `.msi`, `.deb`, `.rpm`, `.exe` (Premium) |
 | `fleetdm_software_app_store_app`        | Manage Apple Volume Purchase Program (App Store) apps (Premium)                     |
 | `fleetdm_software_fleet_maintained_app` | Add Fleet-curated apps to a team (Premium)                                          |
+| `fleetdm_software_web_app`             | Create Android web apps (web clips) (Premium, requires Android MDM)                 |
 | `fleetdm_bootstrap_package`     | Manage bootstrap packages for setup assistant (Premium)    |
 | `fleetdm_configuration`         | Manage global Fleet configuration                          |
 | `fleetdm_configuration_profile` | Manage MDM configuration profiles (Premium)                |
