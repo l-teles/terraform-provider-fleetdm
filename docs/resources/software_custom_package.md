@@ -3,12 +3,12 @@
 page_title: "fleetdm_software_custom_package Resource - fleetdm"
 subcategory: ""
 description: |-
-  Manages a user-uploaded software package (.pkg, .msi, .deb, .rpm, .exe) bound to a Fleet team. The package binary is sourced from a local file (package_path) or an S3 object (package_s3). Fleet Premium only.
+  Manages a user-uploaded software package (.pkg, .msi, .exe, .zip, .deb, .rpm, .tar.gz, .ipa) or script installer (.sh, .py, .ps1) bound to a Fleet team. The package binary is sourced from a local file (package_path) or an S3 object (package_s3). Fleet Premium only.
 ---
 
 # fleetdm_software_custom_package (Resource)
 
-Manages a user-uploaded software package (.pkg, .msi, .deb, .rpm, .exe) bound to a Fleet team. The package binary is sourced from a local file (`package_path`) or an S3 object (`package_s3`). Fleet Premium only.
+Manages a user-uploaded software package (.pkg, .msi, .exe, .zip, .deb, .rpm, .tar.gz, .ipa) or script installer (.sh, .py, .ps1) bound to a Fleet team. The package binary is sourced from a local file (`package_path`) or an S3 object (`package_s3`). Fleet Premium only.
 
 ## Example Usage
 
@@ -141,7 +141,9 @@ Multi-resource race: when two `fleetdm_software_*` resources on the same team an
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` and `labels_include_all`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `labels_include_all` (List of String) List of label names. The software will be available for hosts that match *all* of these labels. Mutually exclusive with `labels_include_any` and `labels_exclude_any`; the conflict is enforced by validators on the other two. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match *any* of these labels. Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
-- `package_path` (String) Filesystem path to the package file. If set, the file is uploaded to Fleet whenever its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with `package_s3`.
+- `package_path` (String) Filesystem path to the package file. If set, the file is uploaded to Fleet whenever its SHA256 differs from the current package. Mutually exclusive with `package_s3`. 
+
+Fleet decides which file types it accepts from the extension; as of Fleet 4.90 that is `.pkg`, `.msi`, `.exe`, `.zip`, `.deb`, `.rpm`, `.tar.gz` and `.ipa` for installer packages, plus `.sh`, `.py` and `.ps1` for script installers. For a script installer the file's contents *are* the install script (`.sh` and `.py` run on macOS and Linux hosts, `.ps1` on Windows), so Fleet ignores `install_script` on those and `automatic_install_policy` is not supported for them.
 - `package_s3` (Attributes) S3 source for the package binary. Alternative to `package_path`. The provider reads the SHA256 via HeadObject and only downloads + re-uploads to Fleet when the hash differs from what Fleet has stored. Mutually exclusive with `package_path`. `bucket`, `key`, and `region` may reference module outputs or other resources' attributes — when their values aren't yet known at plan time, the SHA comparison is deferred to apply time. (see [below for nested schema](#nestedatt--package_s3))
 - `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed at plan time from the local file (package_path) or S3 object (package_s3), or read from Fleet's API. Can be set explicitly to avoid drift on import.
 - `platform` (String) The platform the software targets (`darwin`, `windows`, `linux`, `ios`, `ipados`).

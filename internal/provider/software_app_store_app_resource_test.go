@@ -466,3 +466,399 @@ resource "fleetdm_software_app_store_app" "test" {
 		},
 	})
 }
+
+// testAccVPPConfig builds a VPP resource with an arbitrary extra attribute
+// block, used by the Fleet 4.90 auto-update / configuration tests below.
+func testAccVPPConfig(serverURL, extra string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_app_store_app" "test" {
+  app_store_id = "497799835"
+  %[2]s
+}
+`, serverURL, extra)
+}
+
+// TestAccSoftwareAppStoreAppResource_autoUpdateLifecycle drives the 4.90
+// automatic-update settings through Create and Update. VPP needs a real Apple
+// token, so a live Fleet can never reach this code path — the fake mirrors
+// Fleet's window validation (enabling without both bounds is a 422) so the
+// assertions still mean something.
+//
+// Create is the interesting half: Fleet's Add endpoint has no auto_update_*
+// fields, so the values have to arrive via a follow-up PATCH.
+func TestAccSoftwareAppStoreAppResource_autoUpdateLifecycle(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 300
+	f.titleName = "Logic Pro"
+
+	wantWindow := func(enabled bool, start, end string) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.vppPatchAutoUpdateEnabled == nil || *f.vppPatchAutoUpdateEnabled != enabled {
+				return fmt.Errorf("auto_update_enabled on the wire = %v, want %v", f.vppPatchAutoUpdateEnabled, enabled)
+			}
+			if start == "" {
+				if f.vppPatchAutoUpdateStart != nil {
+					return fmt.Errorf("expected auto_update_window_start omitted, got %q", *f.vppPatchAutoUpdateStart)
+				}
+			} else if f.vppPatchAutoUpdateStart == nil || *f.vppPatchAutoUpdateStart != start {
+				return fmt.Errorf("auto_update_window_start on the wire = %v, want %q", f.vppPatchAutoUpdateStart, start)
+			}
+			if end == "" {
+				if f.vppPatchAutoUpdateEnd != nil {
+					return fmt.Errorf("expected auto_update_window_end omitted, got %q", *f.vppPatchAutoUpdateEnd)
+				}
+			} else if f.vppPatchAutoUpdateEnd == nil || *f.vppPatchAutoUpdateEnd != end {
+				return fmt.Errorf("auto_update_window_end on the wire = %v, want %q", f.vppPatchAutoUpdateEnd, end)
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccVPPConfig(f.srv.URL, `platform                 = "ios"
+  auto_update_enabled      = true
+  auto_update_window_start = "01:30"
+  auto_update_window_end   = "04:00"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_enabled", "true"),
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_window_start", "01:30"),
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_window_end", "04:00"),
+					wantWindow(true, "01:30", "04:00"),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.vppPatchCount != 1 {
+							return fmt.Errorf("expected exactly 1 follow-up PATCH on create, got %d", f.vppPatchCount)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Move the window.
+				Config: testAccVPPConfig(f.srv.URL, `platform                 = "ios"
+  auto_update_enabled      = true
+  auto_update_window_start = "23:00"
+  auto_update_window_end   = "02:00"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_window_start", "23:00"),
+					// An end before the start is legal — Fleet wraps to the next day.
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_window_end", "02:00"),
+					wantWindow(true, "23:00", "02:00"),
+				),
+			},
+			{
+				// Disabling needs no window, and Fleet accepts false alone.
+				Config: testAccVPPConfig(f.srv.URL, `platform            = "ios"
+  auto_update_enabled = false`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_enabled", "false"),
+					wantWindow(false, "", ""),
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_autoUpdateValidation covers the plan-time
+// guards. Each case must fail during validate/plan, before any request reaches
+// Fleet — the whole point is turning Fleet's 4xx into an early error.
+func TestAccSoftwareAppStoreAppResource_autoUpdateValidation(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 301
+
+	tests := []struct {
+		name        string
+		extra       string
+		expectError *regexp.Regexp
+	}{
+		{
+			name:        "enabled without any window",
+			extra:       `auto_update_enabled = true`,
+			expectError: regexp.MustCompile(`(?is)auto_update_window_start is required when auto_update_enabled is true`),
+		},
+		{
+			name: "enabled with only a start",
+			extra: `auto_update_enabled      = true
+  auto_update_window_start = "01:00"`,
+			expectError: regexp.MustCompile(`(?is)auto_update_window_end`),
+		},
+		{
+			// AlsoRequires: a window is meaningless without the flag.
+			name:        "window without the enable flag",
+			extra:       `auto_update_window_start = "01:00"`,
+			expectError: regexp.MustCompile(`(?is)auto_update_enabled|auto_update_window_end`),
+		},
+		{
+			name: "single-digit hour is rejected",
+			extra: `auto_update_enabled      = true
+  auto_update_window_start = "1:00"
+  auto_update_window_end   = "04:00"`,
+			expectError: regexp.MustCompile(`(?is)24-hour time of day formatted`),
+		},
+		{
+			name: "hour 24 is rejected",
+			extra: `auto_update_enabled      = true
+  auto_update_window_start = "24:00"
+  auto_update_window_end   = "04:00"`,
+			expectError: regexp.MustCompile(`(?is)24-hour time of day formatted`),
+		},
+		{
+			name: "minute 60 is rejected",
+			extra: `auto_update_enabled      = true
+  auto_update_window_start = "01:60"
+  auto_update_window_end   = "04:00"`,
+			expectError: regexp.MustCompile(`(?is)24-hour time of day formatted`),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config:      testAccVPPConfig(f.srv.URL, tt.extra),
+						PlanOnly:    true,
+						ExpectError: tt.expectError,
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestAccSoftwareAppStoreAppResource_androidConfiguration covers the Android
+// half of the 4.90 work: `platform = "android"` must be accepted, and a JSON
+// managed configuration must reach Fleet as a JSON *object* (Fleet validates it
+// with ValidateAndroidAppConfiguration and rejects a quoted string).
+//
+// The configuration travels on the Add request, not a follow-up PATCH.
+func TestAccSoftwareAppStoreAppResource_androidConfiguration(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 302
+	f.titleName = "Zoom"
+
+	const cfgJSON = `{"managedConfiguration":{"enableLogging":true}}`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccVPPConfig(f.srv.URL, fmt.Sprintf(`platform      = "android"
+  self_service  = true
+  configuration = %q`, cfgJSON)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "platform", "android"),
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "configuration", cfgJSON),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.vppPlatform != "android" {
+							return fmt.Errorf("expected platform android on the wire, got %q", f.vppPlatform)
+						}
+						if len(f.vppCreateConfiguration) == 0 {
+							return fmt.Errorf("expected configuration on the Add request, got none")
+						}
+						if f.vppCreateConfiguration[0] != '{' {
+							return fmt.Errorf("an Android configuration must stay a JSON object, got: %s", f.vppCreateConfiguration)
+						}
+						if string(f.vppCreateConfiguration) != cfgJSON {
+							return fmt.Errorf("configuration altered in transit\n got: %s\nwant: %s", f.vppCreateConfiguration, cfgJSON)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Fleet echoes the configuration back; state must settle.
+				Config: testAccVPPConfig(f.srv.URL, fmt.Sprintf(`platform      = "android"
+  self_service  = true
+  configuration = %q`, cfgJSON)),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_iosXMLConfiguration is the iOS counterpart:
+// the raw string is XML, which Fleet requires as "a JSON string containing the
+// XML". The provider must do that wrapping for the user.
+func TestAccSoftwareAppStoreAppResource_iosXMLConfiguration(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 303
+	f.titleName = "Logic Pro"
+
+	const cfgXML = `<dict><key>ServerURL</key><string>https://example.test</string></dict>`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccVPPConfig(f.srv.URL, fmt.Sprintf(`platform      = "ios"
+  configuration = %q`, cfgXML)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "configuration", cfgXML),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if len(f.vppCreateConfiguration) == 0 {
+							return fmt.Errorf("expected configuration on the Add request, got none")
+						}
+						if f.vppCreateConfiguration[0] != '"' {
+							return fmt.Errorf(`XML must be sent as a JSON string ("expected configuration as a JSON string containing the XML"), got: %s`, f.vppCreateConfiguration)
+						}
+						// And it has to decode back to the original XML.
+						var decoded string
+						if err := json.Unmarshal(f.vppCreateConfiguration, &decoded); err != nil {
+							return fmt.Errorf("configuration is not a JSON string: %w", err)
+						}
+						if decoded != cfgXML {
+							return fmt.Errorf("XML did not survive encoding\n got: %q\nwant: %q", decoded, cfgXML)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: testAccVPPConfig(f.srv.URL, fmt.Sprintf(`platform      = "ios"
+  configuration = %q`, cfgXML)),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_fleet490FieldsOptIn locks in the opt-in
+// convention for the new attributes: with none of them in HCL, no follow-up
+// PATCH is issued at all, and values Fleet already holds are not adopted into
+// state (so they can't produce a diff on a field the user doesn't manage).
+func TestAccSoftwareAppStoreAppResource_fleet490FieldsOptIn(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 304
+	f.titleName = "Logic Pro"
+	// Pretend an admin configured all of this in the Fleet UI.
+	enabled := true
+	start, end := "01:00", "05:00"
+	f.titleAutoUpdateEnabled = &enabled
+	f.titleAutoUpdateStart = &start
+	f.titleAutoUpdateEnd = &end
+
+	cfg := testAccVPPConfig(f.srv.URL, `platform = "ios"`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("fleetdm_software_app_store_app.test", "auto_update_enabled"),
+					resource.TestCheckNoResourceAttr("fleetdm_software_app_store_app.test", "auto_update_window_start"),
+					resource.TestCheckNoResourceAttr("fleetdm_software_app_store_app.test", "auto_update_window_end"),
+					resource.TestCheckNoResourceAttr("fleetdm_software_app_store_app.test", "configuration"),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.vppPatchCount != 0 {
+							return fmt.Errorf("expected no follow-up PATCH when no 4.90 attribute is set, got %d", f.vppPatchCount)
+						}
+						if f.titleAutoUpdateEnabled == nil || !*f.titleAutoUpdateEnabled {
+							return fmt.Errorf("UI-set auto-update config must be left untouched, got %v", f.titleAutoUpdateEnabled)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_preQuotedConfigurationConverges pins the
+// semantic Read comparison for `configuration`. A value that is already an
+// encoded JSON string (someone ran their XML through jsonencode()) passes
+// through Encode untouched but comes back from Decode unquoted — a byte
+// comparison would rewrite state to the unquoted form and plan a diff forever.
+// With SameAppConfiguration deciding adoption, the user's value is kept
+// verbatim and the post-apply plan is empty.
+func TestAccSoftwareAppStoreAppResource_preQuotedConfigurationConverges(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 305
+	f.titleName = "Logic Pro"
+
+	// What jsonencode("<dict>…</dict>") produces: quotes included.
+	const preQuoted = `"<dict><key>a</key><string>b</string></dict>"`
+
+	cfg := testAccVPPConfig(f.srv.URL, fmt.Sprintf(`platform      = "ios"
+  configuration = %q`, preQuoted))
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The harness plans again after apply and fails the step on a
+				// non-empty plan — exactly the perpetual diff being guarded against.
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "configuration", preQuoted),
+				),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_autoUpdateDisabledOutOfBandDrifts proves
+// the absent→false Read mapping does real work: when automatic updates are
+// switched off in the Fleet UI, Fleet's GET response omits the
+// auto_update_enabled key entirely (omitempty), and a managed `true` must
+// surface that as drift rather than keeping stale state and a clean plan.
+func TestAccSoftwareAppStoreAppResource_autoUpdateDisabledOutOfBandDrifts(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 306
+	f.titleName = "Logic Pro"
+
+	cfg := testAccVPPConfig(f.srv.URL, `platform                 = "ios"
+  auto_update_enabled      = true
+  auto_update_window_start = "01:30"
+  auto_update_window_end   = "04:00"`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check:  resource.TestCheckResourceAttr("fleetdm_software_app_store_app.test", "auto_update_enabled", "true"),
+			},
+			{
+				// Simulate the UI disable: Fleet drops all three keys from the
+				// title response.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.titleAutoUpdateEnabled = nil
+					f.titleAutoUpdateStart = nil
+					f.titleAutoUpdateEnd = nil
+					f.mu.Unlock()
+				},
+				Config:             cfg,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}

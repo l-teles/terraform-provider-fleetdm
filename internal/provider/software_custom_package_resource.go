@@ -34,9 +34,15 @@ func NewSoftwareCustomPackageResource() resource.Resource {
 }
 
 // softwareCustomPackageResource manages a user-uploaded software package
-// (.pkg, .msi, .deb, .rpm, .exe). The package binary is sourced either from
-// a local file (`package_path`) or an S3 object (`package_s3`); Fleet
-// computes the install/uninstall scripts when none are provided.
+// (.pkg, .msi, .exe, .zip, .deb, .rpm, .tar.gz, .ipa) or script installer
+// (.sh, .py, .ps1). The package binary is sourced either from a local file
+// (`package_path`) or an S3 object (`package_s3`); Fleet computes the
+// install/uninstall scripts when none are provided.
+//
+// Which extensions Fleet accepts is decided entirely server-side from the
+// uploaded filename — the provider passes the bytes and filename through and
+// never gates on extension — so support for new package types (`.py` script
+// installers landed in Fleet 4.90) needs no client change, only documentation.
 //
 // This is the heaviest of the three split resources because it owns the S3
 // SHA-resolution path, the binary-replace flow (delete + re-upload while
@@ -107,7 +113,13 @@ func (r *softwareCustomPackageResource) Schema(_ context.Context, _ resource.Sch
 	}
 	attrs["package_path"] = schema.StringAttribute{
 		Description: "Filesystem path to the package file. If set, the file is uploaded to Fleet whenever its SHA256 differs from the current package. " +
-			"Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with `package_s3`.",
+			"Mutually exclusive with `package_s3`. " +
+			"\n\n" +
+			"Fleet decides which file types it accepts from the extension; as of Fleet 4.90 that is `.pkg`, `.msi`, " +
+			"`.exe`, `.zip`, `.deb`, `.rpm`, `.tar.gz` and `.ipa` for installer packages, plus `.sh`, `.py` and " +
+			"`.ps1` for script installers. For a script installer the file's contents *are* the install script " +
+			"(`.sh` and `.py` run on macOS and Linux hosts, `.ps1` on Windows), so Fleet ignores `install_script` " +
+			"on those and `automatic_install_policy` is not supported for them.",
 		Optional: true,
 	}
 	attrs["package_s3"] = schema.SingleNestedAttribute{
@@ -154,7 +166,8 @@ func (r *softwareCustomPackageResource) Schema(_ context.Context, _ resource.Sch
 		},
 	}
 	resp.Schema = schema.Schema{
-		Description: "Manages a user-uploaded software package (.pkg, .msi, .deb, .rpm, .exe) bound to a Fleet team. " +
+		Description: "Manages a user-uploaded software package (.pkg, .msi, .exe, .zip, .deb, .rpm, .tar.gz, .ipa) or " +
+			"script installer (.sh, .py, .ps1) bound to a Fleet team. " +
 			"The package binary is sourced from a local file (`package_path`) or an S3 object (`package_s3`). " +
 			"Fleet Premium only.",
 		Attributes: attrs,

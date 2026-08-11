@@ -3,15 +3,18 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -19,10 +22,17 @@ import (
 
 // Ensure the implementation satisfies the expected interfaces.
 var (
-	_ resource.Resource                = &softwareAppStoreAppResource{}
-	_ resource.ResourceWithConfigure   = &softwareAppStoreAppResource{}
-	_ resource.ResourceWithImportState = &softwareAppStoreAppResource{}
+	_ resource.Resource                   = &softwareAppStoreAppResource{}
+	_ resource.ResourceWithConfigure      = &softwareAppStoreAppResource{}
+	_ resource.ResourceWithImportState    = &softwareAppStoreAppResource{}
+	_ resource.ResourceWithValidateConfig = &softwareAppStoreAppResource{}
 )
+
+// autoUpdateWindowTimeRegex matches a 24-hour HH:MM time of day, the format
+// Fleet documents for auto_update_window_start / auto_update_window_end.
+// Anchored and strict about the hour range so "24:00" and "9:5" are rejected
+// at plan time rather than by Fleet mid-apply.
+var autoUpdateWindowTimeRegex = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 
 // NewSoftwareAppStoreAppResource is the constructor registered with the
 // provider.
@@ -56,6 +66,10 @@ type softwareAppStoreAppResourceModel struct {
 	DisplayName              types.String `tfsdk:"display_name"`
 	SelfService              types.Bool   `tfsdk:"self_service"`
 	InstallDuringSetup       types.Bool   `tfsdk:"install_during_setup"`
+	AutoUpdateEnabled        types.Bool   `tfsdk:"auto_update_enabled"`
+	AutoUpdateWindowStart    types.String `tfsdk:"auto_update_window_start"`
+	AutoUpdateWindowEnd      types.String `tfsdk:"auto_update_window_end"`
+	Configuration            types.String `tfsdk:"configuration"`
 	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
 	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
 	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
@@ -79,6 +93,90 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 			stringplanmodifier.RequiresReplace(),
 		},
 	}
+	// platform accepts `android` on this resource in addition to the Apple
+	// values, so override the shared description. Fleet's own enum error on
+	// POST /software/app_store_apps reads "platform must be one of 'ios',
+	// 'ipados', 'darwin', or 'android'".
+	attrs["platform"] = schema.StringAttribute{
+		Description: "The platform the app targets: `darwin` (macOS, the Fleet default), `ios`, `ipados`, or `android` " +
+			"(Google Play, Fleet 4.90 or later — requires Android MDM to be enabled on your Fleet server). Computed when omitted.",
+		Optional: true,
+		Computed: true,
+		PlanModifiers: []planmodifier.String{
+			stringplanmodifier.UseStateForUnknown(),
+		},
+	}
+	attrs["auto_update_enabled"] = schema.BoolAttribute{
+		Description: "Whether Fleet automatically updates this App Store app on hosts. Currently applies to iOS and " +
+			"iPadOS apps. Fleet Premium, Fleet 4.90 or later. " +
+			"\n\n" +
+			"When set to `true`, both `auto_update_window_start` and `auto_update_window_end` are required — Fleet " +
+			"rejects the request with \"Start and end time must both be set\" otherwise. " +
+			"\n\n" +
+			"Managing this is **opt-in**: omitting the attribute leaves Fleet's current setting untouched and keeps " +
+			"it out of state, so a value set in the Fleet UI is not fought over. Set it explicitly to manage it " +
+			"from Terraform.",
+		Optional: true,
+	}
+	attrs["auto_update_window_start"] = schema.StringAttribute{
+		Description: "Start of the daily maintenance window during which automatic updates may run, in the host's " +
+			"local time, formatted `HH:MM` on a 24-hour clock (e.g. `\"01:30\"`). Requires `auto_update_enabled` " +
+			"and `auto_update_window_end`.",
+		Optional: true,
+		Validators: []validator.String{
+			stringvalidator.RegexMatches(
+				autoUpdateWindowTimeRegex,
+				"must be a 24-hour time of day formatted HH:MM, e.g. \"01:30\" or \"23:00\"",
+			),
+			stringvalidator.AlsoRequires(path.Expressions{
+				path.MatchRoot("auto_update_enabled"),
+				path.MatchRoot("auto_update_window_end"),
+			}...),
+		},
+	}
+	attrs["auto_update_window_end"] = schema.StringAttribute{
+		Description: "End of the daily maintenance window during which automatic updates may run, in the host's " +
+			"local time, formatted `HH:MM` on a 24-hour clock (e.g. `\"04:00\"`). An end time earlier than the " +
+			"start time wraps to the next day. Requires `auto_update_enabled` and `auto_update_window_start`.",
+		Optional: true,
+		Validators: []validator.String{
+			stringvalidator.RegexMatches(
+				autoUpdateWindowTimeRegex,
+				"must be a 24-hour time of day formatted HH:MM, e.g. \"01:30\" or \"23:00\"",
+			),
+			stringvalidator.AlsoRequires(path.Expressions{
+				path.MatchRoot("auto_update_enabled"),
+				path.MatchRoot("auto_update_window_start"),
+			}...),
+		},
+	}
+	attrs["configuration"] = schema.StringAttribute{
+		Description: "The app's managed app configuration, as a raw string. Supported for `ios`, `ipados`, and " +
+			"`android` apps only (Fleet ignores it for `darwin`). Fleet Premium, Fleet 4.90 or later. " +
+			"\n\n" +
+			"The expected format depends on the platform: **XML** for iOS and iPadOS (the managed-configuration " +
+			"dictionary), and **JSON** for Android Play Store apps. Supply the payload in that natural form — the " +
+			"provider performs whatever encoding Fleet's API requires. Do **not** wrap it in `jsonencode()`. " +
+			"Configuration keys vary per app, so consult the app vendor's documentation; the provider does not " +
+			"validate the contents beyond requiring the value to be non-empty and, for a value that looks like " +
+			"JSON, that it parses. For Android, Fleet accepts only the `managedConfiguration` " +
+			"and `workProfileWidgets` keys from Google's " +
+			"[application policy](https://developers.google.com/android/management/reference/rest/v1/enterprises.policies#ApplicationPolicy). " +
+			"Use `file()` to keep the payload in its own file. Whitespace and JSON key ordering are not significant: " +
+			"the provider compares your value against Fleet's semantically, so a differently-formatted response " +
+			"does not produce a diff. " +
+			"\n\n" +
+			"**Do not embed secrets** (license keys, API tokens, pre-shared values) in the payload: the value is " +
+			"stored in plaintext in Terraform state and displayed in plan output. Keep secrets in the app vendor's " +
+			"server-side configuration where possible. " +
+			"\n\n" +
+			"Managing this is **opt-in** in the same way as `auto_update_enabled`: omit the attribute to leave " +
+			"Fleet's stored configuration alone.",
+		Optional: true,
+		Validators: []validator.String{
+			stringvalidator.LengthAtLeast(1),
+		},
+	}
 	resp.Schema = schema.Schema{
 		Description: "Manages a VPP (Apple Volume Purchase Program / App Store) app bound to a Fleet team. " +
 			"Use `data.fleetdm_vpp_token` to verify your VPP integration before creating one of these. Fleet Premium only.",
@@ -89,6 +187,42 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 // Configure injects the API client.
 func (r *softwareAppStoreAppResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
+}
+
+// ValidateConfig enforces the one rule the schema validators can't express:
+// Fleet requires both window bounds when automatic updates are *enabled*, but
+// tolerates `auto_update_enabled = false` on its own. AlsoRequires on the two
+// window attributes covers the reverse direction (a window needs the flag), and
+// is value-blind, so it can't be used to make the windows conditional on the
+// flag being true. Catching it here turns Fleet's mid-apply
+// "Start and end time must both be set" 4xx into a plan-time error.
+func (r *softwareAppStoreAppResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data softwareAppStoreAppResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Unknown values (e.g. driven by another resource's attribute) can't be
+	// checked at plan time; Fleet's own validation is the backstop there.
+	if data.AutoUpdateEnabled.IsNull() || data.AutoUpdateEnabled.IsUnknown() || !data.AutoUpdateEnabled.ValueBool() {
+		return
+	}
+	for _, attr := range []struct {
+		name  string
+		value types.String
+	}{
+		{"auto_update_window_start", data.AutoUpdateWindowStart},
+		{"auto_update_window_end", data.AutoUpdateWindowEnd},
+	} {
+		if attr.value.IsNull() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root(attr.name),
+				"Missing automatic-update window",
+				fmt.Sprintf("%s is required when auto_update_enabled is true. Fleet rejects enabling automatic updates without both a window start and a window end.", attr.name),
+			)
+		}
+	}
 }
 
 // Create adds the VPP app to the specified team.
@@ -111,6 +245,19 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		Platform:    plan.Platform.ValueString(),
 		SelfService: plan.SelfService.ValueBool(),
 		DisplayName: plan.DisplayName.ValueString(),
+	}
+
+	// Fleet's Add endpoint accepts `configuration`, so the managed app config
+	// lands in the same request as the app itself — no follow-up needed. The
+	// auto_update_* fields only exist on the Update endpoint and are applied
+	// below.
+	if !plan.Configuration.IsNull() && !plan.Configuration.IsUnknown() {
+		cfg, err := fleetdm.EncodeAppConfiguration(plan.Configuration.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("configuration"), "Invalid app configuration", err.Error())
+			return
+		}
+		addReq.Configuration = cfg
 	}
 
 	title, err := r.client.AddAppStoreApp(ctx, addReq)
@@ -139,12 +286,14 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 	}
 	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 
-	// Fleet's AddAppStoreApp endpoint doesn't accept labels. If the user
-	// set any of the three label attributes in HCL, follow up with an
-	// UpdateAppStoreApp call to apply them — otherwise the state would
-	// permanently diverge from Fleet (Fleet returns no labels, Read's
+	// Fleet's AddAppStoreApp endpoint accepts neither labels nor the
+	// auto_update_* settings. If the user set any of them in HCL, follow up
+	// with a single UpdateAppStoreApp call to apply them — otherwise the state
+	// would permanently diverge from Fleet (Fleet returns no labels, Read's
 	// non-null-state guard keeps the HCL value in state forever).
-	if !plan.LabelsIncludeAny.IsNull() || !plan.LabelsExcludeAny.IsNull() || !plan.LabelsIncludeAll.IsNull() {
+	needsFollowup := !plan.LabelsIncludeAny.IsNull() || !plan.LabelsExcludeAny.IsNull() || !plan.LabelsIncludeAll.IsNull() ||
+		!plan.AutoUpdateEnabled.IsNull() || !plan.AutoUpdateWindowStart.IsNull() || !plan.AutoUpdateWindowEnd.IsNull()
+	if needsFollowup {
 		tid := 0
 		if !plan.TeamID.IsNull() && !plan.TeamID.IsUnknown() {
 			tid = int(plan.TeamID.ValueInt64())
@@ -154,6 +303,7 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 			SelfService: plan.SelfService.ValueBool(),
 			DisplayName: plan.DisplayName.ValueString(),
 		}
+		applyAutoUpdateFields(&plan, labelReq)
 		var d diag.Diagnostics
 		d = extractLabels(ctx, plan.LabelsIncludeAny, &labelReq.LabelsIncludeAny)
 		resp.Diagnostics.Append(d...)
@@ -172,8 +322,8 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		}
 		if err := r.client.UpdateAppStoreApp(ctx, title.ID, labelReq); err != nil {
 			resp.Diagnostics.AddError(
-				"Error applying labels on VPP create",
-				"The VPP app was added successfully, but the follow-up call to apply labels failed: "+err.Error()+
+				"Error applying labels or automatic-update settings on VPP create",
+				"The VPP app was added successfully, but the follow-up call to apply labels / automatic-update settings failed: "+err.Error()+
 					". The resource is tracked in state; re-running `terraform apply` will retry.",
 			)
 			_ = resp.State.Set(ctx, plan)
@@ -207,6 +357,24 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
+}
+
+// applyAutoUpdateFields copies the three auto_update_* plan values onto an
+// UpdateAppStoreAppRequest, leaving the request's pointers nil for attributes
+// the user didn't set. nil means "omitted from the JSON body", which Fleet
+// reads as "leave the current setting alone" — that's what makes managing
+// these attributes opt-in and keeps the request wire-compatible with Fleet
+// versions before 4.90. Shared by Create's follow-up PATCH and Update.
+func applyAutoUpdateFields(plan *softwareAppStoreAppResourceModel, req *fleetdm.UpdateAppStoreAppRequest) {
+	if !plan.AutoUpdateEnabled.IsNull() && !plan.AutoUpdateEnabled.IsUnknown() {
+		req.AutoUpdateEnabled = plan.AutoUpdateEnabled.ValueBoolPointer()
+	}
+	if !plan.AutoUpdateWindowStart.IsNull() && !plan.AutoUpdateWindowStart.IsUnknown() {
+		req.AutoUpdateWindowStart = plan.AutoUpdateWindowStart.ValueStringPointer()
+	}
+	if !plan.AutoUpdateWindowEnd.IsNull() && !plan.AutoUpdateWindowEnd.IsUnknown() {
+		req.AutoUpdateWindowEnd = plan.AutoUpdateWindowEnd.ValueStringPointer()
+	}
 }
 
 // Read refreshes state from Fleet. Verifies the title is actually a VPP app
@@ -287,6 +455,52 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 	if app.LabelsIncludeAll != nil && !state.LabelsIncludeAll.IsNull() {
 		state.LabelsIncludeAll = labelsToStringListValue(app.LabelsIncludeAll)
 	}
+	// The 4.90 additions all follow the opt-in convention used by
+	// install_during_setup (software_common_schema.go): refresh only when
+	// Terraform is already managing the attribute, so values set in the Fleet
+	// UI on a resource whose HCL omits them never materialize into state.
+	//
+	// Fleet returns the automatic-update settings at the *title* level rather
+	// than inside app_store_app.
+	//
+	// auto_update_enabled maps an absent value to false, mirroring the
+	// pinned_version absent → "" convention. Fleet's response struct tags the
+	// field `omitempty`, so a title whose automatic updates were switched off in
+	// the Fleet UI can come back with the key missing rather than set to false.
+	// Preserving state on nil would make that specific transition — the one
+	// users most need to see — permanently invisible to drift detection.
+	if !state.AutoUpdateEnabled.IsNull() {
+		if title.AutoUpdateEnabled != nil {
+			state.AutoUpdateEnabled = types.BoolValue(*title.AutoUpdateEnabled)
+		} else {
+			state.AutoUpdateEnabled = types.BoolValue(false)
+		}
+	}
+	// The window bounds deliberately do NOT map absent → "". Fleet documents
+	// them as "only applicable when viewing a title in the context of a team",
+	// so absence has meanings other than "cleared", and inventing a "" here
+	// would manufacture drift on a config that is actually in sync. Whether
+	// Fleet keeps echoing the bounds once automatic updates are disabled is
+	// unverified — VPP needs a real Apple token — so this stays conservative:
+	// a present value is adopted, an absent one leaves state alone.
+	if !state.AutoUpdateWindowStart.IsNull() && title.AutoUpdateWindowStart != nil {
+		state.AutoUpdateWindowStart = types.StringValue(*title.AutoUpdateWindowStart)
+	}
+	if !state.AutoUpdateWindowEnd.IsNull() && title.AutoUpdateWindowEnd != nil {
+		state.AutoUpdateWindowEnd = types.StringValue(*title.AutoUpdateWindowEnd)
+	}
+	// Adopt Fleet's echoed configuration only when it actually differs in
+	// meaning. A byte comparison would be wrong in both directions: the stored
+	// value may be written in a different but equivalent form (pre-encoded XML,
+	// or JSON with different key order/whitespace than Fleet returns), and
+	// overwriting it with the echo would leave a diff that no apply can settle.
+	// See SameAppConfiguration.
+	if !state.Configuration.IsNull() && len(app.Configuration) > 0 {
+		echoed := fleetdm.DecodeAppConfiguration(app.Configuration)
+		if !fleetdm.SameAppConfiguration(state.Configuration.ValueString(), echoed) {
+			state.Configuration = types.StringValue(echoed)
+		}
+	}
 
 	diags = resp.State.Set(ctx, state)
 	resp.Diagnostics.Append(diags...)
@@ -319,6 +533,15 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 		TeamID:      tid,
 		SelfService: plan.SelfService.ValueBool(),
 		DisplayName: plan.DisplayName.ValueString(),
+	}
+	applyAutoUpdateFields(&plan, updateReq)
+	if !plan.Configuration.IsNull() && !plan.Configuration.IsUnknown() {
+		cfg, err := fleetdm.EncodeAppConfiguration(plan.Configuration.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("configuration"), "Invalid app configuration", err.Error())
+			return
+		}
+		updateReq.Configuration = cfg
 	}
 
 	// UpdateAppStoreAppRequest is JSON-encoded with no `omitempty` on the
