@@ -321,19 +321,15 @@ func TestClient_GetSetupExperience(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET request, got %s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/fleet/setup_experience" {
-			t.Errorf("expected path /api/v1/fleet/setup_experience, got %s", r.URL.Path)
-		}
-		if r.URL.Query().Get("team_id") != "1" {
-			t.Errorf("expected team_id=1, got %s", r.URL.Query().Get("team_id"))
+		if r.URL.Path != "/api/v1/fleet/fleets/1" {
+			t.Errorf("expected path /api/v1/fleet/fleets/1, got %s", r.URL.Path)
 		}
 
-		response := SetupExperience{
-			EnableEndUserAuth:     true,
-			EnableReleaseManually: false,
-		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_, _ = w.Write([]byte(`{"team":{"id":1,"mdm":{"macos_setup":{
+			"enable_end_user_authentication": true,
+			"enable_release_device_manually": false
+		}}}}`))
 	}))
 	defer server.Close()
 
@@ -347,6 +343,118 @@ func TestClient_GetSetupExperience(t *testing.T) {
 	}
 	if setup.EnableReleaseManually {
 		t.Error("expected EnableReleaseManually to be false")
+	}
+}
+
+// TestClient_GetSetupExperience_RenamedKeys covers the spelling Fleet 4.90
+// introduced with the team-to-fleet rename, where the same object is served as
+// fleet.mdm.setup_experience with several fields renamed.
+func TestClient_GetSetupExperience_RenamedKeys(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/fleets/2" {
+			t.Errorf("expected path /api/v1/fleet/fleets/2, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"fleet":{"id":2,"mdm":{"setup_experience":{
+			"enable_end_user_authentication": true,
+			"apple_enable_release_device_manually": true,
+			"lock_end_user_info": true,
+			"require_all_software_macos": false,
+			"require_all_software_windows": true,
+			"macos_manual_agent_install": true
+		}}}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	setup, err := client.GetSetupExperience(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("GetSetupExperience failed: %v", err)
+	}
+	if !setup.EnableEndUserAuth || !setup.EnableReleaseManually {
+		t.Errorf("expected both base settings to be true, got %+v", setup)
+	}
+	if setup.LockEndUserInfo == nil || !*setup.LockEndUserInfo {
+		t.Errorf("expected LockEndUserInfo to be true, got %v", setup.LockEndUserInfo)
+	}
+	if setup.RequireAllSoftwareMacOS == nil || *setup.RequireAllSoftwareMacOS {
+		t.Errorf("expected RequireAllSoftwareMacOS to be false, got %v", setup.RequireAllSoftwareMacOS)
+	}
+	if setup.RequireAllSoftwareWindows == nil || !*setup.RequireAllSoftwareWindows {
+		t.Errorf("expected RequireAllSoftwareWindows to be true, got %v", setup.RequireAllSoftwareWindows)
+	}
+	if setup.ManualAgentInstall == nil || !*setup.ManualAgentInstall {
+		t.Errorf("expected ManualAgentInstall to be true, got %v", setup.ManualAgentInstall)
+	}
+}
+
+// TestClient_GetSetupExperience_NoTeam covers team 0, Fleet's "no team" scope,
+// which lives on the app config rather than on a team.
+func TestClient_GetSetupExperience_NoTeam(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/config" {
+			t.Errorf("expected path /api/v1/fleet/config, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Shape as served by Fleet 4.90: script and software are a string and a
+		// list here, which the settings struct must not try to decode.
+		_, _ = w.Write([]byte(`{"mdm":{"macos_setup":{
+			"bootstrap_package": "",
+			"enable_end_user_authentication": false,
+			"enable_release_device_manually": true,
+			"macos_setup_assistant": "",
+			"script": "install.sh",
+			"software": [],
+			"lock_end_user_info": false,
+			"manual_agent_install": true,
+			"require_all_software_macos": true,
+			"require_all_software_windows": false
+		}}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	setup, err := client.GetSetupExperience(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("GetSetupExperience failed: %v", err)
+	}
+	if !setup.EnableReleaseManually {
+		t.Error("expected EnableReleaseManually to be true")
+	}
+	if setup.ManualAgentInstall == nil || !*setup.ManualAgentInstall {
+		t.Errorf("expected ManualAgentInstall to be true, got %v", setup.ManualAgentInstall)
+	}
+	if setup.RequireAllSoftwareMacOS == nil || !*setup.RequireAllSoftwareMacOS {
+		t.Errorf("expected RequireAllSoftwareMacOS to be true, got %v", setup.RequireAllSoftwareMacOS)
+	}
+}
+
+func TestClient_GetSetupExperience_MissingSettings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"team":{"id":3,"mdm":{}}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if _, err := client.GetSetupExperience(context.Background(), 3); err == nil {
+		t.Error("expected an error when the response carries no setup experience settings")
+	}
+}
+
+func TestClient_GetSetupExperience_TeamNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Resource Not Found"}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	_, err := client.GetSetupExperience(context.Background(), 42)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected a wrapped 404 APIError, got %v", err)
 	}
 }
 
@@ -403,7 +511,7 @@ func captureSetupExperiencePatch(t *testing.T, body *map[string]any) *httptest.S
 	}))
 }
 
-func TestClient_UpdateSetupExperience_Fleet490Fields(t *testing.T) {
+func TestClient_UpdateSetupExperience_OptInFields(t *testing.T) {
 	var body map[string]any
 	server := captureSetupExperiencePatch(t, &body)
 	defer server.Close()
@@ -438,7 +546,7 @@ func TestClient_UpdateSetupExperience_Fleet490Fields(t *testing.T) {
 	}
 }
 
-func TestClient_UpdateSetupExperience_OmitsUnsetFleet490Fields(t *testing.T) {
+func TestClient_UpdateSetupExperience_OmitsUnsetOptInFields(t *testing.T) {
 	var body map[string]any
 	server := captureSetupExperiencePatch(t, &body)
 	defer server.Close()
@@ -468,16 +576,18 @@ func TestClient_UpdateSetupExperience_OmitsUnsetFleet490Fields(t *testing.T) {
 	}
 }
 
-func TestClient_GetSetupExperience_Fleet490Fields(t *testing.T) {
+func TestClient_GetSetupExperience_OptInFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		// manual_agent_install is deliberately absent: Fleet omits or nulls it
+		// for a team that has never had it written.
+		_, _ = w.Write([]byte(`{"team":{"id":1,"mdm":{"macos_setup":{
 			"enable_end_user_authentication": true,
 			"enable_release_device_manually": false,
 			"lock_end_user_info": true,
 			"require_all_software_macos": false,
 			"require_all_software_windows": true
-		}`))
+		}}}}`))
 	}))
 	defer server.Close()
 

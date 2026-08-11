@@ -3,9 +3,11 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -21,20 +23,11 @@ import (
 // coverage for the request bodies and the opt-in state handling.
 
 func TestAccSetupExperienceResource_basic(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == "/api/v1/fleet/setup_experience" && r.Method == "PATCH":
-			w.WriteHeader(http.StatusNoContent)
-		case r.URL.Path == "/api/v1/fleet/setup_experience" && r.Method == "GET":
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"enable_end_user_authentication": true,
-				"enable_release_device_manually": false,
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	mock := &setupExperienceMock{settings: map[string]any{
+		"enable_end_user_authentication": true,
+		"enable_release_device_manually": false,
+	}}
+	server := httptest.NewServer(mock.handler(t))
 	defer server.Close()
 
 	resource.Test(t, resource.TestCase{
@@ -57,7 +50,8 @@ func TestAccSetupExperienceResource_basic(t *testing.T) {
 }
 
 // setupExperienceMock records every PATCH body sent to /setup_experience and
-// serves the settings a Fleet 4.90 instance would report back.
+// serves the settings back the way Fleet does: on the team for a team-scoped
+// resource, under mdm.macos_setup.
 type setupExperienceMock struct {
 	mu       sync.Mutex
 	patches  []map[string]any
@@ -66,13 +60,8 @@ type setupExperienceMock struct {
 
 func (m *setupExperienceMock) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/setup_experience" {
-			http.NotFound(w, r)
-			return
-		}
-
-		switch r.Method {
-		case http.MethodPatch:
+		switch {
+		case r.URL.Path == "/api/v1/fleet/setup_experience" && r.Method == http.MethodPatch:
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("failed to decode PATCH body: %v", err)
@@ -81,15 +70,21 @@ func (m *setupExperienceMock) handler(t *testing.T) http.HandlerFunc {
 			m.patches = append(m.patches, body)
 			m.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
-		case http.MethodGet:
+
+		case strings.HasPrefix(r.URL.Path, "/api/v1/fleet/fleets/") && r.Method == http.MethodGet:
 			m.mu.Lock()
-			settings := m.settings
+			settings := maps.Clone(m.settings)
 			m.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(settings)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"team": map[string]any{
+					"mdm": map[string]any{"macos_setup": settings},
+				},
+			})
+
 		default:
-			t.Errorf("unexpected method %s on %s", r.Method, r.URL.Path)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
 		}
 	}
 }
@@ -100,7 +95,15 @@ func (m *setupExperienceMock) recorded() []map[string]any {
 	return m.patches
 }
 
-func TestAccSetupExperienceResource_fleet490Fields(t *testing.T) {
+// setSetting changes a value out-of-band, standing in for a change made in
+// Fleet's UI between two Terraform runs.
+func (m *setupExperienceMock) setSetting(name string, value any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings[name] = value
+}
+
+func TestAccSetupExperienceResource_optInFields(t *testing.T) {
 	mock := &setupExperienceMock{settings: map[string]any{
 		"enable_end_user_authentication": true,
 		"enable_release_device_manually": false,
@@ -116,7 +119,7 @@ func TestAccSetupExperienceResource_fleet490Fields(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccSetupExperienceResourceConfigFleet490(server.URL, 3),
+				Config: testAccSetupExperienceResourceConfigOptIn(server.URL, 3),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("fleetdm_setup_experience.test", "lock_end_user_info", "true"),
 					resource.TestCheckResourceAttr("fleetdm_setup_experience.test", "require_all_software_macos", "true"),
@@ -163,8 +166,44 @@ func TestAccSetupExperienceResource_fleet490Fields(t *testing.T) {
 	}
 }
 
-func TestAccSetupExperienceResource_omittedFleet490FieldsStayNull(t *testing.T) {
-	// Fleet reports values for every 4.90 setting; the ones Terraform does not
+// TestAccSetupExperienceResource_detectsDrift proves the read path observes a
+// change made outside Terraform: a managed setting flipped on the mock's team
+// has to show up as a non-empty plan after a refresh.
+func TestAccSetupExperienceResource_detectsDrift(t *testing.T) {
+	mock := &setupExperienceMock{settings: map[string]any{
+		"enable_end_user_authentication": true,
+		"enable_release_device_manually": false,
+		"lock_end_user_info":             true,
+		"require_all_software_macos":     true,
+		"require_all_software_windows":   false,
+		"manual_agent_install":           true,
+	}}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSetupExperienceResourceConfigOptIn(server.URL, 6),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_setup_experience.test", "require_all_software_macos", "true"),
+			},
+			{
+				PreConfig: func() {
+					mock.setSetting("require_all_software_macos", false)
+				},
+				RefreshState:       true,
+				ExpectNonEmptyPlan: true,
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_setup_experience.test", "require_all_software_macos", "false"),
+			},
+		},
+	})
+}
+
+func TestAccSetupExperienceResource_omittedOptInFieldsStayNull(t *testing.T) {
+	// Fleet reports values for every opt-in setting; the ones Terraform does not
 	// manage must stay out of both the request bodies and state.
 	mock := &setupExperienceMock{settings: map[string]any{
 		"enable_end_user_authentication": true,
@@ -254,7 +293,7 @@ resource "fleetdm_setup_experience" "test" {
 `, serverURL, teamID, enableEndUserAuth, enableReleaseManually)
 }
 
-func testAccSetupExperienceResourceConfigFleet490(serverURL string, teamID int) string {
+func testAccSetupExperienceResourceConfigOptIn(serverURL string, teamID int) string {
 	return fmt.Sprintf(`
 provider "fleetdm" {
   server_address = %[1]q

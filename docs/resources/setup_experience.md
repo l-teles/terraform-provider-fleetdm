@@ -4,14 +4,14 @@ page_title: "fleetdm_setup_experience Resource - fleetdm"
 subcategory: ""
 description: |-
   Manages FleetDM setup experience settings for a team. This is a Premium feature. Setup experience controls the enrollment flow for macOS devices enrolled via DEP.
-  The attributes marked opt-in (the settings Fleet added in 4.90) are only sent to Fleet when they are set in HCL, and are only tracked in state once set. Omitting one leaves whatever value Fleet holds — including a value set in Fleet's UI — untouched, which also keeps this resource usable against Fleet versions that predate the setting. Destroying the resource resets only the settings Terraform managed.
+  The attributes marked opt-in are only sent to Fleet when they are set in HCL, and are only tracked in state once set. Omitting one leaves whatever value Fleet holds — including a value set in Fleet's UI — untouched, which also keeps this resource usable against Fleet versions that predate the setting. Destroying the resource resets only the settings Terraform managed.
 ---
 
 # fleetdm_setup_experience (Resource)
 
 Manages FleetDM setup experience settings for a team. This is a Premium feature. Setup experience controls the enrollment flow for macOS devices enrolled via DEP.
 
-The attributes marked *opt-in* (the settings Fleet added in 4.90) are only sent to Fleet when they are set in HCL, and are only tracked in state once set. Omitting one leaves whatever value Fleet holds — including a value set in Fleet's UI — untouched, which also keeps this resource usable against Fleet versions that predate the setting. Destroying the resource resets only the settings Terraform managed.
+The attributes marked *opt-in* are only sent to Fleet when they are set in HCL, and are only tracked in state once set. Omitting one leaves whatever value Fleet holds — including a value set in Fleet's UI — untouched, which also keeps this resource usable against Fleet versions that predate the setting. Destroying the resource resets only the settings Terraform managed.
 
 ## Example Usage
 
@@ -37,15 +37,15 @@ resource "fleetdm_setup_experience" "engineering" {
   enable_end_user_authentication = true
   enable_release_device_manually = true
 
-  # Fleet 4.90+ settings. Omit any of them to leave Fleet's current value alone.
+  # Opt-in settings: omit any of them to leave Fleet's current value alone.
   lock_end_user_info           = true
   require_all_software_macos   = true
   require_all_software_windows = true
 }
 
 # Install fleetd from the team's bootstrap package instead of during
-# Setup Assistant (Fleet 4.90+). Requires a bootstrap package, and no
-# setup experience software or script on the team.
+# Setup Assistant. Requires a bootstrap package, and no setup experience
+# software or script on the team.
 resource "fleetdm_setup_experience" "kiosks" {
   team_id = fleetdm_team.kiosks.id
 
@@ -72,10 +72,10 @@ resource "fleetdm_setup_experience" "contractors" {
 
 - `enable_end_user_authentication` (Boolean) Whether to require end user authentication during device setup. Defaults to false.
 - `enable_release_device_manually` (Boolean) Whether to require an admin to manually release the device after setup. Defaults to false.
-- `lock_end_user_info` (Boolean) Whether to prevent end users from editing the name and email Fleet collected during IdP authentication. Requires `enable_end_user_authentication = true` — Fleet rejects the combination otherwise. Requires Fleet 4.90 or later. Opt-in: omitting the attribute leaves Fleet's own value alone.
-- `manual_agent_install` (Boolean) Whether fleetd is installed by the team's bootstrap package instead of by Fleet during Setup Assistant. Fleet rejects `true` unless the team has a bootstrap package and has no setup-experience software or script configured. Requires Fleet 4.90 or later. Opt-in: omitting the attribute leaves Fleet's own value alone.
-- `require_all_software_macos` (Boolean) Whether macOS hosts must finish installing every setup-experience software title before the device is released. Requires Fleet 4.90 or later. Opt-in: omitting the attribute leaves Fleet's own value alone.
-- `require_all_software_windows` (Boolean) Whether Windows hosts must finish installing every setup-experience software title before the device is released. Requires Fleet 4.90 or later, and Windows MDM turned on when set to `true`. Opt-in: omitting the attribute leaves Fleet's own value alone.
+- `lock_end_user_info` (Boolean) Whether to prevent end users from editing the macOS local account Account Name and Full Name during Setup Assistant, locking both to the values Fleet collected from the IdP. macOS only, and the end user's email is not locked. Requires `enable_end_user_authentication = true` — Fleet rejects the combination otherwise. Requires Fleet 4.83 or later. Opt-in: omitting the attribute leaves Fleet's own value alone.
+- `manual_agent_install` (Boolean) Whether fleetd is installed by the team's bootstrap package instead of by Fleet during Setup Assistant. Fleet rejects `true` unless the team has a bootstrap package and has no setup-experience software or script configured. Requires Fleet 4.82 or later. Opt-in: omitting the attribute leaves Fleet's own value alone.
+- `require_all_software_macos` (Boolean) Whether macOS hosts must finish installing every setup-experience software title before the device is released. Requires Fleet 4.82 or later. Opt-in: omitting the attribute leaves Fleet's own value alone.
+- `require_all_software_windows` (Boolean) Whether Windows hosts must finish installing every setup-experience software title before the device is released. Requires Fleet 4.86 or later, and Windows MDM turned on when set to `true`. Opt-in: omitting the attribute leaves Fleet's own value alone.
 
 ### Read-Only
 

@@ -21,8 +21,8 @@ var (
 	_ resource.ResourceWithValidateConfig = &setupExperienceResource{}
 )
 
-// setupExperienceOptInNote marks the Fleet 4.90 settings whose opt-in
-// semantics are described in the resource description.
+// setupExperienceOptInNote marks the opt-in settings whose semantics are
+// described in the resource description.
 const setupExperienceOptInNote = " Opt-in: omitting the attribute leaves Fleet's own value alone."
 
 // NewSetupExperienceResource is a helper function to simplify the provider implementation.
@@ -57,11 +57,10 @@ func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaReq
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages FleetDM setup experience settings for a team. This is a Premium feature. " +
 			"Setup experience controls the enrollment flow for macOS devices enrolled via DEP.\n\n" +
-			"The attributes marked *opt-in* (the settings Fleet added in 4.90) are only sent to Fleet when they " +
-			"are set in HCL, and are only tracked in state once set. Omitting one leaves whatever value Fleet " +
-			"holds — including a value set in Fleet's UI — untouched, which also keeps this resource usable " +
-			"against Fleet versions that predate the setting. Destroying the resource resets only the settings " +
-			"Terraform managed.",
+			"The attributes marked *opt-in* are only sent to Fleet when they are set in HCL, and are only " +
+			"tracked in state once set. Omitting one leaves whatever value Fleet holds — including a value set " +
+			"in Fleet's UI — untouched, which also keeps this resource usable against Fleet versions that " +
+			"predate the setting. Destroying the resource resets only the settings Terraform managed.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
 				Description: "The unique identifier (same as team_id).",
@@ -90,26 +89,28 @@ func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaReq
 				Default:     booldefault.StaticBool(false),
 			},
 			"lock_end_user_info": schema.BoolAttribute{
-				Description: "Whether to prevent end users from editing the name and email Fleet collected during " +
-					"IdP authentication. Requires `enable_end_user_authentication = true` — Fleet rejects the " +
-					"combination otherwise. Requires Fleet 4.90 or later." + setupExperienceOptInNote,
+				Description: "Whether to prevent end users from editing the macOS local account Account Name and " +
+					"Full Name during Setup Assistant, locking both to the values Fleet collected from the IdP. " +
+					"macOS only, and the end user's email is not locked. Requires " +
+					"`enable_end_user_authentication = true` — Fleet rejects the combination otherwise. " +
+					"Requires Fleet 4.83 or later." + setupExperienceOptInNote,
 				Optional: true,
 			},
 			"require_all_software_macos": schema.BoolAttribute{
 				Description: "Whether macOS hosts must finish installing every setup-experience software title " +
-					"before the device is released. Requires Fleet 4.90 or later." + setupExperienceOptInNote,
+					"before the device is released. Requires Fleet 4.82 or later." + setupExperienceOptInNote,
 				Optional: true,
 			},
 			"require_all_software_windows": schema.BoolAttribute{
 				Description: "Whether Windows hosts must finish installing every setup-experience software title " +
-					"before the device is released. Requires Fleet 4.90 or later, and Windows MDM turned on when " +
+					"before the device is released. Requires Fleet 4.86 or later, and Windows MDM turned on when " +
 					"set to `true`." + setupExperienceOptInNote,
 				Optional: true,
 			},
 			"manual_agent_install": schema.BoolAttribute{
 				Description: "Whether fleetd is installed by the team's bootstrap package instead of by Fleet " +
 					"during Setup Assistant. Fleet rejects `true` unless the team has a bootstrap package and has " +
-					"no setup-experience software or script configured. Requires Fleet 4.90 or later." +
+					"no setup-experience software or script configured. Requires Fleet 4.82 or later." +
 					setupExperienceOptInNote,
 				Optional: true,
 			},
@@ -123,7 +124,7 @@ func (r *setupExperienceResource) Configure(_ context.Context, req resource.Conf
 }
 
 // ValidateConfig rejects lock_end_user_info without end user authentication at
-// plan time. Fleet 4.90 returns a 422 for the same combination.
+// plan time. Fleet rejects the same combination with a 422.
 func (r *setupExperienceResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
 	var config setupExperienceResourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
@@ -137,7 +138,9 @@ func (r *setupExperienceResource) ValidateConfig(ctx context.Context, req resour
 	if config.EnableEndUserAuth.IsUnknown() {
 		return
 	}
-	if !config.EnableEndUserAuth.ValueBool() {
+	// A null config value means the attribute was omitted, which Fleet reads as
+	// end user authentication being off regardless of this schema's default.
+	if config.EnableEndUserAuth.IsNull() || !config.EnableEndUserAuth.ValueBool() {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("lock_end_user_info"),
 			"Invalid setup experience configuration",
@@ -147,7 +150,7 @@ func (r *setupExperienceResource) ValidateConfig(ctx context.Context, req resour
 }
 
 // setupExperienceUpdateRequest builds the update payload for a plan. The
-// Fleet 4.90 settings are only sent when the plan holds a value: Fleet gates
+// opt-in settings are only sent when the plan holds a value: Fleet gates
 // some of them on presence alone, so sending an unmanaged field would break
 // the request on a Fleet without MDM turned on.
 func setupExperienceUpdateRequest(teamID int, plan setupExperienceResourceModel) *fleetdm.UpdateSetupExperienceRequest {
@@ -228,7 +231,7 @@ func (r *setupExperienceResource) Read(ctx context.Context, req resource.ReadReq
 		return
 	}
 
-	// Update state with read values. The Fleet 4.90 settings are only adopted
+	// Update state with read values. The opt-in settings are only adopted
 	// when state already holds a value for them, so an omitted attribute keeps
 	// tracking Fleet's own value instead of drifting into the plan.
 	state.EnableEndUserAuth = types.BoolValue(experience.EnableEndUserAuth)
@@ -280,7 +283,7 @@ func (r *setupExperienceResource) Delete(ctx context.Context, req resource.Delet
 
 	teamID := int(state.TeamID.ValueInt64())
 
-	// Reset setup experience to defaults, clearing only the Fleet 4.90 settings
+	// Reset setup experience to defaults, clearing only the opt-in settings
 	// this resource was managing.
 	enableEndUserAuth := false
 	enableReleaseManually := false
