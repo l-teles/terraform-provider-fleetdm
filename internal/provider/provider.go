@@ -223,6 +223,7 @@ func (p *FleetDMProvider) Resources(ctx context.Context) []func() resource.Resou
 		NewSoftwareCustomPackageResource,
 		NewSoftwareAppStoreAppResource,
 		NewSoftwareFleetMaintainedAppResource,
+		NewSoftwareWebAppResource,
 		NewBootstrapPackageResource,
 		NewSetupExperienceResource,
 		NewCustomVariableResource,

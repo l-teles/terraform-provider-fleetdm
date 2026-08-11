@@ -27,6 +27,7 @@ Supports both **FleetDM Free** and **Premium** editions. Not affiliated with Fle
 | `fleetdm_software_custom_package` | Upload custom installer packages (.pkg/.msi/.exe/.zip/.deb/.rpm/.tar.gz/.ipa) and script installers (.sh/.py/.ps1) — Premium |
 | `fleetdm_software_app_store_app` | Apple Volume Purchase Program (App Store) apps — Premium |
 | `fleetdm_software_fleet_maintained_app` | Fleet-curated apps bound to a team — Premium |
+| `fleetdm_software_web_app` | Android web apps (web clips) — Premium, requires Android MDM |
 | `fleetdm_software_package` *(deprecated)* | Split into the three resources above — see the migration guide |
 | `fleetdm_bootstrap_package` | Bootstrap packages for DEP enrollment (Premium) |
 | `fleetdm_configuration_profile` | MDM configuration profiles (Premium) |
