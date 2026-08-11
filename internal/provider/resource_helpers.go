@@ -49,6 +49,14 @@ func isForbidden(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == 403
 }
 
+// isConflict returns true if the error (or any error it wraps) is a FleetDM
+// API 409 response. Fleet uses 409 both for "this name already exists" on
+// create and for "this object is still referenced" on delete.
+func isConflict(err error) bool {
+	var apiErr *fleetdm.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 409
+}
+
 // parseIDFromString parses a numeric string ID and adds a diagnostic error on failure.
 // Returns the parsed int and true on success, or 0 and false on failure.
 func parseIDFromString(id string, resourceName string, diagnostics *diag.Diagnostics) (int64, bool) {
