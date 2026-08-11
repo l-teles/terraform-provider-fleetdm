@@ -21,6 +21,11 @@ data "fleetdm_policies" "team" {
   team_id = fleetdm_team.workstations.id
 }
 
+# Get only the policies targeting one platform (Fleet 4.90+)
+data "fleetdm_policies" "macos" {
+  platform = "darwin"
+}
+
 # Output all policy names
 output "all_policy_names" {
   value = [for policy in data.fleetdm_policies.global.policies : policy.name]
@@ -47,6 +52,7 @@ output "total_passing" {
 
 ### Optional
 
+- `platform` (String) Filter policies by the platform they target. One of `darwin`, `windows`, `linux` or `chrome`. If not specified, policies for all platforms are returned. _Requires Fleet 4.90+._
 - `team_id` (Number) Filter policies by team ID. If not specified, global policies are returned.
 
 ### Read-Only

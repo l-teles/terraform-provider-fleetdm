@@ -71,3 +71,20 @@ resource "fleetdm_policy" "conditional_access" {
   conditional_access_enabled = true
   calendar_events_enabled    = true
 }
+
+# Narrower label scoping (Fleet 4.90+): require every include label rather
+# than any one of them, and combine it with an exclude selector. At most one
+# include and one exclude selector may be set, and no label may appear on
+# both sides.
+resource "fleetdm_policy" "scoped" {
+  name    = "Managed laptops are encrypted"
+  query   = "SELECT 1 FROM disk_encryption WHERE encrypted = 1;"
+  team_id = fleetdm_fleet.workstations.id
+
+  labels_include_all = ["Macs on Sonoma", "Engineering"]
+  labels_exclude_any = ["Loaner devices"]
+
+  # Re-run the policy's automations on every failing check instead of only
+  # on the transition into failing. Team policies only.
+  continuous_automations_enabled = true
+}

@@ -2,6 +2,8 @@ package provider
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -238,10 +240,138 @@ func TestAccReportResource_moveStateFromQuery(t *testing.T) {
 					resource.TestCheckResourceAttrSet("fleetdm_report.test", "id"),
 					resource.TestCheckResourceAttrSet("fleetdm_report.test", "fleet_id"),
 					resource.TestCheckResourceAttrPair("fleetdm_report.test", "fleet_id", "fleetdm_fleet.scoped", "id"),
+					// fleetdm_query has no label-scoping attributes, so the
+					// moved state must land with both of them null.
+					resource.TestCheckNoResourceAttr("fleetdm_report.test", "labels_include_any.#"),
+					resource.TestCheckNoResourceAttr("fleetdm_report.test", "labels_include_all.#"),
 				),
 			},
 		},
 	})
+}
+
+// TestAccReportResource_labels verifies the Fleet 4.90 report label scoping:
+// set on create, swapped between the two selectors on update, and cleared by
+// omitting the attribute.
+func TestAccReportResource_labels(t *testing.T) {
+	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	labelA := "tf-acc-label-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	labelB := "tf-acc-label-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccReportResourceConfigLabels(reportName, labelA, labelB, "labels_include_any", []string{labelA, labelB}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "labels_include_any.#", "2"),
+					resource.TestCheckNoResourceAttr("fleetdm_report.test", "labels_include_all.#"),
+				),
+			},
+			{
+				ResourceName:      "fleetdm_report.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAccReportResourceConfigLabels(reportName, labelA, labelB, "labels_include_all", []string{labelA}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_report.test", "labels_include_all.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_report.test", "labels_include_all.0", labelA),
+					resource.TestCheckNoResourceAttr("fleetdm_report.test", "labels_include_any.#"),
+				),
+			},
+			{
+				Config: testAccReportResourceConfigLabels(reportName, labelA, labelB, "", nil),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("fleetdm_report.test", "labels_include_any.#"),
+					resource.TestCheckNoResourceAttr("fleetdm_report.test", "labels_include_all.#"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccReportResource_labelsMutualExclusion covers the ConflictsWith
+// validator — Fleet rejects a report carrying both selectors with "report can
+// include at most one of labels_include_any or labels_include_all".
+func TestAccReportResource_labelsMutualExclusion(t *testing.T) {
+	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_report" "test" {
+  name               = %[1]q
+  query              = "SELECT 1;"
+  labels_include_any = ["a"]
+  labels_include_all = ["b"]
+}
+`, reportName),
+				ExpectError: regexp.MustCompile(`Invalid Attribute Combination`),
+			},
+		},
+	})
+}
+
+// TestAccReportResource_labelsEmptySetRejected covers the SizeAtLeast(1)
+// validator: Fleet returns null for an unscoped report, so an explicit empty
+// set in HCL would never converge with refreshed state.
+func TestAccReportResource_labelsEmptySetRejected(t *testing.T) {
+	reportName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_report" "test" {
+  name               = %[1]q
+  query              = "SELECT 1;"
+  labels_include_all = []
+}
+`, reportName),
+				ExpectError: regexp.MustCompile(`must contain at least 1 element`),
+			},
+		},
+	})
+}
+
+// testAccReportResourceConfigLabels renders a report plus the two labels it can
+// reference. An empty attrName omits label scoping entirely.
+func testAccReportResourceConfigLabels(reportName, labelA, labelB, attrName string, labels []string) string {
+	labelBlock := ""
+	if attrName != "" {
+		quoted := make([]string, 0, len(labels))
+		for _, l := range labels {
+			quoted = append(quoted, fmt.Sprintf("%q", l))
+		}
+		labelBlock = fmt.Sprintf("  %s = [%s]\n", attrName, strings.Join(quoted, ", "))
+	}
+
+	return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_label" "a" {
+  name  = %[2]q
+  query = "SELECT 1 FROM os_version WHERE platform = 'darwin';"
+}
+
+resource "fleetdm_label" "b" {
+  name  = %[3]q
+  query = "SELECT 1 FROM os_version WHERE platform = 'linux';"
+}
+
+resource "fleetdm_report" "test" {
+  name  = %[1]q
+  query = "SELECT 1;"
+%[4]s
+  depends_on = [fleetdm_label.a, fleetdm_label.b]
+}
+`, reportName, labelA, labelB, labelBlock)
 }
 
 func testAccQueryResourceConfigScoped(fleetName, queryName, sqlQuery string) string {

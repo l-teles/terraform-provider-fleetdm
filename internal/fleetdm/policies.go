@@ -37,10 +37,13 @@ type PolicyAutomationScript struct {
 	ID   int    `json:"id"`
 }
 
-// PolicyLabel is the per-label echo Fleet returns inside labels_include_any
-// and labels_exclude_any on policy responses. Note the request side uses
-// `[]string` of label names — the API is asymmetric here, so this struct
-// is response-only.
+// PolicyLabel is the per-label echo Fleet returns inside labels_include_any,
+// labels_exclude_any, labels_include_all and labels_exclude_all on policy
+// responses. Note the request side uses `[]string` of label names — the API
+// is asymmetric here, so this struct is response-only.
+//
+// Fleet populates ID on create/get responses but returns 0 for it on PATCH
+// responses, so only Name is dependable across every endpoint.
 type PolicyLabel struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -48,31 +51,34 @@ type PolicyLabel struct {
 
 // Policy represents a FleetDM policy.
 type Policy struct {
-	ID                       int                            `json:"id,omitempty"`
-	Name                     string                         `json:"name"`
-	Description              string                         `json:"description,omitempty"`
-	Query                    string                         `json:"query"`
-	Critical                 bool                           `json:"critical"`
-	Resolution               string                         `json:"resolution,omitempty"`
-	Platform                 string                         `json:"platform,omitempty"`
-	TeamID                   *int                           `json:"team_id,omitempty"`
-	AuthorID                 int                            `json:"author_id,omitempty"`
-	AuthorName               string                         `json:"author_name,omitempty"`
-	AuthorEmail              string                         `json:"author_email,omitempty"`
-	PassingHostCount         int                            `json:"passing_host_count,omitempty"`
-	FailingHostCount         int                            `json:"failing_host_count,omitempty"`
-	Type                     string                         `json:"type,omitempty"`
-	LabelsIncludeAny         []PolicyLabel                  `json:"labels_include_any,omitempty"`
-	LabelsExcludeAny         []PolicyLabel                  `json:"labels_exclude_any,omitempty"`
-	CalendarEventsEnabled    bool                           `json:"calendar_events_enabled"`
-	ConditionalAccessEnabled bool                           `json:"conditional_access_enabled"`
-	FleetMaintained          bool                           `json:"fleet_maintained"`
-	HostCountUpdatedAt       *string                        `json:"host_count_updated_at"`
-	CreatedAt                string                         `json:"created_at,omitempty"`
-	UpdatedAt                string                         `json:"updated_at,omitempty"`
-	InstallSoftware          *PolicyAutomationSoftware      `json:"install_software,omitempty"`
-	RunScript                *PolicyAutomationScript        `json:"run_script,omitempty"`
-	PatchSoftware            *PolicyAutomationPatchSoftware `json:"patch_software,omitempty"`
+	ID                           int                            `json:"id,omitempty"`
+	Name                         string                         `json:"name"`
+	Description                  string                         `json:"description,omitempty"`
+	Query                        string                         `json:"query"`
+	Critical                     bool                           `json:"critical"`
+	Resolution                   string                         `json:"resolution,omitempty"`
+	Platform                     string                         `json:"platform,omitempty"`
+	TeamID                       *int                           `json:"team_id,omitempty"`
+	AuthorID                     int                            `json:"author_id,omitempty"`
+	AuthorName                   string                         `json:"author_name,omitempty"`
+	AuthorEmail                  string                         `json:"author_email,omitempty"`
+	PassingHostCount             int                            `json:"passing_host_count,omitempty"`
+	FailingHostCount             int                            `json:"failing_host_count,omitempty"`
+	Type                         string                         `json:"type,omitempty"`
+	LabelsIncludeAny             []PolicyLabel                  `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny             []PolicyLabel                  `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAll             []PolicyLabel                  `json:"labels_include_all,omitempty"`
+	LabelsExcludeAll             []PolicyLabel                  `json:"labels_exclude_all,omitempty"`
+	CalendarEventsEnabled        bool                           `json:"calendar_events_enabled"`
+	ConditionalAccessEnabled     bool                           `json:"conditional_access_enabled"`
+	ContinuousAutomationsEnabled bool                           `json:"continuous_automations_enabled"`
+	FleetMaintained              bool                           `json:"fleet_maintained"`
+	HostCountUpdatedAt           *string                        `json:"host_count_updated_at"`
+	CreatedAt                    string                         `json:"created_at,omitempty"`
+	UpdatedAt                    string                         `json:"updated_at,omitempty"`
+	InstallSoftware              *PolicyAutomationSoftware      `json:"install_software,omitempty"`
+	RunScript                    *PolicyAutomationScript        `json:"run_script,omitempty"`
+	PatchSoftware                *PolicyAutomationPatchSoftware `json:"patch_software,omitempty"`
 }
 
 // ListPoliciesResponse represents the response from the list policies endpoint.
@@ -90,19 +96,28 @@ type GetPolicyResponse struct {
 //
 // Query uses omitempty so it can be left unset for patch policies
 // (Fleet rejects `query` together with `type=patch`).
+//
+// ContinuousAutomationsEnabled also uses omitempty. Fleet only honors the
+// field on fleet-scoped policies: a global create silently discards it (the
+// response echoes false), and a global PATCH carrying `true` is rejected with
+// `"All fleets" policy cannot have continuous_automations_enabled set`. Keeping
+// a false value off the wire leaves the global create body untouched.
 type CreatePolicyRequest struct {
-	Name                 string   `json:"name"`
-	Description          string   `json:"description,omitempty"`
-	Query                string   `json:"query,omitempty"`
-	Critical             bool     `json:"critical"`
-	Resolution           string   `json:"resolution,omitempty"`
-	Platform             string   `json:"platform,omitempty"`
-	Type                 string   `json:"type,omitempty"`
-	PatchSoftwareTitleID *int     `json:"patch_software_title_id,omitempty"`
-	SoftwareTitleID      *int     `json:"software_title_id,omitempty"`
-	ScriptID             *int     `json:"script_id,omitempty"`
-	LabelsIncludeAny     []string `json:"labels_include_any,omitempty"`
-	LabelsExcludeAny     []string `json:"labels_exclude_any,omitempty"`
+	Name                         string   `json:"name"`
+	Description                  string   `json:"description,omitempty"`
+	Query                        string   `json:"query,omitempty"`
+	Critical                     bool     `json:"critical"`
+	Resolution                   string   `json:"resolution,omitempty"`
+	Platform                     string   `json:"platform,omitempty"`
+	Type                         string   `json:"type,omitempty"`
+	PatchSoftwareTitleID         *int     `json:"patch_software_title_id,omitempty"`
+	SoftwareTitleID              *int     `json:"software_title_id,omitempty"`
+	ScriptID                     *int     `json:"script_id,omitempty"`
+	ContinuousAutomationsEnabled bool     `json:"continuous_automations_enabled,omitempty"`
+	LabelsIncludeAny             []string `json:"labels_include_any,omitempty"`
+	LabelsExcludeAny             []string `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAll             []string `json:"labels_include_all,omitempty"`
+	LabelsExcludeAll             []string `json:"labels_exclude_all,omitempty"`
 }
 
 // CreatePolicyResponse represents the response from the create policy endpoint.
@@ -121,15 +136,20 @@ type CreatePolicyResponse struct {
 //     `nil` serializes as JSON `null`, which Fleet treats as "clear /
 //     reset to default". A non-nil pointer is sent as the value.
 //
-//   - Label slice fields (labels_include_any, labels_exclude_any): a `nil`
-//     slice serializes as JSON `null`, which Fleet treats as "no change"
-//     (preserve the existing labels). An empty slice (`[]string{}`)
-//     serializes as JSON `[]`, which Fleet treats as "clear all labels".
-//     Use the empty slice to clear; never use nil if the user has asked
-//     for labels to be removed.
+//   - Label slice fields (labels_include_any, labels_exclude_any,
+//     labels_include_all, labels_exclude_all): a `nil` slice serializes as
+//     JSON `null`, which Fleet treats as "no change" (preserve the existing
+//     labels). An empty slice (`[]string{}`) serializes as JSON `[]`, which
+//     Fleet treats as "clear all labels". Use the empty slice to clear;
+//     never use nil if the user has asked for labels to be removed.
 //
 // `omitempty` would suppress null/empty values entirely, breaking both
 // conventions.
+//
+// Fleet rejects a request whose labels_include_any AND labels_include_all are
+// both non-empty (likewise for the two exclude fields) with "policy can
+// include at most one of ...". Empty arrays don't count as set, so sending
+// `[]` for the unused half of each pair is safe.
 type UpdatePolicyRequest struct {
 	Name                           string   `json:"name,omitempty"`
 	Description                    string   `json:"description,omitempty"`
@@ -142,8 +162,11 @@ type UpdatePolicyRequest struct {
 	CalendarEventsEnabled          *bool    `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled       *bool    `json:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled *bool    `json:"conditional_access_bypass_enabled"`
+	ContinuousAutomationsEnabled   *bool    `json:"continuous_automations_enabled"`
 	LabelsIncludeAny               []string `json:"labels_include_any"`
 	LabelsExcludeAny               []string `json:"labels_exclude_any"`
+	LabelsIncludeAll               []string `json:"labels_include_all"`
+	LabelsExcludeAll               []string `json:"labels_exclude_all"`
 }
 
 // UpdatePolicyResponse represents the response from the update policy endpoint.
@@ -151,25 +174,36 @@ type UpdatePolicyResponse struct {
 	Policy Policy `json:"policy"`
 }
 
+// ListPoliciesOptions filters the policy list endpoints.
+type ListPoliciesOptions struct {
+	// TeamID selects the scope: nil (or a pointer to zero) lists global
+	// policies, a positive value lists the named fleet's policies.
+	TeamID *int
+	// Platform restricts the results to policies targeting a single
+	// platform. Fleet validates the value against darwin, windows, linux
+	// and chrome, rejecting anything else with a 422. Empty means no
+	// filter.
+	Platform string
+}
+
+// queryParams renders the options as URL query parameters, returning nil
+// when no filter is set so the request looks exactly as it did before the
+// platform filter existed.
+func (o ListPoliciesOptions) queryParams() map[string]string {
+	if o.Platform == "" {
+		return nil
+	}
+	return map[string]string{"platform": o.Platform}
+}
+
 // ListGlobalPolicies retrieves all global policies.
 func (c *Client) ListGlobalPolicies(ctx context.Context) ([]Policy, error) {
-	var resp ListPoliciesResponse
-	err := c.Get(ctx, "/global/policies", nil, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list global policies: %w", err)
-	}
-	return resp.Policies, nil
+	return c.ListPolicies(ctx, ListPoliciesOptions{})
 }
 
 // ListTeamPolicies retrieves all policies for a specific team.
 func (c *Client) ListTeamPolicies(ctx context.Context, teamID int) ([]Policy, error) {
-	var resp ListPoliciesResponse
-	endpoint := fmt.Sprintf("/fleets/%d/policies", teamID)
-	err := c.Get(ctx, endpoint, nil, &resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list fleet %d policies: %w", teamID, err)
-	}
-	return resp.Policies, nil
+	return c.ListPolicies(ctx, ListPoliciesOptions{TeamID: &teamID})
 }
 
 // GetGlobalPolicy retrieves a global policy by ID.
@@ -333,12 +367,21 @@ func (c *Client) DeletePolicy(ctx context.Context, id int, teamID *int) error {
 	return c.DeleteGlobalPolicy(ctx, id)
 }
 
-// ListPolicies retrieves all policies (global or for a specific team).
-func (c *Client) ListPolicies(ctx context.Context, teamID *int) ([]Policy, error) {
-	if isTeamScoped(teamID) {
-		return c.ListTeamPolicies(ctx, *teamID)
+// ListPolicies retrieves policies (global or for a specific team), optionally
+// filtered by platform.
+func (c *Client) ListPolicies(ctx context.Context, opts ListPoliciesOptions) ([]Policy, error) {
+	endpoint := "/global/policies"
+	scope := "global policies"
+	if isTeamScoped(opts.TeamID) {
+		endpoint = fmt.Sprintf("/fleets/%d/policies", *opts.TeamID)
+		scope = fmt.Sprintf("fleet %d policies", *opts.TeamID)
 	}
-	return c.ListGlobalPolicies(ctx)
+
+	var resp ListPoliciesResponse
+	if err := c.Get(ctx, endpoint, opts.queryParams(), &resp); err != nil {
+		return nil, fmt.Errorf("failed to list %s: %w", scope, err)
+	}
+	return resp.Policies, nil
 }
 
 // ListPoliciesByInstallSoftwareTitleID returns policies in the given scope

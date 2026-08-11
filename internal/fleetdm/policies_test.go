@@ -605,10 +605,12 @@ func TestClient_DeletePolicy_Team(t *testing.T) {
 }
 
 func TestClient_ListPolicies_Global(t *testing.T) {
+	var rawQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/fleet/global/policies" {
 			t.Errorf("expected global path, got: %s", r.URL.Path)
 		}
+		rawQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ListPoliciesResponse{
 			Policies: []Policy{{ID: 1, Name: "P1"}, {ID: 2, Name: "P2"}},
@@ -617,12 +619,54 @@ func TestClient_ListPolicies_Global(t *testing.T) {
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
-	policies, err := client.ListPolicies(context.Background(), nil)
+	policies, err := client.ListPolicies(context.Background(), ListPoliciesOptions{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if len(policies) != 2 {
 		t.Errorf("expected 2 policies, got: %d", len(policies))
+	}
+	if rawQuery != "" {
+		t.Errorf("expected no query parameters without a platform filter, got: %s", rawQuery)
+	}
+}
+
+// TestClient_ListPolicies_PlatformFilter asserts the Fleet 4.90 `platform`
+// query parameter reaches the wire on both the global and the fleet-scoped
+// list endpoints. Fleet validates the value server-side (422 for anything
+// outside darwin/windows/linux/chrome), so the client passes it through
+// verbatim.
+func TestClient_ListPolicies_PlatformFilter(t *testing.T) {
+	teamID := 4
+	for _, tc := range []struct {
+		name     string
+		opts     ListPoliciesOptions
+		wantPath string
+	}{
+		{"global", ListPoliciesOptions{Platform: "darwin"}, "/api/v1/fleet/global/policies"},
+		{"team", ListPoliciesOptions{TeamID: &teamID, Platform: "windows"}, "/api/v1/fleet/fleets/4/policies"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath, gotPlatform string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotPlatform = r.URL.Query().Get("platform")
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(ListPoliciesResponse{Policies: []Policy{{ID: 1, Name: "P1"}}})
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			if _, err := client.ListPolicies(context.Background(), tc.opts); err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if gotPath != tc.wantPath {
+				t.Errorf("expected path %s, got: %s", tc.wantPath, gotPath)
+			}
+			if gotPlatform != tc.opts.Platform {
+				t.Errorf("expected platform=%s, got: %q", tc.opts.Platform, gotPlatform)
+			}
+		})
 	}
 }
 
@@ -641,7 +685,7 @@ func TestClient_ListPolicies_Team(t *testing.T) {
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
 	teamID := 3
-	policies, err := client.ListPolicies(context.Background(), &teamID)
+	policies, err := client.ListPolicies(context.Background(), ListPoliciesOptions{TeamID: &teamID})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -802,6 +846,7 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 		`"calendar_events_enabled":null`,
 		`"conditional_access_enabled":null`,
 		`"conditional_access_bypass_enabled":null`,
+		`"continuous_automations_enabled":null`,
 	} {
 		if !strings.Contains(rawBody, want) {
 			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
@@ -854,6 +899,168 @@ func TestClient_UpdateTeamPolicy_LabelClearVsNoChange(t *testing.T) {
 	}
 }
 
+// TestClient_UpdateTeamPolicy_AllLabelSelectorsClearVsNoChange extends the
+// nil-vs-empty guard to the Fleet 4.90 "all" selectors. Every one of the four
+// label fields is on the same convention, and the provider always sends all
+// four, so a regression on any of them would silently drop or preserve the
+// wrong targeting.
+func TestClient_UpdateTeamPolicy_AllLabelSelectorsClearVsNoChange(t *testing.T) {
+	captured := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		captured <- string(body)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(UpdatePolicyResponse{Policy: Policy{ID: 5, Name: "ok"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{Name: "ok"}); err != nil {
+		t.Fatalf("nil-labels update failed: %v", err)
+	}
+	body := <-captured
+	for _, want := range []string{
+		`"labels_include_any":null`,
+		`"labels_exclude_any":null`,
+		`"labels_include_all":null`,
+		`"labels_exclude_all":null`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, body)
+		}
+	}
+
+	// Clearing the "any" selectors while switching to an "all" selector is
+	// the shape the provider sends when a user swaps modes. Fleet rejects
+	// two non-empty selectors of the same direction, so the unused half of
+	// each pair must go out as [] rather than being dropped.
+	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
+		Name:             "ok",
+		LabelsIncludeAny: []string{},
+		LabelsExcludeAny: []string{},
+		LabelsIncludeAll: []string{"Macs on Sonoma"},
+		LabelsExcludeAll: []string{},
+	}); err != nil {
+		t.Fatalf("selector-swap update failed: %v", err)
+	}
+	body = <-captured
+	for _, want := range []string{
+		`"labels_include_any":[]`,
+		`"labels_exclude_any":[]`,
+		`"labels_include_all":["Macs on Sonoma"]`,
+		`"labels_exclude_all":[]`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, body)
+		}
+	}
+}
+
+// TestClient_CreateTeamPolicy_AllLabelSelectors covers the create path for the
+// Fleet 4.90 selectors, including the include+exclude combination Fleet allows
+// (only two selectors of the same direction are rejected).
+func TestClient_CreateTeamPolicy_AllLabelSelectors(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rawBody = string(body)
+
+		var req CreatePolicyRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("failed to decode request: %v", err)
+		}
+
+		teamID := 1
+		echo := func(names []string) []PolicyLabel {
+			out := make([]PolicyLabel, 0, len(names))
+			for i, n := range names {
+				out = append(out, PolicyLabel{ID: i + 1, Name: n})
+			}
+			return out
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreatePolicyResponse{
+			Policy: Policy{
+				ID:                           100,
+				Name:                         req.Name,
+				Query:                        req.Query,
+				TeamID:                       &teamID,
+				LabelsIncludeAll:             echo(req.LabelsIncludeAll),
+				LabelsExcludeAll:             echo(req.LabelsExcludeAll),
+				ContinuousAutomationsEnabled: req.ContinuousAutomationsEnabled,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	policy, err := client.CreateTeamPolicy(context.Background(), 1, CreatePolicyRequest{
+		Name:                         "Scoped",
+		Query:                        "SELECT 1;",
+		LabelsIncludeAll:             []string{"Macs on Sonoma", "Engineering"},
+		LabelsExcludeAll:             []string{"Kiosks"},
+		ContinuousAutomationsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	for _, want := range []string{
+		`"labels_include_all":["Macs on Sonoma","Engineering"]`,
+		`"labels_exclude_all":["Kiosks"]`,
+		`"continuous_automations_enabled":true`,
+	} {
+		if !strings.Contains(rawBody, want) {
+			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
+		}
+	}
+	// omitempty must keep the unused "any" selectors off the wire entirely —
+	// an explicit null would be read as "no change" on create.
+	for _, forbidden := range []string{"labels_include_any", "labels_exclude_any"} {
+		if strings.Contains(rawBody, forbidden) {
+			t.Errorf("expected request body to omit %q, body was: %s", forbidden, rawBody)
+		}
+	}
+	if len(policy.LabelsIncludeAll) != 2 || policy.LabelsIncludeAll[0].Name != "Macs on Sonoma" {
+		t.Errorf("expected labels_include_all echo, got: %+v", policy.LabelsIncludeAll)
+	}
+	if len(policy.LabelsExcludeAll) != 1 || policy.LabelsExcludeAll[0].Name != "Kiosks" {
+		t.Errorf("expected labels_exclude_all echo, got: %+v", policy.LabelsExcludeAll)
+	}
+	if !policy.ContinuousAutomationsEnabled {
+		t.Error("expected continuous_automations_enabled true in response")
+	}
+}
+
+// TestClient_CreatePolicy_OmitsFalseContinuousAutomations is the regression
+// guard for the omitempty on CreatePolicyRequest.ContinuousAutomationsEnabled.
+// Fleet only accepts the field on fleet-scoped policies, so a global create
+// carrying an explicit false would be sending a field the endpoint has no
+// business seeing.
+func TestClient_CreatePolicy_OmitsFalseContinuousAutomations(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rawBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CreatePolicyResponse{Policy: Policy{ID: 1, Name: "Global"}})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if _, err := client.CreateGlobalPolicy(context.Background(), CreatePolicyRequest{
+		Name:  "Global",
+		Query: "SELECT 1;",
+	}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if strings.Contains(rawBody, "continuous_automations_enabled") {
+		t.Errorf("expected request body to omit continuous_automations_enabled, body was: %s", rawBody)
+	}
+}
+
 // TestClient_GetTeamPolicy_FullResponse decodes a fixture that mirrors the
 // Get fleet policy example in the upstream REST API docs (rest-api.md
 // lines 8362-8401) and asserts every new field flows through.
@@ -880,7 +1087,9 @@ func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
 	    "calendar_events_enabled": true,
 	    "conditional_access_enabled": false,
 	    "fleet_maintained": false,
+	    "continuous_automations_enabled": true,
 	    "labels_include_any": [{"id": 11, "name": "Macs on Sonoma"}],
+	    "labels_exclude_all": [{"id": 12, "name": "Kiosks"}],
 	    "patch_software": {
 	      "display_name": "",
 	      "name": "Adobe Acrobat.app",
@@ -923,6 +1132,12 @@ func TestClient_GetTeamPolicy_FullResponse(t *testing.T) {
 	}
 	if len(policy.LabelsIncludeAny) != 1 || policy.LabelsIncludeAny[0].Name != "Macs on Sonoma" || policy.LabelsIncludeAny[0].ID != 11 {
 		t.Errorf("expected labels_include_any [{id:11,name:\"Macs on Sonoma\"}], got: %+v", policy.LabelsIncludeAny)
+	}
+	if len(policy.LabelsExcludeAll) != 1 || policy.LabelsExcludeAll[0].Name != "Kiosks" || policy.LabelsExcludeAll[0].ID != 12 {
+		t.Errorf("expected labels_exclude_all [{id:12,name:\"Kiosks\"}], got: %+v", policy.LabelsExcludeAll)
+	}
+	if !policy.ContinuousAutomationsEnabled {
+		t.Error("expected continuous_automations_enabled true")
 	}
 	if policy.InstallSoftware == nil || policy.InstallSoftware.SoftwareTitleID != 1234 {
 		t.Errorf("expected install_software.software_title_id 1234, got: %+v", policy.InstallSoftware)
@@ -1127,7 +1342,7 @@ func TestClient_SetPolicyInstallSoftwareTitleID_Detach(t *testing.T) {
 		t.Errorf("expected software_title_id=null, got: %s", raw)
 	}
 	// Explicit guards for the fields that Fleet rejects on type=patch policies.
-	for _, forbidden := range []string{"query", "platform", "name", "description", "resolution", "critical", "calendar_events_enabled", "conditional_access_enabled", "script_id", "labels_include_any", "labels_exclude_any"} {
+	for _, forbidden := range []string{"query", "platform", "name", "description", "resolution", "critical", "calendar_events_enabled", "conditional_access_enabled", "continuous_automations_enabled", "script_id", "labels_include_any", "labels_exclude_any", "labels_include_all", "labels_exclude_all"} {
 		if _, present := rawBody[forbidden]; present {
 			t.Errorf("PATCH body must not include %q — Fleet's policy PATCH validator rejects %q on type=patch policies, and any other echoed field risks unintended mutation", forbidden, forbidden)
 		}

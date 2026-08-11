@@ -25,34 +25,37 @@ type PolicyDataSource struct {
 
 // PolicyDataSourceModel describes the data source data model.
 type PolicyDataSourceModel struct {
-	ID                       types.Int64  `tfsdk:"id"`
-	Name                     types.String `tfsdk:"name"`
-	Description              types.String `tfsdk:"description"`
-	Query                    types.String `tfsdk:"query"`
-	Critical                 types.Bool   `tfsdk:"critical"`
-	Resolution               types.String `tfsdk:"resolution"`
-	Platform                 types.List   `tfsdk:"platform"`
-	TeamID                   types.Int64  `tfsdk:"team_id"`
-	Type                     types.String `tfsdk:"type"`
-	PatchSoftwareTitleID     types.Int64  `tfsdk:"patch_software_title_id"`
-	SoftwareTitleID          types.Int64  `tfsdk:"software_title_id"`
-	ScriptID                 types.Int64  `tfsdk:"script_id"`
-	LabelsIncludeAny         types.Set    `tfsdk:"labels_include_any"`
-	LabelsExcludeAny         types.Set    `tfsdk:"labels_exclude_any"`
-	CalendarEventsEnabled    types.Bool   `tfsdk:"calendar_events_enabled"`
-	ConditionalAccessEnabled types.Bool   `tfsdk:"conditional_access_enabled"`
-	AuthorID                 types.Int64  `tfsdk:"author_id"`
-	AuthorName               types.String `tfsdk:"author_name"`
-	AuthorEmail              types.String `tfsdk:"author_email"`
-	PassingHostCount         types.Int64  `tfsdk:"passing_host_count"`
-	FailingHostCount         types.Int64  `tfsdk:"failing_host_count"`
-	FleetMaintained          types.Bool   `tfsdk:"fleet_maintained"`
-	CreatedAt                types.String `tfsdk:"created_at"`
-	UpdatedAt                types.String `tfsdk:"updated_at"`
-	HostCountUpdatedAt       types.String `tfsdk:"host_count_updated_at"`
-	InstallSoftware          types.Object `tfsdk:"install_software"`
-	RunScript                types.Object `tfsdk:"run_script"`
-	PatchSoftware            types.Object `tfsdk:"patch_software"`
+	ID                           types.Int64  `tfsdk:"id"`
+	Name                         types.String `tfsdk:"name"`
+	Description                  types.String `tfsdk:"description"`
+	Query                        types.String `tfsdk:"query"`
+	Critical                     types.Bool   `tfsdk:"critical"`
+	Resolution                   types.String `tfsdk:"resolution"`
+	Platform                     types.List   `tfsdk:"platform"`
+	TeamID                       types.Int64  `tfsdk:"team_id"`
+	Type                         types.String `tfsdk:"type"`
+	PatchSoftwareTitleID         types.Int64  `tfsdk:"patch_software_title_id"`
+	SoftwareTitleID              types.Int64  `tfsdk:"software_title_id"`
+	ScriptID                     types.Int64  `tfsdk:"script_id"`
+	LabelsIncludeAny             types.Set    `tfsdk:"labels_include_any"`
+	LabelsExcludeAny             types.Set    `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll             types.Set    `tfsdk:"labels_include_all"`
+	LabelsExcludeAll             types.Set    `tfsdk:"labels_exclude_all"`
+	CalendarEventsEnabled        types.Bool   `tfsdk:"calendar_events_enabled"`
+	ConditionalAccessEnabled     types.Bool   `tfsdk:"conditional_access_enabled"`
+	ContinuousAutomationsEnabled types.Bool   `tfsdk:"continuous_automations_enabled"`
+	AuthorID                     types.Int64  `tfsdk:"author_id"`
+	AuthorName                   types.String `tfsdk:"author_name"`
+	AuthorEmail                  types.String `tfsdk:"author_email"`
+	PassingHostCount             types.Int64  `tfsdk:"passing_host_count"`
+	FailingHostCount             types.Int64  `tfsdk:"failing_host_count"`
+	FleetMaintained              types.Bool   `tfsdk:"fleet_maintained"`
+	CreatedAt                    types.String `tfsdk:"created_at"`
+	UpdatedAt                    types.String `tfsdk:"updated_at"`
+	HostCountUpdatedAt           types.String `tfsdk:"host_count_updated_at"`
+	InstallSoftware              types.Object `tfsdk:"install_software"`
+	RunScript                    types.Object `tfsdk:"run_script"`
+	PatchSoftware                types.Object `tfsdk:"patch_software"`
 }
 
 func (d *PolicyDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -123,6 +126,16 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 				ElementType:         types.StringType,
 				MarkdownDescription: "Labels whose hosts are excluded from this policy (any-of semantics).",
 			},
+			"labels_include_all": schema.SetAttribute{
+				Computed:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Labels whose hosts are targeted by this policy (all-of semantics). _Fleet 4.90+._",
+			},
+			"labels_exclude_all": schema.SetAttribute{
+				Computed:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Labels whose hosts are excluded from this policy (all-of semantics). _Fleet 4.90+._",
+			},
 			"calendar_events_enabled": schema.BoolAttribute{
 				Computed:            true,
 				MarkdownDescription: "Whether calendar events are triggered when the policy fails.",
@@ -130,6 +143,10 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 			"conditional_access_enabled": schema.BoolAttribute{
 				Computed:            true,
 				MarkdownDescription: "Whether conditional access (SSO blocking) is enabled for failing hosts.",
+			},
+			"continuous_automations_enabled": schema.BoolAttribute{
+				Computed:            true,
+				MarkdownDescription: "Whether the policy's automations re-run on every failing check instead of only on the transition into failing. Always `false` for global policies — Fleet only supports the flag on team policies. _Fleet 4.90+._",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -237,8 +254,11 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.Type = types.StringValue(policyType)
 	data.LabelsIncludeAny = policyLabelsToSet(policy.LabelsIncludeAny)
 	data.LabelsExcludeAny = policyLabelsToSet(policy.LabelsExcludeAny)
+	data.LabelsIncludeAll = policyLabelsToSet(policy.LabelsIncludeAll)
+	data.LabelsExcludeAll = policyLabelsToSet(policy.LabelsExcludeAll)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
+	data.ContinuousAutomationsEnabled = types.BoolValue(policy.ContinuousAutomationsEnabled)
 	data.FleetMaintained = types.BoolValue(policy.FleetMaintained)
 	data.CreatedAt = types.StringValue(policy.CreatedAt)
 	data.UpdatedAt = types.StringValue(policy.UpdatedAt)

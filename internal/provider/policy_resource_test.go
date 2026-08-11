@@ -307,8 +307,111 @@ resource "fleetdm_policy" "test" {
 }
 
 // TestAccPolicyResource_labelsMutualExclusion verifies the ValidateConfig
-// guard that rejects setting both labels_include_any and labels_exclude_any.
+// guard that rejects two label selectors of the same direction. Fleet 4.90
+// allows an include selector alongside an exclude selector, so only the
+// any-vs-all pairs conflict.
 func TestAccPolicyResource_labelsMutualExclusion(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		selectors string
+	}{
+		{"include_any_and_include_all", `  labels_include_any = ["a"]
+  labels_include_all = ["b"]`},
+		{"exclude_any_and_exclude_all", `  labels_exclude_any = ["a"]
+  labels_exclude_all = ["b"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+			resource.Test(t, resource.TestCase{
+				PreCheck:                 func() { testAccPreCheck(t) },
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name  = %[1]q
+  query = "SELECT 1;"
+%[2]s
+}
+`, policyName, tc.selectors),
+						ExpectError: regexp.MustCompile("Conflicting label selectors"),
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestAccPolicyResource_labelsIncludeExcludeCombination is the counterpart:
+// one include selector plus one exclude selector must survive plan and apply.
+// This is the Fleet 4.90 relaxation — the pre-4.90 provider rejected any
+// include/exclude combination outright.
+func TestAccPolicyResource_labelsIncludeExcludeCombination(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	labelA := "tf-acc-label-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	labelB := "tf-acc-label-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Create with labels_include_all + labels_exclude_any.
+			{
+				Config: testAccPolicyResourceConfigLabelSelectors(policyName, labelA, labelB, []policyLabelSelector{
+					{"labels_include_all", []string{labelA}},
+					{"labels_exclude_any", []string{labelB}},
+				}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_include_all.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_include_all.0", labelA),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_exclude_any.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_exclude_any.0", labelB),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_include_any.#"),
+				),
+			},
+			// ImportState — the new selectors must round-trip.
+			{
+				ResourceName:      "fleetdm_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			// Swap both selectors to the other variant. The two labels stay
+			// on opposite sides — Fleet rejects a label named by an include
+			// and an exclude selector at once.
+			{
+				Config: testAccPolicyResourceConfigLabelSelectors(policyName, labelA, labelB, []policyLabelSelector{
+					{"labels_include_any", []string{labelB}},
+					{"labels_exclude_all", []string{labelA}},
+				}),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_include_any.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_include_any.0", labelB),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_exclude_all.#", "1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "labels_exclude_all.0", labelA),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_include_all.#"),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_exclude_any.#"),
+				),
+			},
+			// Clear everything by omitting all four attributes.
+			{
+				Config: testAccPolicyResourceConfigLabelSelectors(policyName, labelA, labelB, nil),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_include_any.#"),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_include_all.#"),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_exclude_any.#"),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "labels_exclude_all.#"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_labelsIncludeExcludeOverlap covers the ValidateConfig
+// guard for Fleet's disjointness rule. Applying this config would otherwise
+// fail at the API with `label %q cannot appear in both an include and an
+// exclude list`.
+func TestAccPolicyResource_labelsIncludeExcludeOverlap(t *testing.T) {
 	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
 
 	resource.Test(t, resource.TestCase{
@@ -320,11 +423,111 @@ func TestAccPolicyResource_labelsMutualExclusion(t *testing.T) {
 resource "fleetdm_policy" "test" {
   name               = %[1]q
   query              = "SELECT 1;"
-  labels_include_any = ["a"]
-  labels_exclude_any = ["b"]
+  labels_include_all = ["shared-label", "other"]
+  labels_exclude_any = ["shared-label"]
 }
 `, policyName),
-				ExpectError: regexp.MustCompile("Conflicting label selectors"),
+				ExpectError: regexp.MustCompile(`Label "shared-label" is named by an include selector`),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_labelsEmptySetRejected covers the empty-set guard for
+// the two new selectors — Fleet reports "no labels" as null, so an explicit
+// empty set in HCL would never converge.
+func TestAccPolicyResource_labelsEmptySetRejected(t *testing.T) {
+	for _, attrName := range []string{"labels_include_all", "labels_exclude_all"} {
+		t.Run(attrName, func(t *testing.T) {
+			policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+			resource.Test(t, resource.TestCase{
+				PreCheck:                 func() { testAccPreCheck(t) },
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name  = %[1]q
+  query = "SELECT 1;"
+  %[2]s = []
+}
+`, policyName, attrName),
+						ExpectError: regexp.MustCompile("Empty set not allowed"),
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestAccPolicyResource_continuousAutomations verifies the Fleet 4.90
+// continuous_automations_enabled flag on a team policy. Fleet honours it on
+// the create endpoint (unlike calendar_events_enabled), so no follow-up PATCH
+// is expected, and both toggle directions must stick.
+//
+// The false -> true step is the one that would surface an "inconsistent result
+// after apply" error if Fleet's PATCH response stopped echoing the new value:
+// the planned true would not match the refreshed state.
+func TestAccPolicyResource_continuousAutomations(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	teamName := "tf-acc-team-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccPolicyResourceConfigContinuousAutomations(policyName, teamName, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "continuous_automations_enabled", "true"),
+				),
+			},
+			{
+				Config:   testAccPolicyResourceConfigContinuousAutomations(policyName, teamName, true),
+				PlanOnly: true,
+			},
+			{
+				Config: testAccPolicyResourceConfigContinuousAutomations(policyName, teamName, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "continuous_automations_enabled", "false"),
+				),
+			},
+			// Flip back on via PATCH, then confirm the value is stable.
+			{
+				Config: testAccPolicyResourceConfigContinuousAutomations(policyName, teamName, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "continuous_automations_enabled", "true"),
+				),
+			},
+			{
+				Config:   testAccPolicyResourceConfigContinuousAutomations(policyName, teamName, true),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_continuousAutomationsGlobalRejected verifies the
+// team-only guard. Fleet answers a global policy carrying the flag with
+// `"All fleets" policy cannot have continuous_automations_enabled set`; the
+// provider surfaces that at plan time instead.
+func TestAccPolicyResource_continuousAutomationsGlobalRejected(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  query                          = "SELECT 1;"
+  continuous_automations_enabled = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile("team_id required"),
 			},
 		},
 	})
@@ -528,6 +731,63 @@ resource "fleetdm_policy" "test" {
   depends_on = [fleetdm_label.a, fleetdm_label.b]
 }
 `, policyName, labelA, labelB, includeBlock)
+}
+
+// policyLabelSelector names one of the four label-scoping attributes together
+// with the label names to write into it.
+type policyLabelSelector struct {
+	attrName string
+	labels   []string
+}
+
+// testAccPolicyResourceConfigLabelSelectors renders a global policy plus the
+// two labels it can reference, with the given selectors written in the given
+// order. Passing no selectors omits all four attributes, which is how a user
+// clears label scoping.
+func testAccPolicyResourceConfigLabelSelectors(policyName, labelA, labelB string, selectors []policyLabelSelector) string {
+	var selectorBlock strings.Builder
+	for _, s := range selectors {
+		quoted := make([]string, 0, len(s.labels))
+		for _, l := range s.labels {
+			quoted = append(quoted, fmt.Sprintf("%q", l))
+		}
+		fmt.Fprintf(&selectorBlock, "  %s = [%s]\n", s.attrName, strings.Join(quoted, ", "))
+	}
+
+	return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_label" "a" {
+  name  = %[2]q
+  query = "SELECT 1 FROM os_version WHERE platform = 'darwin';"
+}
+
+resource "fleetdm_label" "b" {
+  name  = %[3]q
+  query = "SELECT 1 FROM os_version WHERE platform = 'linux';"
+}
+
+resource "fleetdm_policy" "test" {
+  name  = %[1]q
+  query = "SELECT 1;"
+%[4]s
+  depends_on = [fleetdm_label.a, fleetdm_label.b]
+}
+`, policyName, labelA, labelB, selectorBlock.String())
+}
+
+func testAccPolicyResourceConfigContinuousAutomations(policyName, teamName string, enabled bool) string {
+	return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name        = %[2]q
+  description = "team for continuous automations test"
+}
+
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  query                          = "SELECT 1;"
+  team_id                        = fleetdm_fleet.test.id
+  continuous_automations_enabled = %[3]t
+}
+`, policyName, teamName, enabled)
 }
 
 func testAccPolicyResourceConfigTeamScript(policyName, teamName, scriptName string, withScript bool) string {

@@ -25,6 +25,15 @@ resource "fleetdm_report" "fleet_report" {
   observer_can_run = true
 }
 
+# Restrict a report to hosts carrying every one of these labels (Fleet 4.90+).
+# Mutually exclusive with labels_include_any, which matches hosts carrying at
+# least one of them.
+resource "fleetdm_report" "scoped" {
+  name               = "Engineering laptop inventory"
+  query              = "SELECT * FROM system_info"
+  labels_include_all = ["Macs on Sonoma", "Engineering"]
+}
+
 # Create a report with all options
 resource "fleetdm_report" "comprehensive" {
   name                = "Comprehensive Report"

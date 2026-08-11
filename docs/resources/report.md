@@ -40,6 +40,15 @@ resource "fleetdm_report" "fleet_report" {
   observer_can_run = true
 }
 
+# Restrict a report to hosts carrying every one of these labels (Fleet 4.90+).
+# Mutually exclusive with labels_include_any, which matches hosts carrying at
+# least one of them.
+resource "fleetdm_report" "scoped" {
+  name               = "Engineering laptop inventory"
+  query              = "SELECT * FROM system_info"
+  labels_include_all = ["Macs on Sonoma", "Engineering"]
+}
+
 # Create a report with all options
 resource "fleetdm_report" "comprehensive" {
   name                = "Comprehensive Report"
@@ -70,6 +79,8 @@ resource "fleetdm_report" "comprehensive" {
 - `discard_data` (Boolean) Whether to discard the report results after logging.
 - `fleet_id` (Number) The ID of the fleet this report belongs to. If not specified, the report is global. Changing this value forces a new resource to be created.
 - `interval` (Number) The interval in seconds at which to run this report as a scheduled report. 0 means the report is not scheduled.
+- `labels_include_all` (Set of String) Run this report only on hosts that have all of the specified labels. Mutually exclusive with `labels_include_any` — the conflict is enforced by the validator on that attribute. Order-insensitive. To stop scoping by label, omit the attribute (or set it to null). _Available in Fleet Premium 4.90+._
+- `labels_include_any` (Set of String) Run this report only on hosts that have any of the specified labels. Mutually exclusive with `labels_include_all`. Order-insensitive. To stop scoping by label, omit the attribute (or set it to null) — an explicit empty set is rejected because it would never converge with the null Fleet returns for an unscoped report. _Available in Fleet Premium 4.90+._
 - `logging` (String) The logging type for this report (snapshot, differential, differential_ignore_removals).
 - `min_osquery_version` (String) The minimum osquery version required to run this report.
 - `observer_can_run` (Boolean) Whether observers can run this report.

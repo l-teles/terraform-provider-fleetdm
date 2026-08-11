@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 func TestAccPoliciesDataSource_basic(t *testing.T) {
@@ -90,6 +92,78 @@ provider "fleetdm" {
 
 data "fleetdm_policies" "test" {}
 `
+}
+
+// TestAccPoliciesDataSource_platformFilter verifies the Fleet 4.90 `platform`
+// filter reaches the list endpoint as a query parameter and that the filtered
+// result set is what lands in state.
+func TestAccPoliciesDataSource_platformFilter(t *testing.T) {
+	var gotPlatform string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/fleet/global/policies" && r.Method == "GET" {
+			gotPlatform = r.URL.Query().Get("platform")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"policies": []map[string]interface{}{
+					{
+						"id":       1,
+						"name":     "Disk Encryption",
+						"query":    "SELECT 1;",
+						"platform": "darwin",
+					},
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccPoliciesDataSourceConfigPlatform(server.URL, "darwin"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.fleetdm_policies.test", "policies.#", "1"),
+					resource.TestCheckResourceAttr("data.fleetdm_policies.test", "policies.0.platform.0", "darwin"),
+					func(*terraform.State) error {
+						if gotPlatform != "darwin" {
+							return fmt.Errorf("expected platform=darwin query parameter, got: %q", gotPlatform)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccPoliciesDataSource_platformInvalid verifies the OneOf validator
+// rejects a bogus platform at plan time rather than letting Fleet return a 422.
+func TestAccPoliciesDataSource_platformInvalid(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccPoliciesDataSourceConfigPlatform("http://localhost:1", "solaris"),
+				ExpectError: regexp.MustCompile(`Invalid Attribute Value Match`),
+			},
+		},
+	})
+}
+
+func testAccPoliciesDataSourceConfigPlatform(serverURL, platform string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+data "fleetdm_policies" "test" {
+  platform = %[2]q
+}
+`, serverURL, platform)
 }
 
 // TestAccPoliciesDataSource_live creates a policy then verifies it appears in the list.

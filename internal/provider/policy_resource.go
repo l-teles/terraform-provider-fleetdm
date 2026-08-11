@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -71,9 +72,12 @@ type PolicyResourceModel struct {
 	ScriptID                       types.Int64  `tfsdk:"script_id"`
 	LabelsIncludeAny               types.Set    `tfsdk:"labels_include_any"`
 	LabelsExcludeAny               types.Set    `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll               types.Set    `tfsdk:"labels_include_all"`
+	LabelsExcludeAll               types.Set    `tfsdk:"labels_exclude_all"`
 	CalendarEventsEnabled          types.Bool   `tfsdk:"calendar_events_enabled"`
 	ConditionalAccessEnabled       types.Bool   `tfsdk:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled types.Bool   `tfsdk:"conditional_access_bypass_enabled"`
+	ContinuousAutomationsEnabled   types.Bool   `tfsdk:"continuous_automations_enabled"`
 	AuthorID                       types.Int64  `tfsdk:"author_id"`
 	AuthorName                     types.String `tfsdk:"author_name"`
 	AuthorEmail                    types.String `tfsdk:"author_email"`
@@ -182,12 +186,22 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"labels_include_any": schema.SetAttribute{
 				Optional:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Target only hosts that have any of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium._",
+				MarkdownDescription: "Target only hosts that have any of the specified labels. Mutually exclusive with `labels_include_all`. Order-insensitive. _Available in Fleet Premium._",
 			},
 			"labels_exclude_any": schema.SetAttribute{
 				Optional:            true,
 				ElementType:         types.StringType,
-				MarkdownDescription: "Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium._",
+				MarkdownDescription: "Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_exclude_all`. Order-insensitive. _Available in Fleet Premium._",
+			},
+			"labels_include_all": schema.SetAttribute{
+				Optional:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Target only hosts that have all of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium 4.90+._",
+			},
+			"labels_exclude_all": schema.SetAttribute{
+				Optional:            true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "Exclude hosts that have all of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium 4.90+._",
 			},
 			"calendar_events_enabled": schema.BoolAttribute{
 				Optional:            true,
@@ -204,6 +218,12 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"conditional_access_bypass_enabled": schema.BoolAttribute{
 				Optional:            true,
 				MarkdownDescription: "Allow end users to bypass conditional access for this policy for a single Okta login. Ignored when `conditional_access_enabled` is `false`, when Okta conditional access is not configured, or when bypass is disabled in org settings. When unset, Fleet's default of `true` applies. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._",
+			},
+			"continuous_automations_enabled": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+				MarkdownDescription: "Whether the policy's automations re-run on every failing check instead of only on the transition into failing. Requires `team_id` — Fleet rejects the field on global policies. _Available in Fleet Premium 4.90+._",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -274,13 +294,41 @@ func (r *PolicyResource) Configure(ctx context.Context, req resource.ConfigureRe
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
 }
 
+// policyLabelSelectorConfig pairs one of the four label-scoping attributes
+// with its configured value, so ValidateConfig can iterate them.
+type policyLabelSelectorConfig struct {
+	attrPath string
+	value    types.Set
+}
+
+// knownStringSetValues returns the decided string elements of a set. A null or
+// unknown set yields nothing, as do individual unknown elements: cross-
+// attribute checks can only be enforced against values that are already known
+// at plan time, and anything else defers to the API's own validation.
+func knownStringSetValues(set types.Set) []string {
+	if set.IsNull() || set.IsUnknown() {
+		return nil
+	}
+	out := make([]string, 0, len(set.Elements()))
+	for _, elem := range set.Elements() {
+		str, ok := elem.(types.String)
+		if !ok || str.IsNull() || str.IsUnknown() {
+			continue
+		}
+		out = append(out, str.ValueString())
+	}
+	return out
+}
+
 // ValidateConfig enforces:
 //   - `type` must be one of "dynamic" or "patch".
-//   - `labels_include_any` and `labels_exclude_any` cannot both be set.
+//   - At most one "include" label selector and at most one "exclude" label
+//     selector; an include and an exclude selector may be combined, but no
+//     single label may appear on both sides.
 //   - When `type = "patch"`: `patch_software_title_id` and `team_id` are required.
 //   - `patch_software_title_id` is only meaningful when `type = "patch"`.
-//   - Team-only fields (`script_id`, `software_title_id`, calendar/CA toggles)
-//     require `team_id` to be set.
+//   - Team-only fields (`script_id`, `software_title_id`, the calendar/CA
+//     toggles, `continuous_automations_enabled`) require `team_id` to be set.
 //
 // Catching these at plan time (instead of letting the API reject them at
 // apply time) saves users a wasted apply cycle and produces clearer errors.
@@ -303,33 +351,66 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		}
 	}
 
-	includeSet := !data.LabelsIncludeAny.IsNull() && !data.LabelsIncludeAny.IsUnknown() && len(data.LabelsIncludeAny.Elements()) > 0
-	excludeSet := !data.LabelsExcludeAny.IsNull() && !data.LabelsExcludeAny.IsUnknown() && len(data.LabelsExcludeAny.Elements()) > 0
-	if includeSet && excludeSet {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("labels_exclude_any"),
-			"Conflicting label selectors",
-			"Only one of labels_include_any or labels_exclude_any can be set on a policy.",
-		)
+	// Fleet 4.90 accepts one "include" selector alongside one "exclude"
+	// selector, but rejects two selectors of the same direction with
+	// "policy can include at most one of labels_include_any or
+	// labels_include_all". Mirror that rule so users get the error at plan
+	// time.
+	includeSelectors := []policyLabelSelectorConfig{
+		{"labels_include_any", data.LabelsIncludeAny},
+		{"labels_include_all", data.LabelsIncludeAll},
+	}
+	excludeSelectors := []policyLabelSelectorConfig{
+		{"labels_exclude_any", data.LabelsExcludeAny},
+		{"labels_exclude_all", data.LabelsExcludeAll},
+	}
+	labelSet := func(s types.Set) bool {
+		return !s.IsNull() && !s.IsUnknown() && len(s.Elements()) > 0
+	}
+	for _, pair := range [][]policyLabelSelectorConfig{includeSelectors, excludeSelectors} {
+		if labelSet(pair[0].value) && labelSet(pair[1].value) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root(pair[1].attrPath),
+				"Conflicting label selectors",
+				fmt.Sprintf("Only one of %s or %s can be set on a policy.", pair[0].attrPath, pair[1].attrPath),
+			)
+		}
 	}
 
 	// Reject explicit empty sets — Fleet's API maps "no labels" to a null
 	// response, which we surface as SetNull. An explicit empty set in HCL
 	// would never converge with that null state. Tell users to omit the
 	// attribute (or set it to null) instead.
-	if !data.LabelsIncludeAny.IsNull() && !data.LabelsIncludeAny.IsUnknown() && len(data.LabelsIncludeAny.Elements()) == 0 {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("labels_include_any"),
-			"Empty set not allowed",
-			"To clear labels_include_any, omit the attribute or set it to null. An explicit empty set causes perpetual drift.",
-		)
+	for _, selector := range slices.Concat(includeSelectors, excludeSelectors) {
+		if !selector.value.IsNull() && !selector.value.IsUnknown() && len(selector.value.Elements()) == 0 {
+			resp.Diagnostics.AddAttributeError(
+				path.Root(selector.attrPath),
+				"Empty set not allowed",
+				fmt.Sprintf("To clear %s, omit the attribute or set it to null. An explicit empty set causes perpetual drift.", selector.attrPath),
+			)
+		}
 	}
-	if !data.LabelsExcludeAny.IsNull() && !data.LabelsExcludeAny.IsUnknown() && len(data.LabelsExcludeAny.Elements()) == 0 {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("labels_exclude_any"),
-			"Empty set not allowed",
-			"To clear labels_exclude_any, omit the attribute or set it to null. An explicit empty set causes perpetual drift.",
-		)
+
+	// Fleet also rejects a single label named on both sides of the
+	// include/exclude split with `label %q cannot appear in both an include
+	// and an exclude list`. That constraint only became reachable in 4.90,
+	// where an include and an exclude selector can be combined at all.
+	includedLabels := make(map[string]struct{})
+	for _, selector := range includeSelectors {
+		for _, name := range knownStringSetValues(selector.value) {
+			includedLabels[name] = struct{}{}
+		}
+	}
+	for _, selector := range excludeSelectors {
+		for _, name := range knownStringSetValues(selector.value) {
+			if _, both := includedLabels[name]; both {
+				resp.Diagnostics.AddAttributeError(
+					path.Root(selector.attrPath),
+					"Label in both an include and an exclude selector",
+					fmt.Sprintf("Label %q is named by an include selector as well as by %s. Fleet rejects a policy that both includes and excludes the same label.", name, selector.attrPath),
+				)
+			}
+		}
 	}
 
 	// team_id often references a not-yet-created fleetdm_fleet resource,
@@ -440,6 +521,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		{"calendar_events_enabled", !data.CalendarEventsEnabled.IsNull() && !data.CalendarEventsEnabled.IsUnknown()},
 		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown()},
 		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
+		{"continuous_automations_enabled", !data.ContinuousAutomationsEnabled.IsNull() && !data.ContinuousAutomationsEnabled.IsUnknown()},
 	}
 	if teamKnown && !teamSet {
 		for _, c := range checks {
@@ -478,18 +560,21 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	createReq := fleetdm.CreatePolicyRequest{
-		Name:                 data.Name.ValueString(),
-		Description:          data.Description.ValueString(),
-		Query:                policyQueryForRequest(data),
-		Critical:             data.Critical.ValueBool(),
-		Resolution:           data.Resolution.ValueString(),
-		Platform:             policyPlatformForRequest(ctx, data),
-		Type:                 data.Type.ValueString(),
-		PatchSoftwareTitleID: optionalIntPtr(data.PatchSoftwareTitleID),
-		SoftwareTitleID:      optionalIntPtr(data.SoftwareTitleID),
-		ScriptID:             optionalIntPtr(data.ScriptID),
-		LabelsIncludeAny:     stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
-		LabelsExcludeAny:     stringSetToSlice(ctx, data.LabelsExcludeAny, &resp.Diagnostics),
+		Name:                         data.Name.ValueString(),
+		Description:                  data.Description.ValueString(),
+		Query:                        policyQueryForRequest(data),
+		Critical:                     data.Critical.ValueBool(),
+		Resolution:                   data.Resolution.ValueString(),
+		Platform:                     policyPlatformForRequest(ctx, data),
+		Type:                         data.Type.ValueString(),
+		PatchSoftwareTitleID:         optionalIntPtr(data.PatchSoftwareTitleID),
+		SoftwareTitleID:              optionalIntPtr(data.SoftwareTitleID),
+		ScriptID:                     optionalIntPtr(data.ScriptID),
+		ContinuousAutomationsEnabled: data.ContinuousAutomationsEnabled.ValueBool(),
+		LabelsIncludeAny:             stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
+		LabelsExcludeAny:             stringSetToSlice(ctx, data.LabelsExcludeAny, &resp.Diagnostics),
+		LabelsIncludeAll:             stringSetToSlice(ctx, data.LabelsIncludeAll, &resp.Diagnostics),
+		LabelsExcludeAll:             stringSetToSlice(ctx, data.LabelsExcludeAll, &resp.Diagnostics),
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -677,8 +762,11 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.Type = types.StringValue(policyType)
 	data.LabelsIncludeAny = policyLabelsToSet(policy.LabelsIncludeAny)
 	data.LabelsExcludeAny = policyLabelsToSet(policy.LabelsExcludeAny)
+	data.LabelsIncludeAll = policyLabelsToSet(policy.LabelsIncludeAll)
+	data.LabelsExcludeAll = policyLabelsToSet(policy.LabelsExcludeAll)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
+	data.ContinuousAutomationsEnabled = types.BoolValue(policy.ContinuousAutomationsEnabled)
 	// Fleet doesn't echo conditional_access_bypass_enabled in the response;
 	// the planner-supplied value (config or default) is left unchanged.
 
@@ -797,8 +885,11 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, dia
 		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
 		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
+		ContinuousAutomationsEnabled:   optionalBoolPtr(data.ContinuousAutomationsEnabled),
 		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny, diags),
 		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny, diags),
+		LabelsIncludeAll:               stringSetToSlice(ctx, data.LabelsIncludeAll, diags),
+		LabelsExcludeAll:               stringSetToSlice(ctx, data.LabelsExcludeAll, diags),
 	}
 }
 
