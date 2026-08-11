@@ -2,6 +2,7 @@ package fleetdm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -21,19 +22,40 @@ type ABMToken struct {
 	IPadOSTeamName   string `json:"ipados_team_name,omitempty"`
 }
 
-// listABMTokensResponse is the API response for listing ABM tokens.
+// listABMTokensResponse is the API response for listing ABM tokens. Fleet 4.87
+// renamed the response key to "ab_tokens"; both keys are decoded and resolved.
 type listABMTokensResponse struct {
+	ABTokens  []ABMToken `json:"ab_tokens"`
 	ABMTokens []ABMToken `json:"abm_tokens"`
 }
 
-// ListABMTokens retrieves all ABM tokens.
+// resolve returns the token list, preferring the new "ab_tokens" key
+// and falling back to "abm_tokens".
+func (r *listABMTokensResponse) resolve() []ABMToken {
+	if len(r.ABTokens) > 0 {
+		return r.ABTokens
+	}
+	return r.ABMTokens
+}
+
+// ListABMTokens retrieves all Apple Business (formerly Apple Business Manager)
+// tokens. Fleet 4.87 deprecated GET /abm_tokens in favor of GET /ab_tokens, so
+// the new path is tried first with a fallback to the legacy path on 404 to
+// keep supporting Fleet >= 4.82.
 func (c *Client) ListABMTokens(ctx context.Context) ([]ABMToken, error) {
 	var response listABMTokensResponse
-	err := c.Get(ctx, "/abm_tokens", nil, &response)
+	err := c.Get(ctx, "/ab_tokens", nil, &response)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+			response = listABMTokensResponse{}
+			err = c.Get(ctx, "/abm_tokens", nil, &response)
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ABM tokens: %w", err)
 	}
-	return response.ABMTokens, nil
+	return response.resolve(), nil
 }
 
 // VPPToken represents a Volume Purchase Program token in FleetDM.

@@ -42,6 +42,13 @@ func isNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == 404
 }
 
+// isForbidden returns true if the error (or any error it wraps) is a FleetDM
+// API 403 response.
+func isForbidden(err error) bool {
+	var apiErr *fleetdm.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 403
+}
+
 // parseIDFromString parses a numeric string ID and adds a diagnostic error on failure.
 // Returns the parsed int and true on success, or 0 and false on failure.
 func parseIDFromString(id string, resourceName string, diagnostics *diag.Diagnostics) (int64, bool) {

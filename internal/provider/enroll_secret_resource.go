@@ -3,7 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -16,9 +19,10 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &EnrollSecretResource{}
-	_ resource.ResourceWithConfigure   = &EnrollSecretResource{}
-	_ resource.ResourceWithImportState = &EnrollSecretResource{}
+	_ resource.Resource                   = &EnrollSecretResource{}
+	_ resource.ResourceWithConfigure      = &EnrollSecretResource{}
+	_ resource.ResourceWithImportState    = &EnrollSecretResource{}
+	_ resource.ResourceWithValidateConfig = &EnrollSecretResource{}
 )
 
 // NewEnrollSecretResource creates a new resource for managing enrollment secrets.
@@ -58,9 +62,13 @@ Enrollment secrets are used by hosts to authenticate when enrolling with Fleet. 
 either global enrollment secrets (when team_id is not specified) or team-specific enrollment secrets 
 (when team_id is specified). Note: Team enrollment secrets require FleetDM Premium.
 
-~> **Note:** This resource manages the complete set of enrollment secrets. When you apply this resource, 
-it will replace all existing enrollment secrets for the specified scope (global or team) with the 
+~> **Note:** This resource manages the complete set of enrollment secrets. When you apply this resource,
+it will replace all existing enrollment secrets for the specified scope (global or team) with the
 secrets defined in this resource.
+
+~> **Note:** Fleet 4.90+ masks enrollment secret values in API responses when the caller's role lacks
+permission to read secrets. Use an API token with secret-read permission (e.g. admin or maintainer);
+otherwise drift in secret values cannot be detected and the configured values are kept in state.
 
 ## Example Usage
 
@@ -128,6 +136,42 @@ func (r *EnrollSecretResource) Configure(ctx context.Context, req resource.Confi
 	r.client = configureClient(req.ProviderData, &resp.Diagnostics, "Resource")
 }
 
+// ValidateConfig rejects empty or whitespace-only secret values at plan time.
+// Fleet 4.90+ rejects these server-side; failing earlier gives a clearer error
+// and covers older Fleet versions that would accept an unusable secret.
+func (r *EnrollSecretResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var secretsList types.List
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("secrets"), &secretsList)...)
+	if resp.Diagnostics.HasError() || secretsList.IsNull() || secretsList.IsUnknown() {
+		return
+	}
+
+	for i, el := range secretsList.Elements() {
+		obj, ok := el.(types.Object)
+		if !ok {
+			continue
+		}
+		secretAttr, ok := obj.Attributes()["secret"].(types.String)
+		if !ok || secretAttr.IsNull() || secretAttr.IsUnknown() {
+			continue
+		}
+		switch {
+		case strings.TrimSpace(secretAttr.ValueString()) == "":
+			resp.Diagnostics.AddAttributeError(
+				path.Root("secrets").AtListIndex(i).AtName("secret"),
+				"Invalid Enrollment Secret",
+				"Enrollment secrets must not be empty or whitespace-only.",
+			)
+		case isMaskedSecret(secretAttr.ValueString()):
+			resp.Diagnostics.AddAttributeError(
+				path.Root("secrets").AtListIndex(i).AtName("secret"),
+				"Invalid Enrollment Secret",
+				"Enrollment secrets must not consist solely of '*' characters: Fleet uses all-asterisk strings as masked-value placeholders, so such a value would be indistinguishable from a redacted secret.",
+			)
+		}
+	}
+}
+
 // Create creates the resource and sets the initial Terraform state.
 func (r *EnrollSecretResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data EnrollSecretResourceModel
@@ -135,6 +179,11 @@ func (r *EnrollSecretResource) Create(ctx context.Context, req resource.CreateRe
 	// Read Terraform plan data into the model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	validateSecretValues(&data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -188,7 +237,7 @@ func (r *EnrollSecretResource) Create(ctx context.Context, req resource.CreateRe
 	}
 
 	// Read back the created secrets to get created_at timestamps
-	r.readSecrets(ctx, &data, newEnrollDiagAdapter(resp.Diagnostics.AddError))
+	r.readSecrets(ctx, &data, newEnrollDiagAdapter(&resp.Diagnostics))
 
 	if resp.Diagnostics.HasError() {
 		return
@@ -213,7 +262,7 @@ func (r *EnrollSecretResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	r.readSecrets(ctx, &data, newEnrollDiagAdapter(resp.Diagnostics.AddError))
+	r.readSecrets(ctx, &data, newEnrollDiagAdapter(&resp.Diagnostics))
 
 	if resp.Diagnostics.HasError() {
 		return
@@ -227,16 +276,47 @@ func (r *EnrollSecretResource) Read(ctx context.Context, req resource.ReadReques
 // Create/Read/Update response types, allowing readSecrets to be generic.
 type diagWriter interface {
 	addError(summary, detail string)
+	addWarning(summary, detail string)
 }
 
 type enrollDiagAdapter struct {
-	add func(string, string)
+	diags *diag.Diagnostics
 }
 
-func (a enrollDiagAdapter) addError(s, d string) { a.add(s, d) }
+func (a enrollDiagAdapter) addError(s, d string)   { a.diags.AddError(s, d) }
+func (a enrollDiagAdapter) addWarning(s, d string) { a.diags.AddWarning(s, d) }
 
-func newEnrollDiagAdapter(add func(string, string)) diagWriter {
-	return enrollDiagAdapter{add: add}
+func newEnrollDiagAdapter(diags *diag.Diagnostics) diagWriter {
+	return enrollDiagAdapter{diags: diags}
+}
+
+// #nosec G101 -- user-facing warning message, not a credential
+const secretReadDeniedWarning = "Fleet denied reading enrollment secrets (the API token's role lacks secret-read permission, enforced by Fleet 4.90+). The configured values were kept in state; drift in secret values cannot be detected."
+
+// #nosec G101 -- user-facing warning message, not a credential
+const secretsMaskedWarning = "Fleet returned masked enrollment secret values (the API token's role lacks secret-read permission, enforced by Fleet 4.90+). Masked entries were ignored; drift in secret values cannot be detected."
+
+// validateSecretValues re-checks secret values at apply time. ValidateConfig
+// must skip values that are unknown during planning (e.g. produced by another
+// resource), so this is the last line of defense before the API call.
+func validateSecretValues(data *EnrollSecretResourceModel, diags *diag.Diagnostics) {
+	for i, s := range data.Secrets {
+		v := s.Secret.ValueString()
+		switch {
+		case strings.TrimSpace(v) == "":
+			diags.AddAttributeError(
+				path.Root("secrets").AtListIndex(i).AtName("secret"),
+				"Invalid Enrollment Secret",
+				"Enrollment secrets must not be empty or whitespace-only.",
+			)
+		case isMaskedSecret(v):
+			diags.AddAttributeError(
+				path.Root("secrets").AtListIndex(i).AtName("secret"),
+				"Invalid Enrollment Secret",
+				"Enrollment secrets must not consist solely of '*' characters: Fleet uses all-asterisk strings as masked-value placeholders, so such a value would be indistinguishable from a redacted secret.",
+			)
+		}
+	}
 }
 
 // readSecrets is a helper function to read secrets from the API.
@@ -247,11 +327,23 @@ func (r *EnrollSecretResource) readSecrets(ctx context.Context, data *EnrollSecr
 
 		spec, err := r.client.GetEnrollSecretSpec(ctx)
 		if err != nil {
+			if isForbidden(err) {
+				// Fleet 4.90+ can deny secret reads to write-capable tokens
+				// without secret-read permission. Keep the configured values
+				// instead of failing; drift detection is degraded.
+				diag.addWarning("Enrollment Secrets Not Readable", secretReadDeniedWarning)
+				data.Secrets = normalizeSecretTimestamps(data.Secrets)
+				data.ID = types.StringValue("global")
+				return
+			}
 			diag.addError(
 				"Error Reading Global Enrollment Secrets",
 				"Could not read global enrollment secrets: "+err.Error(),
 			)
 			return
+		}
+		if hasMaskedSecrets(spec.Secrets) {
+			diag.addWarning("Enrollment Secrets Masked", secretsMaskedWarning)
 		}
 
 		// Preserve the order from the plan/state, matching by secret value
@@ -267,11 +359,20 @@ func (r *EnrollSecretResource) readSecrets(ctx context.Context, data *EnrollSecr
 
 		secrets, err := r.client.GetTeamEnrollSecrets(ctx, teamID)
 		if err != nil {
+			if isForbidden(err) {
+				diag.addWarning("Enrollment Secrets Not Readable", secretReadDeniedWarning)
+				data.Secrets = normalizeSecretTimestamps(data.Secrets)
+				data.ID = types.StringValue(fmt.Sprintf("team-%d", teamID))
+				return
+			}
 			diag.addError(
 				"Error Reading Team Enrollment Secrets",
 				fmt.Sprintf("Could not read enrollment secrets for team %d: %s", teamID, err.Error()),
 			)
 			return
+		}
+		if hasMaskedSecrets(secrets) {
+			diag.addWarning("Enrollment Secrets Masked", secretsMaskedWarning)
 		}
 
 		// Preserve the order from the plan/state, matching by secret value
@@ -280,11 +381,54 @@ func (r *EnrollSecretResource) readSecrets(ctx context.Context, data *EnrollSecr
 	}
 }
 
+// normalizeSecretTimestamps replaces unknown created_at values with null.
+// During Create/Update the computed created_at enters as unknown; when a
+// degraded read skips the API refresh, persisting an unknown value would make
+// Terraform fail with "provider returned invalid result object after apply".
+func normalizeSecretTimestamps(secrets []EnrollSecretEntryModel) []EnrollSecretEntryModel {
+	for i := range secrets {
+		if secrets[i].CreatedAt.IsUnknown() {
+			secrets[i].CreatedAt = types.StringNull()
+		}
+	}
+	return secrets
+}
+
+// hasMaskedSecrets reports whether any API-returned secret value is a
+// redaction placeholder.
+func hasMaskedSecrets(secrets []fleetdm.EnrollSecret) bool {
+	for _, s := range secrets {
+		if isMaskedSecret(s.Secret) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMaskedSecret reports whether a secret value returned by the API is a
+// redaction placeholder rather than a real value. Fleet 4.90+ masks enroll
+// secrets (e.g. "********") for callers without secret-read permission.
+func isMaskedSecret(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, r := range v {
+		if r != '*' {
+			return false
+		}
+	}
+	return true
+}
+
 // matchSecrets preserves the order from the plan/state while updating created_at from API
 func (r *EnrollSecretResource) matchSecrets(planned []EnrollSecretEntryModel, apiSecrets []fleetdm.EnrollSecret) []EnrollSecretEntryModel {
-	// Create a map of API secrets for lookup
+	// Create a map of API secrets for lookup, ignoring masked placeholders so
+	// they can never be mistaken for real values.
 	apiSecretMap := make(map[string]fleetdm.EnrollSecret)
 	for _, s := range apiSecrets {
+		if isMaskedSecret(s.Secret) {
+			continue
+		}
 		apiSecretMap[s.Secret] = s
 	}
 
@@ -298,7 +442,12 @@ func (r *EnrollSecretResource) matchSecrets(planned []EnrollSecretEntryModel, ap
 				CreatedAt: types.StringValue(apiSecret.CreatedAt),
 			}
 		} else {
-			// Keep the planned value if not found in API (shouldn't happen normally)
+			// Keep the planned value if not found in API (e.g. the API entry
+			// was masked). During Create/Update the computed created_at is
+			// unknown and must be normalized to null before persisting state.
+			if p.CreatedAt.IsUnknown() {
+				p.CreatedAt = types.StringNull()
+			}
 			result[i] = p
 		}
 	}
@@ -313,6 +462,11 @@ func (r *EnrollSecretResource) Update(ctx context.Context, req resource.UpdateRe
 	// Read Terraform plan data into the model
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	validateSecretValues(&data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -362,7 +516,7 @@ func (r *EnrollSecretResource) Update(ctx context.Context, req resource.UpdateRe
 	}
 
 	// Read back the updated secrets
-	r.readSecrets(ctx, &data, newEnrollDiagAdapter(resp.Diagnostics.AddError))
+	r.readSecrets(ctx, &data, newEnrollDiagAdapter(&resp.Diagnostics))
 
 	if resp.Diagnostics.HasError() {
 		return
@@ -451,6 +605,7 @@ func (r *EnrollSecretResource) ImportState(ctx context.Context, req resource.Imp
 	}
 
 	// Read the secrets from API
+	var apiSecrets []fleetdm.EnrollSecret
 	if data.TeamID.IsNull() {
 		spec, err := r.client.GetEnrollSecretSpec(ctx)
 		if err != nil {
@@ -460,14 +615,7 @@ func (r *EnrollSecretResource) ImportState(ctx context.Context, req resource.Imp
 			)
 			return
 		}
-
-		data.Secrets = make([]EnrollSecretEntryModel, len(spec.Secrets))
-		for i, s := range spec.Secrets {
-			data.Secrets[i] = EnrollSecretEntryModel{
-				Secret:    types.StringValue(s.Secret),
-				CreatedAt: types.StringValue(s.CreatedAt),
-			}
-		}
+		apiSecrets = spec.Secrets
 	} else {
 		teamID := data.TeamID.ValueInt64()
 		secrets, err := r.client.GetTeamEnrollSecrets(ctx, teamID)
@@ -478,13 +626,27 @@ func (r *EnrollSecretResource) ImportState(ctx context.Context, req resource.Imp
 			)
 			return
 		}
+		apiSecrets = secrets
+	}
 
-		data.Secrets = make([]EnrollSecretEntryModel, len(secrets))
-		for i, s := range secrets {
-			data.Secrets[i] = EnrollSecretEntryModel{
-				Secret:    types.StringValue(s.Secret),
-				CreatedAt: types.StringValue(s.CreatedAt),
-			}
+	// Refuse to import masked placeholders: storing "********" in state (or
+	// generated config) and later applying it would replace the real
+	// enrollment secrets with a publicly-known value.
+	if hasMaskedSecrets(apiSecrets) {
+		resp.Diagnostics.AddError(
+			"Enrollment Secrets Masked",
+			"Fleet returned masked enrollment secret values, so real values cannot be imported. "+
+				"The API token's role lacks secret-read permission (enforced by Fleet 4.90+); "+
+				"import with a token whose role can read enrollment secrets (e.g. admin or maintainer).",
+		)
+		return
+	}
+
+	data.Secrets = make([]EnrollSecretEntryModel, len(apiSecrets))
+	for i, s := range apiSecrets {
+		data.Secrets[i] = EnrollSecretEntryModel{
+			Secret:    types.StringValue(s.Secret),
+			CreatedAt: types.StringValue(s.CreatedAt),
 		}
 	}
 
