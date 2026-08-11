@@ -3,7 +3,6 @@ package fleetdm
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strconv"
 )
 
@@ -155,7 +154,7 @@ func (c *Client) UpsertCustomVariable(ctx context.Context, name, value string) e
 	body := UpsertCustomVariablesRequest{
 		Secrets: []CustomVariableSpec{{Name: name, Value: value}},
 	}
-	if err := c.doRequest(ctx, http.MethodPut, customVariablesSpecEndpoint, body, nil); err != nil {
+	if err := c.Put(ctx, customVariablesSpecEndpoint, body, nil); err != nil {
 		return fmt.Errorf("failed to update custom variable %q: %w", name, err)
 	}
 	return nil

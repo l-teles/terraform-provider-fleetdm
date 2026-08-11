@@ -50,6 +50,26 @@ const customVariableNameMaxLen = 255
 // outright rather than pick a side.
 const reservedCustomVariableNamePrefix = "FLEET_SECRET_"
 
+// customVariablesUnsupportedSummary titles the diagnostic raised when Fleet
+// answers 404 for the custom variables collection endpoint.
+const customVariablesUnsupportedSummary = "Custom Variables Not Supported By This Fleet Server"
+
+// customVariablesUnsupportedDetail explains a 404 from the collection endpoint.
+//
+// The provider resolves a custom variable by listing the collection, because
+// Fleet offers no GET-by-id. That makes 404 unambiguous in the opposite
+// direction from most resources: a 404 is the *route* missing (Fleet older than
+// 4.90), never the variable missing — an absent variable comes back as an empty
+// result from a successful 200 list. Treating it as a deletion would make a
+// refresh against a pre-4.90 server silently drop the resource from state and
+// then propose recreating it on a server that cannot accept it.
+func customVariablesUnsupportedDetail(err error) string {
+	return "Fleet returned 404 for the /custom_variables endpoint, which means this Fleet server does not implement the custom " +
+		"variables API. The fleetdm_custom_variable resource requires Fleet 4.90 or later.\n\n" +
+		"This is a missing API route, not a missing variable: a variable that no longer exists comes back as an empty result " +
+		"from a successful list, and the provider removes it from state in that case.\n\nFleet reported: " + err.Error()
+}
+
 // NewCustomVariableResource creates a new custom variable resource.
 func NewCustomVariableResource() resource.Resource {
 	return &CustomVariableResource{}
@@ -328,10 +348,13 @@ func (r *CustomVariableResource) Create(ctx context.Context, req resource.Create
 	}
 
 	data.ID = types.Int64Value(int64(created.ID))
+
+	// The secret now exists in Fleet. From here on, every path must persist state:
+	// returning an error without setting state would leave the variable behind in
+	// Fleet with nothing managing it — an orphaned secret that a later apply
+	// cannot even recreate, because the name is taken. refreshTimestamps
+	// therefore only ever warns, and always leaves the computed attributes known.
 	r.refreshTimestamps(ctx, &data, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	// value_wo is write-only: it must never reach state. The framework nullifies
 	// write-only attributes in the response state as well, but being explicit
@@ -366,7 +389,10 @@ func (r *CustomVariableResource) Read(ctx context.Context, req resource.ReadRequ
 	found, err := r.client.FindCustomVariableByName(ctx, name)
 	if err != nil {
 		if isNotFound(err) {
-			resp.State.RemoveResource(ctx)
+			// A 404 from the collection endpoint means the route is absent, not
+			// the variable. Removing the resource from state here would hide an
+			// unsupported-server problem behind a spurious "recreate" plan.
+			resp.Diagnostics.AddError(customVariablesUnsupportedSummary, customVariablesUnsupportedDetail(err))
 			return
 		}
 		resp.Diagnostics.AddError(
@@ -376,6 +402,7 @@ func (r *CustomVariableResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
+	// An empty result from a successful list is the real "deleted" signal.
 	if found == nil {
 		tflog.Warn(ctx, "FleetDM custom variable no longer exists, removing from state", map[string]interface{}{"name": name})
 		resp.State.RemoveResource(ctx)
@@ -429,9 +456,21 @@ func (r *CustomVariableResource) Update(ctx context.Context, req resource.Update
 	// a new id.
 	found, err := r.client.FindCustomVariableByName(ctx, name)
 	if err != nil {
+		if isNotFound(err) {
+			resp.Diagnostics.AddError(customVariablesUnsupportedSummary, customVariablesUnsupportedDetail(err))
+			return
+		}
+		// Unlike Create, erroring here loses nothing: the resource is already in
+		// state, so Terraform keeps the prior state and the next apply repeats the
+		// upsert, which is idempotent. Prior state briefly records the superseded
+		// value, and re-running converges.
 		resp.Diagnostics.AddError(
 			"Error Reading FleetDM Custom Variable After Update",
-			fmt.Sprintf("The value was written, but reading %q back failed: %s", name, err.Error()),
+			fmt.Sprintf(
+				"The new value was written to Fleet, but reading %q back to record its timestamps failed. Terraform state still "+
+					"records the previous value; re-run to converge (writing the value again is idempotent).\n\nFleet reported: %s",
+				name, err.Error(),
+			),
 		)
 		return
 	}
@@ -541,6 +580,10 @@ func (r *CustomVariableResource) ImportState(ctx context.Context, req resource.I
 
 	found, err := r.client.FindCustomVariableByName(ctx, name)
 	if err != nil {
+		if isNotFound(err) {
+			resp.Diagnostics.AddError(customVariablesUnsupportedSummary, customVariablesUnsupportedDetail(err))
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Error Importing FleetDM Custom Variable",
 			fmt.Sprintf("Could not list custom variables to find %q: %s", name, err.Error()),
@@ -577,15 +620,32 @@ func (r *CustomVariableResource) ImportState(ctx context.Context, req resource.I
 // refreshTimestamps fills created_at/updated_at from the API. Fleet's create
 // response carries only the id and name, so the timestamps require a follow-up
 // list call.
+//
+// It deliberately never raises an error diagnostic. It runs only after the
+// variable already exists in Fleet, and an error would abort Create before state
+// was written, orphaning the secret. A failed read-back is degraded information,
+// not a failed apply: the timestamps are left null and the next refresh fills
+// them in.
 func (r *CustomVariableResource) refreshTimestamps(ctx context.Context, data *CustomVariableResourceModel, diags *diag.Diagnostics) {
 	name := data.Name.ValueString()
 
 	found, err := r.client.FindCustomVariableByName(ctx, name)
 	if err != nil {
-		diags.AddError(
-			"Error Reading FleetDM Custom Variable After Create",
-			fmt.Sprintf("The custom variable %q was created, but reading it back failed: %s", name, err.Error()),
-		)
+		if isNotFound(err) {
+			diags.AddWarning(customVariablesUnsupportedSummary, customVariablesUnsupportedDetail(err))
+		} else {
+			diags.AddWarning(
+				"Custom Variable Created But Not Read Back",
+				fmt.Sprintf(
+					"Fleet created custom variable %q, but reading it back to record its timestamps failed. The variable is saved "+
+						"in Terraform state so it stays managed; created_at and updated_at are unset until the next refresh.\n\n"+
+						"Fleet reported: %s",
+					name, err.Error(),
+				),
+			)
+		}
+		data.CreatedAt = types.StringNull()
+		data.UpdatedAt = types.StringNull()
 		return
 	}
 	if found == nil {

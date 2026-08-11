@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"testing"
 
@@ -458,6 +461,144 @@ func TestAccCustomVariableResource_importNotFound(t *testing.T) {
 			},
 		},
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Mock-server tests — no live Fleet, but they do need the Terraform CLI, so
+// they run under the same TF_ACC gate as the acceptance tests.
+// ---------------------------------------------------------------------------
+
+// TestAccCustomVariableResource_createReadBackFailurePersistsState covers the
+// orphaned-secret path: the create succeeds, then the read-back that fetches the
+// timestamps fails.
+//
+// The variable exists in Fleet at that point, so Create must still write state.
+// Returning an error instead would leave a secret in Fleet that Terraform does
+// not track and cannot recreate later, because the name is already taken.
+func TestAccCustomVariableResource_createReadBackFailurePersistsState(t *testing.T) {
+	const name = "TF_MOCK_ORPHAN_GUARD"
+
+	var listCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/fleet/custom_variables" && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": 11, "name": name})
+
+		case r.URL.Path == "/api/v1/fleet/custom_variables" && r.Method == http.MethodGet:
+			listCalls++
+			// Fail the post-create read-back, then recover so the test's own
+			// refresh and destroy can proceed.
+			if listCalls == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"message":"transient backend failure"}`)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"custom_variables": []map[string]interface{}{
+					{"id": 11, "name": name, "created_at": "2026-08-11T09:00:00Z", "updated_at": "2026-08-11T09:00:00Z"},
+				},
+				"meta":  map[string]interface{}{"has_next_results": false, "has_previous_results": false},
+				"count": 1,
+			})
+
+		case r.URL.Path == "/api/v1/fleet/custom_variables/11" && r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{}`)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCustomVariableResourceMockConfig(server.URL, name, "tf-mock-fake-value"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					// State was written despite the failed read-back — this is
+					// the assertion that proves the secret is not orphaned.
+					resource.TestCheckResourceAttr("fleetdm_custom_variable.test", "id", "11"),
+					resource.TestCheckResourceAttr("fleetdm_custom_variable.test", "name", name),
+					resource.TestCheckResourceAttr("fleetdm_custom_variable.test", "value", "tf-mock-fake-value"),
+					// Timestamps degrade to null rather than failing the apply.
+					resource.TestCheckNoResourceAttr("fleetdm_custom_variable.test", "created_at"),
+					resource.TestCheckNoResourceAttr("fleetdm_custom_variable.test", "updated_at"),
+				),
+			},
+		},
+	})
+
+	if listCalls == 0 {
+		t.Error("expected the provider to attempt a post-create read-back")
+	}
+}
+
+// TestAccCustomVariableResource_readRouteMissingErrors covers a 404 from the
+// collection endpoint during refresh.
+//
+// Reads resolve the variable by listing, so a 404 is the route missing (Fleet
+// older than 4.90), never the variable missing. Silently removing the resource
+// from state would turn an unsupported-server problem into a spurious recreate
+// plan.
+func TestAccCustomVariableResource_readRouteMissingErrors(t *testing.T) {
+	const name = "TF_MOCK_ROUTE_MISSING"
+
+	var created bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/fleet/custom_variables" && r.Method == http.MethodPost:
+			created = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"id": 12, "name": name})
+
+		case r.URL.Path == "/api/v1/fleet/custom_variables" && r.Method == http.MethodGet:
+			// Pre-4.90 Fleet: the route does not exist.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+
+		case r.URL.Path == "/api/v1/fleet/custom_variables/12" && r.Method == http.MethodDelete:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{}`)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccCustomVariableResourceMockConfig(server.URL, name, "tf-mock-fake-value"),
+				ExpectError: regexp.MustCompile(`Custom Variables Not Supported By This Fleet Server`),
+			},
+		},
+	})
+
+	if !created {
+		t.Error("expected the provider to reach the create call before the failing read")
+	}
+}
+
+func testAccCustomVariableResourceMockConfig(serverURL, name, value string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_custom_variable" "test" {
+  name  = %[2]q
+  value = %[3]q
+}
+`, serverURL, name, value)
 }
 
 func testAccCustomVariableResourceConfig(name, value string) string {
