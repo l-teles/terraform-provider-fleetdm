@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -778,6 +779,147 @@ resource "fleetdm_software_custom_package" "test" {
 					}
 					return nil
 				}),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_pythonScriptInstaller covers Fleet
+// 4.90's `.py` script installers. Support is entirely extension-driven on
+// Fleet's side — the provider just uploads the bytes and the filename — so
+// there is no client change to test; what needs guarding is that the resource
+// round-trips a `.py` upload without the provider getting in the way.
+//
+// Two Fleet behaviors make script installers different from regular packages,
+// both confirmed in Fleet's 4.90 source:
+//
+//   - The file contents ARE the install script, so Fleet ignores a
+//     user-supplied install_script on both add and edit rather than erroring.
+//     That matters because the provider's metadata PATCH always sends
+//     install_script — for a `.py` title it sends Fleet's own echoed script
+//     back, and Fleet drops it. Hence no perpetual diff, which the PlanOnly
+//     step below asserts.
+//   - automatic_install is rejected for script packages ("Fleet can't create a
+//     policy to detect existing installations for .py packages"), so this
+//     config leaves automatic_install_policy unset.
+func TestAccSoftwareCustomPackageResource_pythonScriptInstaller(t *testing.T) {
+	const pyContents = "#!/usr/bin/env python3\nprint(\"installing\")\n"
+
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "tf-acc-installer.py")
+	if err := os.WriteFile(pkgPath, []byte(pyContents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 910
+	f.titleName = "tf-acc-installer.py"
+	f.titleHashSHA256 = hex.EncodeToString(sumOf([]byte(pyContents)))
+	// Fleet derives the install script from the uploaded file for script
+	// packages; mirror that so Read sees what a real server would return.
+	f.titleInstallScript = pyContents
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "py" {
+  package_path = %[2]q
+  filename     = "tf-acc-installer.py"
+  self_service = true
+}
+`, f.srv.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.py", "title_id", "910"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.py", "filename", "tf-acc-installer.py"),
+					resource.TestCheckResourceAttrSet("fleetdm_software_custom_package.py", "package_sha256"),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						// The provider must not invent an install_script for a
+						// script installer — Fleet supplies it from the file.
+						if f.uploadInstallScript != "" {
+							return fmt.Errorf("expected no install_script on the upload for a .py installer, got %q", f.uploadInstallScript)
+						}
+						if f.uploadAutomaticInstall == "true" {
+							return fmt.Errorf("automatic_install must not be sent for a script installer (Fleet rejects it)")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Fleet echoes the file contents as install_script; the
+				// Optional+Computed attribute must adopt it without a diff.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_pythonScriptInstallerLive is the live
+// counterpart, run against a real Fleet (skipped without FLEETDM_URL /
+// FLEETDM_API_TOKEN). It is the only assertion that Fleet actually accepts the
+// extension, which is the whole claim being made — the mock test above can only
+// prove the provider doesn't interfere.
+//
+// Requires Fleet 4.90 or later; earlier versions reject `.py` with
+// "File type not supported".
+func TestAccSoftwareCustomPackageResource_pythonScriptInstallerLive(t *testing.T) {
+	suffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	filename := fmt.Sprintf("tf-acc-%s.py", suffix)
+
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, filename)
+	// A unique docstring keeps each run's installer bytes distinct, so Fleet
+	// doesn't dedupe against a previous run's package.
+	contents := fmt.Sprintf("#!/usr/bin/env python3\n\"\"\"tf-acc %s\"\"\"\nprint(\"installing\")\n", suffix)
+	if err := os.WriteFile(pkgPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := fmt.Sprintf(`
+%[1]s
+
+resource "fleetdm_software_custom_package" "py" {
+  package_path = %[2]q
+  filename     = %[3]q
+  self_service = true
+}
+`, providerConfig(), pkgPath, filename)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet("fleetdm_software_custom_package.py", "title_id"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.py", "filename", filename),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.py", "self_service", "true"),
+					// Fleet turns the uploaded file into the install script.
+					resource.TestCheckResourceAttrSet("fleetdm_software_custom_package.py", "install_script"),
+				),
+			},
+			{
+				// No perpetual diff once Fleet's derived script is in state.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+			{
+				ResourceName:      "fleetdm_software_custom_package.py",
+				ImportState:       true,
+				ImportStateVerify: false,
 			},
 		},
 	})

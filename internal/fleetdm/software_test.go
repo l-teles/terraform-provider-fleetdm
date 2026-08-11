@@ -1183,3 +1183,489 @@ func TestClient_ListSoftwareVersionsWithFilters(t *testing.T) {
 		t.Errorf("expected 1 version, got: %d", len(versions))
 	}
 }
+
+// --- Fleet 4.90: Fleet-maintained app version pinning -----------------------
+
+// TestClient_PatchSoftwarePackagePinnedVersion is the load-bearing assertion
+// for the version pin: Fleet rejects `version` combined with ANY other field
+// ("Couldn't update. \"version\" can't be changed at the same time as other
+// fields.", verified against a live Fleet v4.90.0), so this method must send a
+// form containing exactly one value — nothing borrowed from
+// PatchSoftwarePackage's always-send-everything shape.
+func TestClient_PatchSoftwarePackagePinnedVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("expected PATCH request, got: %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("team_id"); got != "7" {
+			t.Errorf("expected team_id=7 query param, got: %q", got)
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "multipart/form-data;") {
+			t.Errorf("expected multipart/form-data Content-Type, got: %s", ct)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+
+		if got := r.FormValue("version"); got != "2.5.1" {
+			t.Errorf("expected version '2.5.1', got: %q", got)
+		}
+		// The whole point of the dedicated method: exactly one form value, and
+		// no file part.
+		if len(r.MultipartForm.Value) != 1 {
+			t.Errorf("expected exactly 1 form value (version), got %d: %v", len(r.MultipartForm.Value), r.MultipartForm.Value)
+		}
+		if len(r.MultipartForm.File) != 0 {
+			t.Errorf("expected no file parts, got: %v", r.MultipartForm.File)
+		}
+		// Spot-check the fields PatchSoftwarePackage would have sent, so a
+		// future refactor that routes the pin through the shared helper fails
+		// here with a readable message instead of only tripping the count.
+		for _, forbidden := range []string{
+			"install_script", "uninstall_script", "pre_install_query",
+			"post_install_script", "self_service", "display_name",
+			"categories", "labels_include_any", "labels_exclude_any", "labels_include_all",
+		} {
+			if _, present := r.MultipartForm.Value[forbidden]; present {
+				t.Errorf("field %q must not be sent alongside version — Fleet rejects the request", forbidden)
+			}
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 7
+	if err := client.PatchSoftwarePackagePinnedVersion(context.Background(), 42, &teamID, "2.5.1"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackagePinnedVersion_Unpin covers the documented
+// "back to latest" path: an empty version is a meaningful request, so the field
+// must still be present in the form (present-and-empty), not dropped.
+func TestClient_PatchSoftwarePackagePinnedVersion_Unpin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		values, present := r.MultipartForm.Value["version"]
+		if !present {
+			t.Fatal("expected the version field to be present even when empty (empty = unpin)")
+		}
+		if len(values) != 1 || values[0] != "" {
+			t.Errorf("expected a single empty version value, got: %v", values)
+		}
+		if len(r.MultipartForm.Value) != 1 {
+			t.Errorf("expected exactly 1 form value, got %d: %v", len(r.MultipartForm.Value), r.MultipartForm.Value)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	if err := client.PatchSoftwarePackagePinnedVersion(context.Background(), 42, nil, ""); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackagePinnedVersion_NoTeam checks the team_id query
+// param is omitted for a nil team (the "No team" case), matching
+// PatchSoftwarePackage's endpoint construction.
+func TestClient_PatchSoftwarePackagePinnedVersion_NoTeam(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query string for nil team, got: %q", r.URL.RawQuery)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	if err := client.PatchSoftwarePackagePinnedVersion(context.Background(), 42, nil, "^147"); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackagePinnedVersion_SurfacesError replays Fleet's
+// real rejection message so the wrapped error stays actionable for users.
+func TestClient_PatchSoftwarePackagePinnedVersion_SurfacesError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"Bad request","errors":[{"name":"base","reason":"Couldn't update. \"version\" can't be changed at the same time as other fields."}]}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	err := client.PatchSoftwarePackagePinnedVersion(context.Background(), 42, nil, "2.5.1")
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "pinned version") {
+		t.Errorf("expected the error to name the operation, got: %v", err)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected the wrapped error to be an *APIError, got: %T", err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400, got: %d", apiErr.StatusCode)
+	}
+}
+
+// TestClient_GetSoftwareTitle_DecodesPinnedVersion pins the read-side mapping.
+// Fleet echoes the active pin as software_package.pinned_version and omits the
+// key entirely when the title tracks latest, so the decoded pointer is what
+// tells the resource layer "pinned" from "not pinned".
+func TestClient_GetSoftwareTitle_DecodesPinnedVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want *string
+	}{
+		{
+			name: "pinned",
+			body: `{"software_title":{"id":1,"name":"App","source":"apps","software_package":{"name":"app.pkg","version":"2.5.1","pinned_version":"2.5.1"}}}`,
+			want: strPtr("2.5.1"),
+		},
+		{
+			name: "pinned to a major version",
+			body: `{"software_title":{"id":1,"name":"App","source":"apps","software_package":{"name":"app.pkg","version":"147.2","pinned_version":"^147"}}}`,
+			want: strPtr("^147"),
+		},
+		{
+			name: "key absent means not pinned",
+			body: `{"software_title":{"id":1,"name":"App","source":"apps","software_package":{"name":"app.pkg","version":"2.5.1"}}}`,
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+			title, err := client.GetSoftwareTitle(context.Background(), 1, nil)
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			got := title.SoftwarePackage.PinnedVersion
+			switch {
+			case tt.want == nil && got != nil:
+				t.Errorf("expected pinned_version nil, got: %q", *got)
+			case tt.want != nil && got == nil:
+				t.Errorf("expected pinned_version %q, got nil", *tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Errorf("expected pinned_version %q, got: %q", *tt.want, *got)
+			}
+		})
+	}
+}
+
+// --- Fleet 4.90: VPP / App Store app auto-update + managed configuration ----
+
+// TestClient_GetSoftwareTitle_DecodesAutoUpdateConfig pins where the
+// automatic-update settings live on the wire: Fleet embeds them at the *title*
+// level, not inside app_store_app, and omits them when unset.
+func TestClient_GetSoftwareTitle_DecodesAutoUpdateConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"software_title":{"id":1,"name":"App","source":"apps",
+			"auto_update_enabled":true,
+			"auto_update_window_start":"01:30",
+			"auto_update_window_end":"04:00",
+			"app_store_app":{"app_store_id":"123","platform":"ios","configuration":"<dict><key>k</key><string>v</string></dict>"}}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	title, err := client.GetSoftwareTitle(context.Background(), 1, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if title.AutoUpdateEnabled == nil || !*title.AutoUpdateEnabled {
+		t.Errorf("expected auto_update_enabled true, got: %v", title.AutoUpdateEnabled)
+	}
+	if title.AutoUpdateWindowStart == nil || *title.AutoUpdateWindowStart != "01:30" {
+		t.Errorf("unexpected auto_update_window_start: %v", title.AutoUpdateWindowStart)
+	}
+	if title.AutoUpdateWindowEnd == nil || *title.AutoUpdateWindowEnd != "04:00" {
+		t.Errorf("unexpected auto_update_window_end: %v", title.AutoUpdateWindowEnd)
+	}
+	if got := DecodeAppConfiguration(title.AppStoreApp.Configuration); got != "<dict><key>k</key><string>v</string></dict>" {
+		t.Errorf("unexpected decoded configuration: %q", got)
+	}
+}
+
+// TestClient_GetSoftwareTitle_OmittedAutoUpdateConfigStaysNil is the other half
+// of the opt-in Read convention: a title Fleet has no auto-update settings for
+// must decode to nil pointers, not to false/"".
+func TestClient_GetSoftwareTitle_OmittedAutoUpdateConfigStaysNil(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"software_title":{"id":1,"name":"App","source":"apps","app_store_app":{"app_store_id":"123","platform":"darwin"}}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	title, err := client.GetSoftwareTitle(context.Background(), 1, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if title.AutoUpdateEnabled != nil || title.AutoUpdateWindowStart != nil || title.AutoUpdateWindowEnd != nil {
+		t.Errorf("expected all auto-update fields nil, got: %v %v %v",
+			title.AutoUpdateEnabled, title.AutoUpdateWindowStart, title.AutoUpdateWindowEnd)
+	}
+	if len(title.AppStoreApp.Configuration) != 0 {
+		t.Errorf("expected configuration absent, got: %s", title.AppStoreApp.Configuration)
+	}
+}
+
+// TestClient_UpdateAppStoreApp_AutoUpdateAndConfiguration asserts the EXACT
+// request body. VPP needs a real Apple token so this path can't be exercised
+// against a live server — byte-level assertions are the only thing standing
+// between a typo'd JSON key and a silently ignored setting.
+func TestClient_UpdateAppStoreApp_AutoUpdateAndConfiguration(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/software/titles/100/app_store_app" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		var err error
+		body, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	enabled := true
+	start, end := "01:30", "04:00"
+	cfg, err := EncodeAppConfiguration(`<dict><key>ServerURL</key><string>https://example.test</string></dict>`)
+	if err != nil {
+		t.Fatalf("encode configuration: %v", err)
+	}
+	err = client.UpdateAppStoreApp(context.Background(), 100, &UpdateAppStoreAppRequest{
+		TeamID:                5,
+		SelfService:           true,
+		LabelsIncludeAny:      []string{"iPads"},
+		Configuration:         cfg,
+		AutoUpdateEnabled:     &enabled,
+		AutoUpdateWindowStart: &start,
+		AutoUpdateWindowEnd:   &end,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// The configuration value reaches Fleet as a JSON string containing the
+	// XML. encoding/json escapes <, > and & when it writes that string, so the
+	// expected fragment is built with the same encoder rather than hand-escaped
+	// — the point of the assertion is the key names, ordering and the
+	// null-vs-omitted split, not encoding/json's escape table.
+	xml := `<dict><key>ServerURL</key><string>https://example.test</string></dict>`
+	cfgOnTheWire, err := json.Marshal(xml)
+	if err != nil {
+		t.Fatalf("marshal expected configuration: %v", err)
+	}
+	want := `{"team_id":5,"self_service":true,"labels_include_any":["iPads"],"labels_exclude_any":null,"labels_include_all":null,` +
+		`"configuration":` + string(cfgOnTheWire) + `,` +
+		`"auto_update_enabled":true,"auto_update_window_start":"01:30","auto_update_window_end":"04:00"}`
+	if got := strings.TrimSpace(string(body)); got != want {
+		t.Errorf("unexpected request body\n got: %s\nwant: %s", got, want)
+	}
+
+	// And the escaping must be lossless: what Fleet decodes is the original XML.
+	var roundTripped struct {
+		Configuration json.RawMessage `json:"configuration"`
+	}
+	if err := json.Unmarshal(body, &roundTripped); err != nil {
+		t.Fatalf("request body is not valid JSON: %v", err)
+	}
+	if got := DecodeAppConfiguration(roundTripped.Configuration); got != xml {
+		t.Errorf("configuration did not survive the round trip\n got: %q\nwant: %q", got, xml)
+	}
+}
+
+// TestClient_UpdateAppStoreApp_OmitsUnsetFleet490Fields guards backwards
+// compatibility: a configuration that doesn't use the 4.90 attributes must
+// produce the same body the provider sent before this change, so the resource
+// keeps working against older Fleet servers.
+func TestClient_UpdateAppStoreApp_OmitsUnsetFleet490Fields(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		body, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("failed to read body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	err := client.UpdateAppStoreApp(context.Background(), 100, &UpdateAppStoreAppRequest{
+		TeamID:           5,
+		SelfService:      true,
+		LabelsIncludeAny: []string{"Macs"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	want := `{"team_id":5,"self_service":true,"labels_include_any":["Macs"],"labels_exclude_any":null,"labels_include_all":null}`
+	if got := strings.TrimSpace(string(body)); got != want {
+		t.Errorf("unexpected request body\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestClient_AddAppStoreApp_AndroidWithConfiguration covers the Add endpoint's
+// half of the feature: `platform: android` is a valid enum value on Fleet 4.90
+// ("platform must be one of 'ios', 'ipados', 'darwin', or 'android'", verified
+// live), and `configuration` is accepted at create time — unlike the
+// auto_update_* fields, which exist only on the Update endpoint.
+func TestClient_AddAppStoreApp_AndroidWithConfiguration(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/fleet/software/app_store_apps" {
+			var err error
+			body, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("failed to read body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"software_title_id": 101})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/software/titles/101" {
+			_ = json.NewEncoder(w).Encode(getSoftwareTitleResponse{
+				SoftwareTitle: &SoftwareTitle{
+					ID:     101,
+					Name:   "Zoom",
+					Source: "android_apps",
+					AppStoreApp: &AppStoreAppInfo{
+						AdamID:      "com.zoom.videomeetings",
+						Platform:    "android",
+						Name:        "Zoom",
+						SelfService: true,
+					},
+				},
+			})
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	cfg, err := EncodeAppConfiguration(`{"managedConfiguration":{"enableLogging":true}}`)
+	if err != nil {
+		t.Fatalf("encode configuration: %v", err)
+	}
+	title, err := client.AddAppStoreApp(context.Background(), &AddAppStoreAppRequest{
+		AppStoreID:    "com.zoom.videomeetings",
+		TeamID:        5,
+		Platform:      "android",
+		SelfService:   true,
+		Configuration: cfg,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if title.AppStoreApp.Platform != "android" {
+		t.Errorf("expected platform android, got: %s", title.AppStoreApp.Platform)
+	}
+
+	// An Android managed configuration must reach Fleet as a JSON *object*,
+	// not as a quoted string — Fleet validates it with
+	// ValidateAndroidAppConfiguration and would reject a string.
+	want := `{"app_store_id":"com.zoom.videomeetings","team_id":5,"platform":"android","self_service":true,` +
+		`"configuration":{"managedConfiguration":{"enableLogging":true}}}`
+	if got := strings.TrimSpace(string(body)); got != want {
+		t.Errorf("unexpected request body\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestEncodeDecodeAppConfiguration covers the dual wire shape Fleet uses for
+// managed app configuration: a JSON object for Android, a JSON string
+// containing XML for iOS/iPadOS. The provider takes one raw string attribute
+// for both, so the encoder has to pick — and the choice must round-trip.
+func TestEncodeDecodeAppConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		// wantPassthrough is true for input that is already valid JSON (the
+		// Android managed-configuration object), which must reach Fleet
+		// untouched so it decodes as an object. False means the input is not
+		// JSON (the iOS/iPadOS XML), which must be wrapped into a JSON string.
+		wantPassthrough bool
+	}{
+		{
+			name: "empty stays nil",
+			raw:  "",
+		},
+		{
+			name:            "android json object passes through",
+			raw:             `{"managedConfiguration":{"a":1}}`,
+			wantPassthrough: true,
+		},
+		{
+			name: "ios xml is wrapped into a json string",
+			raw:  `<dict><key>a</key><string>b</string></dict>`,
+		},
+		{
+			name: "xml with quotes and newlines survives",
+			raw:  "<dict>\n  <key>URL</key>\n  <string>x?a=\"b\"</string>\n</dict>",
+		},
+		{
+			name: "xml with an ampersand survives",
+			raw:  `<dict><key>Name</key><string>Bits &amp; Bytes</string></dict>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := EncodeAppConfiguration(tt.raw)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			if tt.raw == "" {
+				if encoded != nil {
+					t.Errorf("expected nil for empty input so the field is omitted, got: %s", encoded)
+				}
+				return
+			}
+			// The encoder must always emit valid JSON — Fleet decodes the field
+			// as json.RawMessage inside the request body, so invalid JSON here
+			// would break the whole request, not just this field.
+			if !json.Valid(encoded) {
+				t.Fatalf("encoded value is not valid JSON: %s", encoded)
+			}
+			if tt.wantPassthrough {
+				if string(encoded) != tt.raw {
+					t.Errorf("expected valid JSON to pass through untouched\n got: %s\nwant: %s", encoded, tt.raw)
+				}
+				if encoded[0] != '{' {
+					t.Errorf("expected an Android configuration to stay a JSON object, got: %s", encoded)
+				}
+			} else if encoded[0] != '"' {
+				t.Errorf("expected non-JSON input to be wrapped in a JSON string (Fleet: \"expected configuration as a JSON string containing the XML\"), got: %s", encoded)
+			}
+			// The contract that actually matters: whatever escaping the encoder
+			// applies, Fleet gets the original bytes back.
+			if got := DecodeAppConfiguration(encoded); got != tt.raw {
+				t.Errorf("round trip failed\n got: %q\nwant: %q", got, tt.raw)
+			}
+		})
+	}
+}

@@ -45,6 +45,18 @@ resource "fleetdm_software_app_store_app" "design_tools" {
 
 ### Optional
 
+- `auto_update_enabled` (Boolean) Whether Fleet automatically updates this App Store app on hosts. Currently applies to iOS and iPadOS apps. Fleet Premium, Fleet 4.90 or later. 
+
+When set to `true`, both `auto_update_window_start` and `auto_update_window_end` are required — Fleet rejects the request with "Start and end time must both be set" otherwise. 
+
+Managing this is **opt-in**: omitting the attribute leaves Fleet's current setting untouched and keeps it out of state, so a value set in the Fleet UI is not fought over. Set it explicitly to manage it from Terraform.
+- `auto_update_window_end` (String) End of the daily maintenance window during which automatic updates may run, in the host's local time, formatted `HH:MM` on a 24-hour clock (e.g. `"04:00"`). An end time earlier than the start time wraps to the next day. Requires `auto_update_enabled` and `auto_update_window_start`.
+- `auto_update_window_start` (String) Start of the daily maintenance window during which automatic updates may run, in the host's local time, formatted `HH:MM` on a 24-hour clock (e.g. `"01:30"`). Requires `auto_update_enabled` and `auto_update_window_end`.
+- `configuration` (String) The app's managed app configuration, as a raw string. Supported for `ios`, `ipados`, and `android` apps only (Fleet ignores it for `darwin`). Fleet Premium, Fleet 4.90 or later. 
+
+The expected format depends on the platform: **XML** for iOS and iPadOS (the managed-configuration dictionary), and **JSON** for Android Play Store apps. The provider passes the value through without parsing or validating it beyond requiring it to be non-empty — configuration keys vary per app, so consult the app vendor's documentation. For Android, Fleet accepts only the `managedConfiguration` and `workProfileWidgets` keys from Google's [application policy](https://developers.google.com/android/management/reference/rest/v1/enterprises.policies#ApplicationPolicy). Use `file()` to keep the payload in its own file, and note that Fleet may normalize whitespace and key ordering, so prefer a canonical form to avoid cosmetic diffs. 
+
+Managing this is **opt-in** in the same way as `auto_update_enabled`: omit the attribute to leave Fleet's stored configuration alone.
 - `display_name` (String) End-user-visible name shown for this software in Fleet's UI (e.g. on the Self Service page). Optional override for Fleet's auto-derived name (the installer's intrinsic name for custom packages, the App Store metadata for VPP, the catalog name for Fleet Maintained Apps). Computed when omitted.
 - `install_during_setup` (Boolean) Whether to install this software during the device's Setup Assistant / first-boot setup experience. Routes to Fleet's `PUT /setup_experience/software` endpoint, which manages a per-team-per-platform set of titles flagged for setup-time installation. Distinct from `automatic_install_policy`, which creates a Fleet policy that installs the software on hosts missing it (the policy-based path). 
 
@@ -54,7 +66,7 @@ Multi-resource race: when two `fleetdm_software_*` resources on the same team an
 - `labels_exclude_any` (List of String) List of label names. The software will not be available for hosts that match any of these labels. Mutually exclusive with `labels_include_any` and `labels_include_all`. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `labels_include_all` (List of String) List of label names. The software will be available for hosts that match *all* of these labels. Mutually exclusive with `labels_include_any` and `labels_exclude_any`; the conflict is enforced by validators on the other two. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
 - `labels_include_any` (List of String) List of label names. The software will be available for hosts that match *any* of these labels. Mutually exclusive with `labels_exclude_any` and `labels_include_all` — Fleet's API rejects requests that set more than one of the three. To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.
-- `platform` (String) The platform the software targets (`darwin`, `windows`, `linux`, `ios`, `ipados`).
+- `platform` (String) The platform the app targets: `darwin` (macOS, the Fleet default), `ios`, `ipados`, or `android` (Google Play, Fleet 4.90 or later — requires Android MDM to be enabled on your Fleet server). Computed when omitted.
 - `self_service` (Boolean) Whether the software is available for self-service installation by end users. Defaults to false.
 - `team_id` (Number) The ID of the team this software belongs to. Required for Fleet Premium.
 

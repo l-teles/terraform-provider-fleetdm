@@ -49,6 +49,7 @@ type softwareFleetMaintainedAppResourceModel struct {
 	FleetMaintainedAppID     types.Int64  `tfsdk:"fleet_maintained_app_id"`
 	Name                     types.String `tfsdk:"name"`
 	Version                  types.String `tfsdk:"version"`
+	PinnedVersion            types.String `tfsdk:"pinned_version"`
 	Platform                 types.String `tfsdk:"platform"`
 	DisplayName              types.String `tfsdk:"display_name"`
 	InstallScript            types.String `tfsdk:"install_script"`
@@ -80,6 +81,27 @@ func (r *softwareFleetMaintainedAppResource) Schema(_ context.Context, _ resourc
 	}
 	attrs["categories"] = softwareCategoriesAttribute()
 	attrs["automatic_install_policy"] = softwareAutomaticInstallPolicyAttribute()
+	attrs["pinned_version"] = schema.StringAttribute{
+		Description: "Pins this Fleet Maintained App to a specific version instead of tracking the latest version in " +
+			"[Fleet's catalog](https://fleetdm.com/software-catalog). Fleet Premium, Fleet 4.90 or later. " +
+			"\n\n" +
+			"Accepted values: an exact catalog version (`\"2.5.1\"`), a caret major-version constraint " +
+			"(`\"^147\"` — Fleet keeps updating within major version 147 and stops before 148), or an empty " +
+			"string (`\"\"`) to explicitly return the title to automatic latest-version tracking. Available " +
+			"versions are listed in the Fleet UI under **Actions > Versions**. " +
+			"\n\n" +
+			"Fleet rejects a request that changes the version alongside any other field, so the provider issues " +
+			"the pin as its own dedicated request — metadata first, then the pin — whenever both change in the " +
+			"same apply. " +
+			"\n\n" +
+			"Managing the pin is **opt-in**: when the attribute is omitted from HCL the provider never sends a " +
+			"version and never reads Fleet's value into state, so a pin set through the Fleet UI is left alone. " +
+			"Set the attribute (including to `\"\"`) to drive the value from Terraform, at which point drift is " +
+			"detected — Fleet echoes the active pin as `software_package.pinned_version` on read, and an " +
+			"out-of-band change shows up as a diff on the next plan. After `terraform import` the attribute " +
+			"starts null; add it to your configuration to adopt management of the pin.",
+		Optional: true,
+	}
 	attrs["fleet_maintained_app_id"] = schema.Int64Attribute{
 		Description: "The Fleet Maintained App ID — the catalog identifier returned by `data.fleetdm_fleet_maintained_app`. Required. Changing this forces a new resource.",
 		Required:    true,
@@ -245,6 +267,22 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 		}
 	}
 
+	// Post-create: apply the version pin. Fleet's Add-FMA endpoint accepts no
+	// version field, so pinning is always create-then-patch, and the pin must
+	// travel in its own request (Fleet rejects `version` combined with other
+	// fields) — hence it runs after the metadata PATCH above rather than
+	// folding into it. Skipped entirely when the attribute is null, which is
+	// the opt-in convention: no pin managed, Fleet's value untouched.
+	if !plan.PinnedVersion.IsNull() && !plan.PinnedVersion.IsUnknown() {
+		if err := r.client.PatchSoftwarePackagePinnedVersion(ctx, title.ID, optionalIntPtr(plan.TeamID), plan.PinnedVersion.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error pinning Fleet Maintained App version",
+				err.Error()+". The FMA was added to Fleet successfully and is tracked in state; re-running `terraform apply` will retry the version pin.",
+			)
+			return
+		}
+	}
+
 	// Post-create: install_during_setup via setup_experience endpoint.
 	if plan.InstallDuringSetup.ValueBool() {
 		if err := r.client.SetSetupExperienceSoftwareInclude(ctx, optionalIntPtr(plan.TeamID), plan.Platform.ValueString(), title.ID); err != nil {
@@ -359,6 +397,23 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	if pkg.Categories != nil && !state.Categories.IsNull() {
 		state.Categories = stringSliceToStringList(pkg.Categories)
 	}
+	// pinned_version follows the opt-in convention (see install_during_setup in
+	// software_common_schema.go): only refresh it when Terraform is already
+	// managing the pin, so a pin applied through the Fleet UI on a title whose
+	// HCL omits the attribute doesn't materialize into state and start a fight.
+	//
+	// When it IS managed, both directions are refreshed so drift is detected:
+	// Fleet echoes the active pin as `software_package.pinned_version`, and
+	// omits the key entirely once the title is back to tracking latest — so a
+	// nil pointer maps to "" (the same value the user writes to unpin), not to
+	// null. Verified against a live Fleet v4.90.0.
+	if !state.PinnedVersion.IsNull() {
+		if pkg.PinnedVersion != nil {
+			state.PinnedVersion = types.StringValue(*pkg.PinnedVersion)
+		} else {
+			state.PinnedVersion = types.StringValue("")
+		}
+	}
 
 	// Backfill fleet_maintained_app_id when state doesn't already know it.
 	// The title GET doesn't echo the upstream FMA catalog ID, so a freshly
@@ -461,6 +516,28 @@ func (r *softwareFleetMaintainedAppResource) Update(ctx context.Context, req res
 		return
 	}
 
+	// Second, sequential PATCH for the version pin. Fleet rejects `version`
+	// in the same request as any other field, so this can never be folded into
+	// the metadata PATCH above — the two changes always cost two round trips.
+	// Metadata goes first because a metadata-only PATCH preserves an existing
+	// pin (verified against a live Fleet v4.90.0), whereas doing it the other
+	// way round would leave the pin as the older of the two writes.
+	//
+	// Only fires on an actual diff, so applies that touch other attributes
+	// don't re-send an unchanged pin. A null plan value means the user removed
+	// the attribute from HCL — that stops managing the pin rather than clearing
+	// it, matching the opt-in convention on Read.
+	if !plan.PinnedVersion.IsNull() && !plan.PinnedVersion.IsUnknown() && !plan.PinnedVersion.Equal(state.PinnedVersion) {
+		if err := r.client.PatchSoftwarePackagePinnedVersion(ctx, titleID, teamID, plan.PinnedVersion.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"Error updating Fleet Maintained App version pin",
+				"Could not set the pinned version: "+err.Error()+
+					". Any metadata changes in this apply were already saved to Fleet; re-running `terraform apply` will retry the pin.",
+			)
+			return
+		}
+	}
+
 	// Carry over Computed attributes that the PATCH path doesn't refresh.
 	if plan.AutomaticInstallPolicies.IsUnknown() {
 		plan.AutomaticInstallPolicies = state.AutomaticInstallPolicies
@@ -552,6 +629,10 @@ func (r *softwareFleetMaintainedAppResource) ImportState(ctx context.Context, re
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), int64(tid))...)
 	}
 
+	// pinned_version is left unset here on purpose: Read's opt-in guard leaves
+	// a null value null, so importing never adopts management of a pin the user
+	// hasn't declared. Add the attribute to HCL to take it over.
+	//
 	// fleet_maintained_app_id is left unset here; the Read that follows
 	// import resolves it by listing the team's FMA catalog and matching on
 	// software_title_id. If no match is found (e.g. a non-FMA title imported

@@ -141,7 +141,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 			"type": schema.StringAttribute{
-				Description: "The type of software to manage. One of: `package` (default) — upload a local installer file (.pkg, .msi, .deb, .rpm, .exe); `vpp` — add an App Store app via Apple Volume Purchase Program, requires `app_store_id`; `fleet_maintained` — add a Fleet-curated app, requires `fleet_maintained_app_id`. Changing this value forces a new resource.",
+				Description: "The type of software to manage. One of: `package` (default) — upload a local installer file (.pkg, .msi, .exe, .zip, .deb, .rpm, .tar.gz, .ipa) or script installer (.sh, .py, .ps1); `vpp` — add an App Store app via Apple Volume Purchase Program, requires `app_store_id`; `fleet_maintained` — add a Fleet-curated app, requires `fleet_maintained_app_id`. Changing this value forces a new resource.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("package"),
@@ -172,7 +172,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				},
 			},
 			"package_path": schema.StringAttribute{
-				Description: "The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .deb, .rpm, and .exe files. Mutually exclusive with package_s3.",
+				Description: "The filesystem path to the software package file. If set, the file will be uploaded to Fleet when its SHA256 differs from the current package. Supports .pkg, .msi, .exe, .zip, .deb, .rpm, .tar.gz and .ipa installer packages plus .sh, .py and .ps1 script installers. Mutually exclusive with package_s3.",
 				Optional:    true,
 			},
 			"package_s3": schema.SingleNestedAttribute{

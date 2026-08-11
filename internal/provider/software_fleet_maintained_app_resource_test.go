@@ -710,3 +710,214 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 		},
 	})
 }
+
+// testAccFMAPinnedVersionConfig builds an FMA resource with an optional extra
+// attribute block, used by the version-pin tests below.
+func testAccFMAPinnedVersionConfig(serverURL, extra string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "test" {
+  fleet_maintained_app_id = 641
+  %[2]s
+}
+`, serverURL, extra)
+}
+
+// TestAccSoftwareFleetMaintainedAppResource_pinnedVersionLifecycle is the
+// central test for version pinning. The fake Fleet enforces the real 4.90
+// constraint — a PATCH carrying `version` alongside anything else is rejected
+// with Fleet's own message — so this exercises the thing that actually breaks
+// if the pin is ever folded into the metadata PATCH.
+//
+// It walks: create-with-pin (Add can't carry a version, so it must be
+// create-then-patch), pin change, a step that changes metadata AND the pin
+// together (two sequential requests), and unpin via "".
+func TestAccSoftwareFleetMaintainedAppResource_pinnedVersionLifecycle(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 641
+	f.titleName = "Itsycal"
+
+	// Each step asserts against the wire state left by that step's requests.
+	checkPin := func(wantPin string, wantVersionPatches int) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if f.patchVersionValue != wantPin {
+				return fmt.Errorf("expected the last version-only PATCH to send %q, got %q", wantPin, f.patchVersionValue)
+			}
+			if f.patchVersionOnlyCount != wantVersionPatches {
+				return fmt.Errorf("expected %d version-only PATCHes so far, got %d", wantVersionPatches, f.patchVersionOnlyCount)
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Create with a pin. Fleet's Add-FMA endpoint has no version
+				// field, so the pin has to arrive as a follow-up request.
+				Config: testAccFMAPinnedVersionConfig(f.srv.URL, `pinned_version = "0.15.12"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pinned_version", "0.15.12"),
+					checkPin("0.15.12", 1),
+				),
+			},
+			{
+				// Pin-only change: exactly one more version-only PATCH.
+				Config: testAccFMAPinnedVersionConfig(f.srv.URL, `pinned_version = "^0"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pinned_version", "^0"),
+					checkPin("^0", 2),
+				),
+			},
+			{
+				// Metadata AND pin in one apply. The metadata PATCH must not
+				// carry the version (the fake would 400), and the pin still has
+				// to land — so this step proves the sequential-PATCH behavior.
+				Config: testAccFMAPinnedVersionConfig(f.srv.URL, "pinned_version = \"0.15.12\"\n  self_service   = true"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pinned_version", "0.15.12"),
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "self_service", "true"),
+					checkPin("0.15.12", 3),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						// A metadata PATCH happened too, so the total count is
+						// strictly greater than the version-only count.
+						if f.patchCount <= f.patchVersionOnlyCount {
+							return fmt.Errorf("expected a separate metadata PATCH alongside the pin; total=%d version-only=%d",
+								f.patchCount, f.patchVersionOnlyCount)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Unpin: an empty string is a real request, not a no-op, and
+				// Fleet then stops echoing pinned_version at all.
+				Config: testAccFMAPinnedVersionConfig(f.srv.URL, `pinned_version = ""`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pinned_version", ""),
+					checkPin("", 4),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.pinnedVersion != nil {
+							return fmt.Errorf("expected the pin to be cleared server-side, got %q", *f.pinnedVersion)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareFleetMaintainedAppResource_pinnedVersionOptIn locks in the
+// opt-in convention: with the attribute omitted from HCL the provider must
+// never send a version, and a pin set out-of-band (Fleet UI, GitOps) must not
+// be adopted into state — otherwise Terraform would start reporting drift on a
+// field the user never asked it to manage.
+func TestAccSoftwareFleetMaintainedAppResource_pinnedVersionOptIn(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 642
+	f.titleName = "Itsycal"
+	// Someone pinned this title in the Fleet UI.
+	uiPin := "0.15.12"
+	f.pinnedVersion = &uiPin
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "test" {
+  fleet_maintained_app_id = 642
+}
+`, f.srv.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("fleetdm_software_fleet_maintained_app.test", "pinned_version"),
+					func(*terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.patchVersionOnlyCount != 0 {
+							return fmt.Errorf("expected no version PATCH when pinned_version is omitted, got %d", f.patchVersionOnlyCount)
+						}
+						if f.pinnedVersion == nil || *f.pinnedVersion != uiPin {
+							return fmt.Errorf("the UI-set pin must be left untouched, got %v", f.pinnedVersion)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// And the unmanaged pin must not create a perpetual diff.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareFleetMaintainedAppResource_pinnedVersionDriftDetected is the
+// payoff of Fleet echoing pinned_version on read: once the attribute IS
+// managed, an out-of-band change to the pin shows up as a plan diff instead of
+// silently persisting.
+func TestAccSoftwareFleetMaintainedAppResource_pinnedVersionDriftDetected(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 643
+	f.titleName = "Itsycal"
+
+	cfg := testAccFMAPinnedVersionConfigFor(f.srv.URL, 643, `pinned_version = "0.15.12"`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check:  resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pinned_version", "0.15.12"),
+			},
+			{
+				// Simulate someone unpinning the title in the Fleet UI, then
+				// refresh: the managed attribute must pick the change up.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.pinnedVersion = nil
+					f.mu.Unlock()
+				},
+				Config:             cfg,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
+// testAccFMAPinnedVersionConfigFor is testAccFMAPinnedVersionConfig with an
+// explicit catalog ID, needed because the fake keys its title GET off titleID.
+func testAccFMAPinnedVersionConfigFor(serverURL string, appID int, extra string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "test" {
+  fleet_maintained_app_id = %[2]d
+  %[3]s
+}
+`, serverURL, appID, extra)
+}

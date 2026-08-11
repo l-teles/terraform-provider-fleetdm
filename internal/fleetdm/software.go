@@ -24,6 +24,18 @@ type SoftwareTitle struct {
 	SoftwarePackage  *SoftwarePackageInfo   `json:"software_package,omitempty"`
 	AppStoreApp      *AppStoreAppInfo       `json:"app_store_app,omitempty"`
 	CountsUpdatedAt  *time.Time             `json:"counts_updated_at,omitempty"`
+
+	// AutoUpdateEnabled / AutoUpdateWindowStart / AutoUpdateWindowEnd are the
+	// App Store (VPP) automatic-update settings. Fleet embeds them at the
+	// *title* level (SoftwareAutoUpdateConfig on fleet.SoftwareTitle), not
+	// inside app_store_app, and omits them entirely when unset — verified
+	// against a live Fleet v4.90.0: an untouched title's GET response carries
+	// none of the three keys. Pointers so "absent" stays distinguishable from
+	// "explicitly false / empty", which the resource layer's opt-in Read
+	// convention depends on.
+	AutoUpdateEnabled     *bool   `json:"auto_update_enabled,omitempty"`
+	AutoUpdateWindowStart *string `json:"auto_update_window_start,omitempty"`
+	AutoUpdateWindowEnd   *string `json:"auto_update_window_end,omitempty"`
 }
 
 // AutomaticInstallPolicyRef points at a Fleet policy that auto-installs a
@@ -47,17 +59,23 @@ type SoftwareTitleVersion struct {
 
 // SoftwarePackageInfo represents software package installation info.
 type SoftwarePackageInfo struct {
-	Name                     string                      `json:"name,omitempty"`
-	Version                  string                      `json:"version,omitempty"`
-	Platform                 string                      `json:"platform,omitempty"`
-	SelfService              bool                        `json:"self_service,omitempty"`
-	InstallDuringSetup       *bool                       `json:"install_during_setup,omitempty"`
-	InstallScript            string                      `json:"install_script,omitempty"`
-	UninstallScript          string                      `json:"uninstall_script,omitempty"`
-	PreInstallQuery          string                      `json:"pre_install_query,omitempty"`
-	PostInstallScript        string                      `json:"post_install_script,omitempty"`
-	HashSHA256               string                      `json:"hash_sha256,omitempty"`
-	Categories               []string                    `json:"categories,omitempty"`
+	Name               string   `json:"name,omitempty"`
+	Version            string   `json:"version,omitempty"`
+	Platform           string   `json:"platform,omitempty"`
+	SelfService        bool     `json:"self_service,omitempty"`
+	InstallDuringSetup *bool    `json:"install_during_setup,omitempty"`
+	InstallScript      string   `json:"install_script,omitempty"`
+	UninstallScript    string   `json:"uninstall_script,omitempty"`
+	PreInstallQuery    string   `json:"pre_install_query,omitempty"`
+	PostInstallScript  string   `json:"post_install_script,omitempty"`
+	HashSHA256         string   `json:"hash_sha256,omitempty"`
+	Categories         []string `json:"categories,omitempty"`
+	// PinnedVersion is the Fleet-maintained-app version pin currently in
+	// effect for this package, echoed by GET /software/titles/{id} as
+	// `software_package.pinned_version`. Fleet omits the key when the title
+	// tracks the catalog's latest version (no pin), so a nil pointer means
+	// "not pinned" — verified against a live Fleet v4.90.0.
+	PinnedVersion            *string                     `json:"pinned_version,omitempty"`
 	LabelsIncludeAny         []SoftwareLabel             `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny         []SoftwareLabel             `json:"labels_exclude_any,omitempty"`
 	LabelsIncludeAll         []SoftwareLabel             `json:"labels_include_all,omitempty"`
@@ -76,15 +94,27 @@ type AppStoreAppInfo struct {
 	LabelsExcludeAny         []SoftwareLabel             `json:"labels_exclude_any,omitempty"`
 	LabelsIncludeAll         []SoftwareLabel             `json:"labels_include_all,omitempty"`
 	AutomaticInstallPolicies []AutomaticInstallPolicyRef `json:"automatic_install_policies,omitempty"`
+	// Configuration is the app's managed app configuration, echoed back on
+	// read. Fleet's wire shape is dual: a JSON object for Android Play Store
+	// apps, and a JSON *string* containing XML for iOS/iPadOS. Kept as
+	// json.RawMessage so both survive the round trip; use
+	// DecodeAppConfiguration to turn it back into the provider's raw string.
+	Configuration json.RawMessage `json:"configuration,omitempty"`
 }
 
 // AddAppStoreAppRequest represents the request body for adding a VPP app.
+//
+// Fleet's Add endpoint accepts `configuration` but NOT the auto_update_*
+// fields — those only exist on the Update endpoint, so the resource layer
+// applies them with a follow-up PATCH after create.
 type AddAppStoreAppRequest struct {
 	AppStoreID  string `json:"app_store_id"`
 	TeamID      int    `json:"team_id"`
 	Platform    string `json:"platform,omitempty"`
 	SelfService bool   `json:"self_service,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
+	// Configuration is the app's managed app configuration. Omitted when nil.
+	Configuration json.RawMessage `json:"configuration,omitempty"`
 }
 
 // UpdateAppStoreAppRequest represents the request body for updating a VPP app.
@@ -96,6 +126,18 @@ type AddAppStoreAppRequest struct {
 // one of labels_include_all, labels_include_any, labels_exclude_any may be
 // non-nil per request; the resource schema's ConflictsWith validators
 // enforce that at plan time.
+//
+// The Fleet 4.90 additions (Configuration, AutoUpdate*) all carry `omitempty`
+// and pointer/RawMessage types so they are absent from the body unless the
+// caller opted in. That keeps this request byte-identical to its pre-4.90
+// shape for configurations that don't use the new attributes, so the provider
+// remains usable against older Fleet servers.
+//
+// Fleet validates the auto-update window server-side: enabling automatic
+// updates without both window bounds fails with "Start and end time must both
+// be set" (verified against a live Fleet v4.90.0). The resource schema mirrors
+// that with AlsoRequires validators plus a ValidateConfig check so the failure
+// surfaces at plan time instead of mid-apply.
 type UpdateAppStoreAppRequest struct {
 	TeamID           int      `json:"team_id"`
 	SelfService      bool     `json:"self_service"`
@@ -103,6 +145,68 @@ type UpdateAppStoreAppRequest struct {
 	LabelsIncludeAny []string `json:"labels_include_any"`
 	LabelsExcludeAny []string `json:"labels_exclude_any"`
 	LabelsIncludeAll []string `json:"labels_include_all"`
+	// Configuration is the app's managed app configuration (JSON object for
+	// Android, JSON string of XML for iOS/iPadOS). Omitted when nil.
+	Configuration json.RawMessage `json:"configuration,omitempty"`
+	// AutoUpdateEnabled and the window bounds drive Fleet's automatic-update
+	// maintenance window for iOS/iPadOS App Store apps. Pointers + omitempty:
+	// a nil pointer leaves Fleet's current setting untouched.
+	AutoUpdateEnabled     *bool   `json:"auto_update_enabled,omitempty"`
+	AutoUpdateWindowStart *string `json:"auto_update_window_start,omitempty"`
+	AutoUpdateWindowEnd   *string `json:"auto_update_window_end,omitempty"`
+}
+
+// EncodeAppConfiguration converts the provider's raw `configuration` string
+// into the JSON shape Fleet's app_store_app endpoints expect.
+//
+// Fleet decodes the field as json.RawMessage and then branches on platform
+// (ee/server/service/vpp.go):
+//
+//   - Android Play Store apps: the value must be a JSON *object* (the managed
+//     configuration itself).
+//   - iOS / iPadOS apps: the value must be a JSON *string* whose contents are
+//     the XML payload — Fleet json.Unmarshal's it into a string and errors with
+//     "expected configuration as a JSON string containing the XML" otherwise.
+//
+// The provider exposes a single raw string attribute for both, so this helper
+// picks the encoding from the content: anything that is already valid JSON is
+// passed through untouched (the Android case, and any caller who pre-quoted
+// their XML), and anything else — notably raw XML — is marshalled into a JSON
+// string. That makes the common "paste your XML / paste your JSON" ergonomics
+// work without asking users to double-encode.
+func EncodeAppConfiguration(raw string) (json.RawMessage, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	if json.Valid([]byte(raw)) {
+		return json.RawMessage(raw), nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode app configuration: %w", err)
+	}
+	// Note on the wire form: encoding/json escapes <, > and & as <, >
+	// and & — which the XML case hits on every tag. This is cosmetic:
+	// Fleet json.Unmarshal's the field back into a string and gets the original
+	// XML byte for byte. Suppressing the escaping here would be pointless
+	// anyway, because the request body is marshalled again as a whole struct by
+	// the shared doRequest helper, which re-escapes it.
+	return encoded, nil
+}
+
+// DecodeAppConfiguration is the inverse of EncodeAppConfiguration: it turns
+// the wire value back into the raw string the provider stores in state. A JSON
+// string is unquoted (the iOS/iPadOS XML case); anything else is returned
+// verbatim (the Android JSON-object case).
+func DecodeAppConfiguration(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString
+	}
+	return string(raw)
 }
 
 // FleetMaintainedApp represents a Fleet Maintained App.
@@ -374,7 +478,7 @@ type SoftwareLabel struct {
 // non-null.
 type UploadSoftwarePackageRequest struct {
 	TeamID            *int      // Required for Premium
-	Software          []byte    // The software package file (pkg, msi, deb, rpm, exe)
+	Software          []byte    // The software package file. Fleet validates the type from Filename's extension: pkg, msi, exe, zip, deb, rpm, tar.gz, ipa, or a script installer (sh, py, ps1)
 	Filename          string    // The filename of the package
 	DisplayName       string    // Override for the end-user-visible name; defaults to Filename when empty
 	Categories        []string  // Self-service categories (e.g. "Productivity", "Security"); empty = none
@@ -645,6 +749,47 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 	}
 	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
 		return fmt.Errorf("failed to patch software package: %w", err)
+	}
+	return nil
+}
+
+// PatchSoftwarePackagePinnedVersion pins a Fleet-maintained app to a specific
+// (or major) version via PATCH /software/titles/{id}/package, sending ONLY the
+// `version` form field.
+//
+// The dedicated method exists because Fleet rejects `version` combined with
+// anything else on this endpoint. Verified against a live Fleet v4.90.0:
+//
+//	PATCH version=0.15.12                 → 200, pinned_version echoes on GET
+//	PATCH version=0.15.12&self_service=1  → 400 "Couldn't update. \"version\"
+//	                                        can't be changed at the same time
+//	                                        as other fields."
+//
+// So PatchSoftwarePackage (which always sends the script + self_service
+// fields) can never carry a pin, and callers that need to change both metadata
+// and the pin in one apply must issue two sequential requests. Metadata-only
+// PATCHes preserve an existing pin, so metadata-first-then-pin is safe in
+// either order; the resource layer does metadata first.
+//
+// version semantics (Fleet's docs + probe):
+//
+//   - "1.2.3" pins to that exact catalog version.
+//   - "^147" pins to a major version — Fleet keeps updating within it.
+//   - ""      clears the pin, returning the title to "track latest". This is
+//     why the parameter is a plain string with no omit path: an empty
+//     value is a meaningful request, not "no change". Callers that
+//     mean "no change" must simply not call this method.
+func (c *Client) PatchSoftwarePackagePinnedVersion(ctx context.Context, titleID int, teamID *int, version string) error {
+	endpoint := fmt.Sprintf("/software/titles/%d/package", titleID)
+	if teamID != nil {
+		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *teamID)
+	}
+
+	// Deliberately the only field in the form — see the doc comment.
+	fields := map[string]string{"version": version}
+
+	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
+		return fmt.Errorf("failed to set pinned version on software package: %w", err)
 	}
 	return nil
 }

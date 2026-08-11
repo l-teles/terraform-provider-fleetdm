@@ -24,7 +24,7 @@ Supports both **FleetDM Free** and **Premium** editions. Not affiliated with Fle
 | `fleetdm_user` | Users and permissions |
 | `fleetdm_enroll_secret` | Enrollment secrets (global and fleet) |
 | `fleetdm_configuration` | Global Fleet server configuration |
-| `fleetdm_software_custom_package` | Upload custom installer packages (.pkg/.msi/.deb/.rpm/.exe) — Premium |
+| `fleetdm_software_custom_package` | Upload custom installer packages (.pkg/.msi/.exe/.zip/.deb/.rpm/.tar.gz/.ipa) and script installers (.sh/.py/.ps1) — Premium |
 | `fleetdm_software_app_store_app` | Apple Volume Purchase Program (App Store) apps — Premium |
 | `fleetdm_software_fleet_maintained_app` | Fleet-curated apps bound to a team — Premium |
 | `fleetdm_software_package` *(deprecated)* | Split into the three resources above — see the migration guide |

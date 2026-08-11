@@ -38,6 +38,11 @@ type fakeFleetSoftwareServer struct {
 	titleAppStoreID    string
 	titlePlatform      string
 	titleSource        string // "pkg" / "app_store_app" / "fma" — drives detectSoftwareType branching
+	// titleHashSHA256 is what the title GET reports as the stored package
+	// hash. Defaults to the hash of "FAKEPKG" (what most tests upload); tests
+	// that upload different bytes must set this to match, or the resource's
+	// SHA comparison plans a spurious in-place update on every refresh.
+	titleHashSHA256 string
 
 	// Wire observations from the most recent multipart Upload (POST
 	// /software/package). Tests inspect these to verify Create behavior.
@@ -59,6 +64,14 @@ type fakeFleetSoftwareServer struct {
 	patchInstallScript       string
 	patchSelfService         string
 
+	// Fleet 4.90 version pinning. patchVersionOnlyCount counts PATCHes that
+	// carried `version` as their ONLY form field — the shape Fleet demands.
+	// pinnedVersion is the server-side pin mirrored back on GET: nil (or a pin
+	// cleared with "") means Fleet omits the pinned_version key entirely.
+	patchVersionOnlyCount int
+	patchVersionValue     string
+	pinnedVersion         *string
+
 	// Wire observations from POST /software/app_store_apps (VPP).
 	vppCreateCount  int
 	vppAppStoreID   string
@@ -69,6 +82,10 @@ type fakeFleetSoftwareServer struct {
 	vppCreateIncAll []string
 	vppCreateIncAny []string
 	vppCreateExcAny []string
+	// vppCreateConfiguration is the raw `configuration` value as it arrived on
+	// the Add request — kept as RawMessage so tests can assert whether an
+	// Android config stayed a JSON object and an iOS one became a JSON string.
+	vppCreateConfiguration json.RawMessage
 
 	// Wire observations from PATCH /software/titles/{id}/app_store_app
 	// (VPP update — JSON, not multipart).
@@ -78,6 +95,20 @@ type fakeFleetSoftwareServer struct {
 	vppPatchExcludeLabels []string
 	vppPatchIncludeAll    []string
 	vppPatchDisplayName   string
+	// Fleet 4.90 VPP additions. Pointers so tests can tell "absent from the
+	// JSON body" (the opt-in case) from "explicitly false / empty".
+	vppPatchConfiguration     json.RawMessage
+	vppPatchAutoUpdateEnabled *bool
+	vppPatchAutoUpdateStart   *string
+	vppPatchAutoUpdateEnd     *string
+
+	// Server-side auto-update / configuration state mirrored back on GET.
+	// Fleet returns the auto-update trio at the *title* level and the managed
+	// configuration inside app_store_app.
+	titleAutoUpdateEnabled *bool
+	titleAutoUpdateStart   *string
+	titleAutoUpdateEnd     *string
+	titleConfiguration     json.RawMessage
 
 	// Wire observations from POST /software/fleet_maintained_apps.
 	fmaCreateCount      int
@@ -125,9 +156,10 @@ type fakeFleetSoftwareServer struct {
 func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 	t.Helper()
 	f := &fakeFleetSoftwareServer{
-		titleID:     71,
-		titleName:   "test-app",
-		titleSource: "pkg",
+		titleID:         71,
+		titleName:       "test-app",
+		titleSource:     "pkg",
+		titleHashSHA256: hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -183,18 +215,36 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 		// POST /software/app_store_apps — VPP Create (JSON).
 		case r.URL.Path == "/api/v1/fleet/software/app_store_apps" && r.Method == http.MethodPost:
 			var body struct {
-				AppStoreID       string   `json:"app_store_id"`
-				TeamID           int      `json:"team_id"`
-				Platform         string   `json:"platform"`
-				SelfService      bool     `json:"self_service"`
-				DisplayName      string   `json:"display_name"`
-				LabelsIncludeAny []string `json:"labels_include_any"`
-				LabelsExcludeAny []string `json:"labels_exclude_any"`
-				LabelsIncludeAll []string `json:"labels_include_all"`
+				AppStoreID       string          `json:"app_store_id"`
+				TeamID           int             `json:"team_id"`
+				Platform         string          `json:"platform"`
+				SelfService      bool            `json:"self_service"`
+				DisplayName      string          `json:"display_name"`
+				LabelsIncludeAny []string        `json:"labels_include_any"`
+				LabelsExcludeAny []string        `json:"labels_exclude_any"`
+				LabelsIncludeAll []string        `json:"labels_include_all"`
+				Configuration    json.RawMessage `json:"configuration"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			// Mirror Fleet's platform enum so a typo can't slip through:
+			// "platform must be one of 'ios', 'ipados', 'darwin', or 'android'".
+			switch body.Platform {
+			case "", "darwin", "ios", "ipados", "android":
+			default:
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"message": "Validation Failed",
+					"errors": []map[string]any{{
+						"name":   "platform",
+						"reason": "platform must be one of 'ios', 'ipados', 'darwin', or 'android'",
+					}},
+				})
+				return
+			}
 			f.mu.Lock()
 			f.vppCreateCount++
+			f.vppCreateConfiguration = body.Configuration
+			f.titleConfiguration = body.Configuration
 			f.vppAppStoreID = body.AppStoreID
 			f.vppPlatform = body.Platform
 			f.vppSelfService = body.SelfService
@@ -282,7 +332,7 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			pkgBody := map[string]any{
 				"title_id":       f.titleID,
 				"platform":       "darwin",
-				"hash_sha256":    hex.EncodeToString(sumOf([]byte("FAKEPKG"))),
+				"hash_sha256":    f.titleHashSHA256,
 				"self_service":   f.titleSelfService,
 				"install_script": f.titleInstallScript,
 			}
@@ -295,6 +345,21 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			}
 			if len(f.titleAutomaticInstallPolicies) > 0 {
 				pkgBody["automatic_install_policies"] = f.titleAutomaticInstallPolicies
+			}
+			// Fleet omits pinned_version entirely when the title tracks latest.
+			if f.pinnedVersion != nil {
+				pkgBody["pinned_version"] = *f.pinnedVersion
+			}
+			// The auto-update trio sits at the title level, and Fleet omits each
+			// key it has no value for.
+			if f.titleAutoUpdateEnabled != nil {
+				payload["auto_update_enabled"] = *f.titleAutoUpdateEnabled
+			}
+			if f.titleAutoUpdateStart != nil {
+				payload["auto_update_window_start"] = *f.titleAutoUpdateStart
+			}
+			if f.titleAutoUpdateEnd != nil {
+				payload["auto_update_window_end"] = *f.titleAutoUpdateEnd
 			}
 			switch source {
 			case "app_store_app":
@@ -313,6 +378,9 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				}
 				if len(f.titleAutomaticInstallPolicies) > 0 {
 					vppBody["automatic_install_policies"] = f.titleAutomaticInstallPolicies
+				}
+				if len(f.titleConfiguration) > 0 {
+					vppBody["configuration"] = f.titleConfiguration
 				}
 				payload["app_store_app"] = vppBody
 			default: // "pkg" or "fma" — both Fleet-side use the software_package shape
@@ -351,6 +419,44 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				http.Error(w, "bad multipart", http.StatusBadRequest)
 				return
 			}
+			// Fleet 4.90 rejects `version` combined with any other field:
+			// "Couldn't update. \"version\" can't be changed at the same time
+			// as other fields." (verified live). Modelling the rejection —
+			// rather than just recording the field — means any regression that
+			// folds the pin into the metadata PATCH fails the resource tests
+			// instead of silently passing against a permissive fake.
+			if versionVals, versionSeen := r.MultipartForm.Value["version"]; versionSeen {
+				if len(r.MultipartForm.Value) > 1 {
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"message": "Bad request",
+						"errors": []map[string]any{{
+							"name":   "base",
+							"reason": `Couldn't update. "version" can't be changed at the same time as other fields.`,
+						}},
+					})
+					return
+				}
+				f.mu.Lock()
+				f.patchCount++
+				f.patchVersionOnlyCount++
+				pinned := ""
+				if len(versionVals) > 0 {
+					pinned = versionVals[0]
+				}
+				f.patchVersionValue = pinned
+				// An empty version clears the pin, which Fleet then reports by
+				// omitting pinned_version from the GET response.
+				if pinned == "" {
+					f.pinnedVersion = nil
+				} else {
+					f.pinnedVersion = &pinned
+				}
+				f.mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
 			f.mu.Lock()
 			f.patchCount++
 			vals, incSeen := r.MultipartForm.Value["labels_include_any"]
@@ -391,14 +497,33 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 		// PATCH /software/titles/{id}/app_store_app — VPP Update (JSON).
 		case r.URL.Path == "/api/v1/fleet/software/titles/"+strconv.Itoa(f.titleID)+"/app_store_app" && r.Method == http.MethodPatch:
 			var body struct {
-				TeamID           int      `json:"team_id"`
-				SelfService      bool     `json:"self_service"`
-				LabelsIncludeAny []string `json:"labels_include_any"`
-				LabelsExcludeAny []string `json:"labels_exclude_any"`
-				LabelsIncludeAll []string `json:"labels_include_all"`
-				DisplayName      string   `json:"display_name"`
+				TeamID                int             `json:"team_id"`
+				SelfService           bool            `json:"self_service"`
+				LabelsIncludeAny      []string        `json:"labels_include_any"`
+				LabelsExcludeAny      []string        `json:"labels_exclude_any"`
+				LabelsIncludeAll      []string        `json:"labels_include_all"`
+				DisplayName           string          `json:"display_name"`
+				Configuration         json.RawMessage `json:"configuration"`
+				AutoUpdateEnabled     *bool           `json:"auto_update_enabled"`
+				AutoUpdateWindowStart *string         `json:"auto_update_window_start"`
+				AutoUpdateWindowEnd   *string         `json:"auto_update_window_end"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			// Fleet's server-side window validation, mirrored so the provider's
+			// ValidateConfig guard is proven to be doing real work rather than
+			// duplicating something the fake would let slide.
+			if body.AutoUpdateEnabled != nil && *body.AutoUpdateEnabled &&
+				(body.AutoUpdateWindowStart == nil || body.AutoUpdateWindowEnd == nil) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"message": "Start and end time must both be set",
+					"errors": []map[string]any{{
+						"name":   "base",
+						"reason": "Start and end time must both be set",
+					}},
+				})
+				return
+			}
 			f.mu.Lock()
 			f.vppPatchCount++
 			f.vppPatchSelfService = body.SelfService
@@ -406,9 +531,27 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.vppPatchExcludeLabels = body.LabelsExcludeAny
 			f.vppPatchIncludeAll = body.LabelsIncludeAll
 			f.vppPatchDisplayName = body.DisplayName
+			f.vppPatchConfiguration = body.Configuration
+			f.vppPatchAutoUpdateEnabled = body.AutoUpdateEnabled
+			f.vppPatchAutoUpdateStart = body.AutoUpdateWindowStart
+			f.vppPatchAutoUpdateEnd = body.AutoUpdateWindowEnd
 			f.titleSelfService = body.SelfService
 			if body.DisplayName != "" {
 				f.titleDisplayName = body.DisplayName
+			}
+			// nil means "no change" — only overwrite mirrored state when the
+			// field was actually present in the body.
+			if len(body.Configuration) > 0 {
+				f.titleConfiguration = body.Configuration
+			}
+			if body.AutoUpdateEnabled != nil {
+				f.titleAutoUpdateEnabled = body.AutoUpdateEnabled
+			}
+			if body.AutoUpdateWindowStart != nil {
+				f.titleAutoUpdateStart = body.AutoUpdateWindowStart
+			}
+			if body.AutoUpdateWindowEnd != nil {
+				f.titleAutoUpdateEnd = body.AutoUpdateWindowEnd
 			}
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
