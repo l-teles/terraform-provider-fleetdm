@@ -384,6 +384,122 @@ func TestClient_UpdateSetupExperience(t *testing.T) {
 	}
 }
 
+// captureSetupExperiencePatch returns a server that records the raw PATCH body
+// sent to /setup_experience, so tests can assert on key presence rather than
+// on the decoded struct (nil pointers and false are indistinguishable there).
+func captureSetupExperiencePatch(t *testing.T, body *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("expected PATCH request, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/fleet/setup_experience" {
+			t.Errorf("expected path /api/v1/fleet/setup_experience, got %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(body); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+}
+
+func TestClient_UpdateSetupExperience_Fleet490Fields(t *testing.T) {
+	var body map[string]any
+	server := captureSetupExperiencePatch(t, &body)
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	enabled, disabled := true, false
+	err := client.UpdateSetupExperience(context.Background(), &UpdateSetupExperienceRequest{
+		TeamID:                    7,
+		LockEndUserInfo:           &enabled,
+		RequireAllSoftwareMacOS:   &disabled,
+		RequireAllSoftwareWindows: &enabled,
+		ManualAgentInstall:        &disabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateSetupExperience failed: %v", err)
+	}
+
+	want := map[string]any{
+		"team_id":                      float64(7),
+		"lock_end_user_info":           true,
+		"require_all_software_macos":   false,
+		"require_all_software_windows": true,
+		"manual_agent_install":         false,
+	}
+	if len(body) != len(want) {
+		t.Fatalf("unexpected request body: got %v, want %v", body, want)
+	}
+	for k, v := range want {
+		if body[k] != v {
+			t.Errorf("expected %s=%v, got %v", k, v, body[k])
+		}
+	}
+}
+
+func TestClient_UpdateSetupExperience_OmitsUnsetFleet490Fields(t *testing.T) {
+	var body map[string]any
+	server := captureSetupExperiencePatch(t, &body)
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	enabled := true
+	err := client.UpdateSetupExperience(context.Background(), &UpdateSetupExperienceRequest{
+		TeamID:            1,
+		EnableEndUserAuth: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("UpdateSetupExperience failed: %v", err)
+	}
+
+	for _, field := range []string{
+		"lock_end_user_info",
+		"require_all_software_macos",
+		"require_all_software_windows",
+		"manual_agent_install",
+	} {
+		if _, ok := body[field]; ok {
+			t.Errorf("expected %s to be omitted from the request body, got %v", field, body[field])
+		}
+	}
+	if body["enable_end_user_authentication"] != true {
+		t.Errorf("expected enable_end_user_authentication=true, got %v", body["enable_end_user_authentication"])
+	}
+}
+
+func TestClient_GetSetupExperience_Fleet490Fields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"enable_end_user_authentication": true,
+			"enable_release_device_manually": false,
+			"lock_end_user_info": true,
+			"require_all_software_macos": false,
+			"require_all_software_windows": true
+		}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	setup, err := client.GetSetupExperience(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("GetSetupExperience failed: %v", err)
+	}
+	if setup.LockEndUserInfo == nil || !*setup.LockEndUserInfo {
+		t.Errorf("expected LockEndUserInfo to be true, got %v", setup.LockEndUserInfo)
+	}
+	if setup.RequireAllSoftwareMacOS == nil || *setup.RequireAllSoftwareMacOS {
+		t.Errorf("expected RequireAllSoftwareMacOS to be false, got %v", setup.RequireAllSoftwareMacOS)
+	}
+	if setup.RequireAllSoftwareWindows == nil || !*setup.RequireAllSoftwareWindows {
+		t.Errorf("expected RequireAllSoftwareWindows to be true, got %v", setup.RequireAllSoftwareWindows)
+	}
+	if setup.ManualAgentInstall != nil {
+		t.Errorf("expected ManualAgentInstall to stay nil when absent, got %v", *setup.ManualAgentInstall)
+	}
+}
+
 func TestClient_GetConfigProfileContent(t *testing.T) {
 	const wantContent = `<?xml version="1.0"?><plist version="1.0"><dict><key>PayloadType</key><string>Configuration</string></dict></plist>`
 

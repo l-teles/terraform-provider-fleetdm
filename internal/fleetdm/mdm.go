@@ -429,12 +429,18 @@ func (c *Client) DeleteBootstrapPackage(ctx context.Context, teamID int) error {
 }
 
 // SetupExperience represents the setup experience settings for a team.
+// The Fleet 4.90 fields are pointers so a missing value (older Fleet, or a
+// setting Fleet has never had written) stays distinguishable from false.
 type SetupExperience struct {
-	EnableEndUserAuth     bool            `json:"enable_end_user_authentication"`
-	EnableReleaseManually bool            `json:"enable_release_device_manually"`
-	Script                *SetupScript    `json:"script,omitempty"`
-	Software              []SetupSoftware `json:"software,omitempty"`
-	SoftwareTitles        []SetupSoftware `json:"software_titles,omitempty"`
+	EnableEndUserAuth         bool            `json:"enable_end_user_authentication"`
+	EnableReleaseManually     bool            `json:"enable_release_device_manually"`
+	LockEndUserInfo           *bool           `json:"lock_end_user_info,omitempty"`
+	RequireAllSoftwareMacOS   *bool           `json:"require_all_software_macos,omitempty"`
+	RequireAllSoftwareWindows *bool           `json:"require_all_software_windows,omitempty"`
+	ManualAgentInstall        *bool           `json:"manual_agent_install,omitempty"`
+	Script                    *SetupScript    `json:"script,omitempty"`
+	Software                  []SetupSoftware `json:"software,omitempty"`
+	SoftwareTitles            []SetupSoftware `json:"software_titles,omitempty"`
 }
 
 // SetupScript represents a script in setup experience.
@@ -450,10 +456,18 @@ type SetupSoftware struct {
 }
 
 // UpdateSetupExperienceRequest represents the request to update setup experience.
+// Every setting is a pointer: nil is omitted from the request body so Fleet
+// keeps its current value. Fleet gates several of these fields on presence
+// alone (not value), so sending a field the caller does not manage can turn a
+// working request into an error on a Fleet without MDM turned on.
 type UpdateSetupExperienceRequest struct {
-	TeamID                int   `json:"team_id"`
-	EnableEndUserAuth     *bool `json:"enable_end_user_authentication,omitempty"`
-	EnableReleaseManually *bool `json:"enable_release_device_manually,omitempty"`
+	TeamID                    int   `json:"team_id"`
+	EnableEndUserAuth         *bool `json:"enable_end_user_authentication,omitempty"`
+	EnableReleaseManually     *bool `json:"enable_release_device_manually,omitempty"`
+	LockEndUserInfo           *bool `json:"lock_end_user_info,omitempty"`
+	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
+	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
+	ManualAgentInstall        *bool `json:"manual_agent_install,omitempty"`
 }
 
 // GetSetupExperience retrieves setup experience settings for a team.
