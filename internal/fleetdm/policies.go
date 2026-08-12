@@ -3,20 +3,7 @@ package fleetdm
 import (
 	"context"
 	"fmt"
-	"strconv"
 )
-
-// maxPolicyListPages caps the pagination loop in
-// ListPoliciesByInstallSoftwareTitleID as a defense-in-depth measure against a
-// Fleet API regression that fails to flip has_next_results to false. 1000
-// pages × policyListPerPage per page is well above any realistic team size.
-const maxPolicyListPages = 1000
-
-// policyListPerPage is the per_page hint used by ListPoliciesByInstallSoftwareTitleID
-// when paginating /global/policies and /fleets/{teamID}/policies. Chosen large
-// enough that most fleets fit in a single request, but bounded so a misbehaving
-// server can't deliver an unbounded response in one shot.
-const policyListPerPage = 100
 
 // PolicyAutomationSoftware echoes the install_software automation attached to a policy.
 type PolicyAutomationSoftware struct {
@@ -82,9 +69,14 @@ type Policy struct {
 }
 
 // ListPoliciesResponse represents the response from the list policies endpoint.
+//
+// There is deliberately no Meta field: unlike most Fleet list endpoints,
+// /global/policies and /fleets/{id}/policies return no meta envelope, so
+// has_next_results is not available to page on. Decoding one anyway would
+// invite another has_next_results-driven page walk, which silently truncates
+// here — see ListPolicies for the endpoint's actual pagination contract.
 type ListPoliciesResponse struct {
-	Policies []Policy        `json:"policies"`
-	Meta     *PaginationMeta `json:"meta,omitempty"`
+	Policies []Policy `json:"policies"`
 }
 
 // GetPolicyResponse represents the response from the get policy endpoint.
@@ -369,6 +361,23 @@ func (c *Client) DeletePolicy(ctx context.Context, id int, teamID *int) error {
 
 // ListPolicies retrieves policies (global or for a specific team), optionally
 // filtered by platform.
+//
+// This deliberately sends no pagination parameters, which is what returns the
+// complete set. Probed against a live Fleet 4.90 Premium server:
+//
+//   - GET /global/policies with no parameters returns every policy in the
+//     scope (48 of 48 on the probe rig). Fleet only applies a page size when
+//     per_page is supplied, so "no parameters" means "no limit".
+//   - Supplying per_page truncates to exactly that many
+//     (per_page=40 -> 40 of 48), and supplying page without per_page opts into
+//     Fleet's 20-item default (page=1 -> 20 items, starting at the 21st).
+//   - Neither /global/policies nor /fleets/{id}/policies returns a meta
+//     envelope at all, so has_next_results is unavailable here and cannot
+//     drive a page walk. A page past the end returns the empty object {}.
+//
+// Together those mean a page walk would be strictly worse than one plain
+// request: it would have to opt into a page size to page at all, and then has
+// no reliable signal telling it when to stop.
 func (c *Client) ListPolicies(ctx context.Context, opts ListPoliciesOptions) ([]Policy, error) {
 	endpoint := "/global/policies"
 	scope := "global policies"
@@ -394,41 +403,29 @@ func (c *Client) ListPolicies(ctx context.Context, opts ListPoliciesOptions) ([]
 // reference titles in the same scope, so callers should pass the same teamID
 // as the title being looked up.
 //
-// Pagination matters because the underlying /global/policies and
-// /fleets/{teamID}/policies endpoints default to per_page=20: without paging,
-// any team with more than 20 policies would silently miss matches and the
-// caller would then hit Fleet's "Policy automation uses this software" 409.
+// Completeness matters here: a missed match means the caller does not know a
+// policy still references the title, and it then hits Fleet's "Policy
+// automation uses this software" 409 on delete.
+//
+// It gets that completeness from ListPolicies, which sends no pagination
+// parameters and therefore returns the whole scope — see the endpoint contract
+// documented on ListPolicies. An earlier version of this function walked pages
+// with an explicit per_page and stopped on meta.has_next_results, which
+// silently capped results: these endpoints return no meta envelope at all, so
+// the walk always ended after the first page and saw only per_page policies.
 func (c *Client) ListPoliciesByInstallSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
-	endpoint := "/global/policies"
-	if isTeamScoped(teamID) {
-		endpoint = fmt.Sprintf("/fleets/%d/policies", *teamID)
+	policies, err := c.ListPolicies(ctx, ListPoliciesOptions{TeamID: teamID})
+	if err != nil {
+		return nil, err
 	}
 
 	var matches []Policy
-	for page := range maxPolicyListPages {
-		params := map[string]string{
-			"per_page": strconv.Itoa(policyListPerPage),
-		}
-		if page > 0 {
-			params["page"] = strconv.Itoa(page)
-		}
-
-		var resp ListPoliciesResponse
-		if err := c.Get(ctx, endpoint, params, &resp); err != nil {
-			return nil, fmt.Errorf("failed to list policies (page %d): %w", page, err)
-		}
-
-		for _, p := range resp.Policies {
-			if p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID {
-				matches = append(matches, p)
-			}
-		}
-
-		if resp.Meta == nil || !resp.Meta.HasNextResults {
-			return matches, nil
+	for _, p := range policies {
+		if p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID {
+			matches = append(matches, p)
 		}
 	}
-	return nil, fmt.Errorf("policy pagination exceeded %d pages — Fleet API may be returning has_next_results=true indefinitely", maxPolicyListPages)
+	return matches, nil
 }
 
 // SetPolicyInstallSoftwareTitleID switches a policy's install_software
@@ -480,43 +477,29 @@ func (c *Client) SetPolicyInstallSoftwareTitleID(ctx context.Context, policyID i
 // Note: for type=patch policies the SAME policy will typically appear in
 // both ListPoliciesByPatchSoftwareTitleID and ListPoliciesByInstallSoftwareTitleID.
 // Callers that combine the two lists should deduplicate by policy id.
+//
+// Like ListPoliciesByInstallSoftwareTitleID, this lists the whole scope through
+// ListPolicies rather than walking pages — see the endpoint contract documented
+// there.
 func (c *Client) ListPoliciesByPatchSoftwareTitleID(ctx context.Context, titleID int, teamID *int) ([]Policy, error) {
-	endpoint := "/global/policies"
-	if isTeamScoped(teamID) {
-		endpoint = fmt.Sprintf("/fleets/%d/policies", *teamID)
+	policies, err := c.ListPolicies(ctx, ListPoliciesOptions{TeamID: teamID})
+	if err != nil {
+		return nil, err
 	}
 
 	var matches []Policy
-	for page := range maxPolicyListPages {
-		params := map[string]string{
-			"per_page": strconv.Itoa(policyListPerPage),
-		}
-		if page > 0 {
-			params["page"] = strconv.Itoa(page)
-		}
-
-		var resp ListPoliciesResponse
-		if err := c.Get(ctx, endpoint, params, &resp); err != nil {
-			return nil, fmt.Errorf("failed to list policies (page %d): %w", page, err)
-		}
-
-		for _, p := range resp.Policies {
-			switch {
-			case p.PatchSoftware != nil && p.PatchSoftware.SoftwareTitleID == titleID:
-				matches = append(matches, p)
-			case p.Type == "patch" && p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID:
-				// Fallback for the case where Fleet's list response omits
-				// the `patch_software` block on a type=patch policy. The
-				// install_software echo is reliable in that scenario.
-				matches = append(matches, p)
-			}
-		}
-
-		if resp.Meta == nil || !resp.Meta.HasNextResults {
-			return matches, nil
+	for _, p := range policies {
+		switch {
+		case p.PatchSoftware != nil && p.PatchSoftware.SoftwareTitleID == titleID:
+			matches = append(matches, p)
+		case p.Type == "patch" && p.InstallSoftware != nil && p.InstallSoftware.SoftwareTitleID == titleID:
+			// Fallback for the case where Fleet's list response omits
+			// the `patch_software` block on a type=patch policy. The
+			// install_software echo is reliable in that scenario.
+			matches = append(matches, p)
 		}
 	}
-	return nil, fmt.Errorf("policy pagination exceeded %d pages — Fleet API may be returning has_next_results=true indefinitely", maxPolicyListPages)
+	return matches, nil
 }
 
 // SetPolicyPatchSoftwareTitleID switches a policy's patch_software
