@@ -879,7 +879,10 @@ func TestAccSoftwareTitleIconResource_rejectsNonPNG(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config:      testAccSoftwareTitleIconConfig(server.URL, badPath),
-				ExpectError: regexp.MustCompile(`is not a PNG file`),
+				// Whitespace-tolerant: Terraform line-wraps diagnostics at a
+				// point that depends on the tmp-dir path length, so a literal
+				// space between any two words can be a newline in CI.
+				ExpectError: regexp.MustCompile(`(?s)is\s+not\s+a\s+PNG\s+file`),
 			},
 		},
 	})
@@ -911,7 +914,7 @@ func TestAccSoftwareTitleIconResource_serverRejection(t *testing.T) {
 		Steps: []resource.TestStep{
 			{
 				Config:      testAccSoftwareTitleIconConfig(server.URL, iconPath),
-				ExpectError: regexp.MustCompile(`at least 120x120 pixels`),
+				ExpectError: regexp.MustCompile(`(?s)at\s+least\s+120x120\s+pixels`),
 			},
 		},
 	})
