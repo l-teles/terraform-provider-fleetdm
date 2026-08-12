@@ -40,5 +40,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local agent working directory: holds scratch worktrees containing full copies
+# of this repository, so a stray `git add -A` would otherwise publish them.
+.claude/
+
 # PR drafts (kept locally as a body source for `gh pr create --body-file`)
 PR_DESCRIPTION.md
