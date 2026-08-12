@@ -1,0 +1,73 @@
+---
+page_title: "{{.Type}} {{.Name}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+  {{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+{{ if .HasExample -}}
+## Example Usage
+
+{{ tffile .ExampleFile }}
+{{- end }}
+
+## Who owns `install_script` and `uninstall_script`
+
+A Fleet Maintained App's install and uninstall scripts are maintained upstream:
+Fleet generates them and keeps them current as it publishes new versions of the
+app. Ownership of those two attributes therefore follows the configuration.
+
+**Omitted from the configuration — Fleet owns the script.** Terraform stores no
+copy of it, reports no drift when Fleet changes it, and never sends the field
+when updating the title for some other reason. Upstream script updates reach
+your hosts on their own.
+
+Be deliberate about this: Terraform is not a control over a script it does not
+own. A change made through the Fleet UI or API is neither reported by
+`terraform plan` nor reverted by `terraform apply`. Fleet's own activity log is
+the audit trail for those changes.
+
+**Declared in the configuration — Terraform owns the script.** The configured
+value is authoritative: it is applied on create, an edit made through the Fleet
+UI is reported as drift and reverted on the next apply, and Fleet's upstream
+updates to that script no longer apply.
+
+Install scripts run with administrative privilege on every targeted host, so
+declaring them is the safer default for titles that matter to your security
+posture — an agent, an EDR sensor, anything privileged. Declaring is what makes
+an unauthorized change both visible and self-correcting. The trade is that you
+take on keeping the script working across new versions of the app, which is
+exactly what Fleet does for you otherwise.
+
+**Removing the attribute hands ownership back to Fleet** without clearing the
+script that is in place. The update omits the field rather than sending an empty
+one, so the last-applied script keeps working until Fleet next regenerates it.
+
+Setting an attribute to `""` is not a way to hand a script back — remove the
+attribute instead. Fleet rejects an empty script for package types that require
+one (for example a `.zip` installer answers `Install script is required for .zip
+packages`).
+
+After `terraform import` both attributes start null, so the imported title's
+scripts stay with Fleet until you declare them.
+
+### Upgrading from an earlier provider version
+
+These two attributes used to be `Computed`, so Fleet's script was mirrored into
+state even when the configuration did not mention it. If you have Fleet
+Maintained Apps in state from an earlier version, the first plan after upgrading
+shows a one-time `install_script`/`uninstall_script` change to `null` for every
+title whose configuration omits them. That diff only drops Terraform's copy of
+the value: applying it sends no script to Fleet and leaves the script on the
+title untouched. Titles that declare the attributes are unaffected.
+
+One consequence to check before upgrading: a reference such as
+`fleetdm_software_fleet_maintained_app.example.install_script` now resolves to
+`null` while the attribute is undeclared. Read the script from the catalog
+instead — `data.fleetdm_fleet_maintained_app.example.install_script`.
+
+{{ .SchemaMarkdown | trimspace }}
