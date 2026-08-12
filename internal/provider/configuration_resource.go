@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -13,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -70,6 +72,9 @@ type ConfigurationResourceModel struct {
 	// Fleet Desktop
 	TransparencyURL types.String `tfsdk:"transparency_url"`
 
+	// MDM (global / "No team" scope)
+	HostNameTemplate types.String `tfsdk:"host_name_template"`
+
 	// Agent Options (JSON)
 	AgentOptions types.String `tfsdk:"agent_options"`
 }
@@ -103,6 +108,10 @@ resource "fleetdm_configuration" "main" {
 
   enable_host_users         = true
   enable_software_inventory = true
+
+  # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
+  # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
+  host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
 }
 ` + "```" + `
 `,
@@ -229,6 +238,23 @@ resource "fleetdm_configuration" "main" {
 				Computed:            true,
 				MarkdownDescription: "URL shown in Fleet Desktop transparency modal.",
 			},
+			// MDM (global / "No team" scope).
+			//
+			// Deliberately Optional without Computed, unlike the attributes above:
+			// this is the opt-in convention used by the fleetdm_fleet mdm block, and
+			// it keeps a Fleet instance whose template is managed elsewhere (the
+			// Fleet UI, or not at all) from being pulled into this resource's state
+			// and then written back on every apply. Left unconfigured, the attribute
+			// stays null and the provider never sends mdm.name_template at all.
+			"host_name_template": schema.StringAttribute{
+				Optional: true,
+				Validators: []validator.String{
+					hostNameTemplateNotPadded{},
+				},
+				MarkdownDescription: "Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the \"No team\" scope), " +
+					"for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it. " +
+					"The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.",
+			},
 			// Agent Options
 			"agent_options": schema.StringAttribute{
 				Optional:            true,
@@ -338,6 +364,13 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 
 // Delete removes the resource from Terraform state.
 // Note: Fleet configuration cannot be deleted, only reset to defaults.
+//
+// This is a no-op for every attribute, host_name_template included: destroying
+// the resource abandons the settings rather than reverting them, the same way it
+// leaves org_name in place. Clearing the host name template on destroy would
+// single it out for a behaviour the rest of the resource does not have, and it
+// would silently drop the naming policy for every "No team" host. Set the
+// attribute to "" to clear it explicitly.
 func (r *ConfigurationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	// Configuration cannot be deleted - it always exists
 	// Just remove from state
@@ -347,6 +380,56 @@ func (r *ConfigurationResource) Delete(ctx context.Context, req resource.DeleteR
 // ImportState imports an existing resource into Terraform state.
 func (r *ConfigurationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// hostNameTemplateNotPadded rejects a host name template with leading or
+// trailing whitespace.
+//
+// Fleet does not reject such a template — it silently stores the trimmed form.
+// That is a value rewrite rather than a validation failure, and it breaks
+// Terraform's plan/apply contract: the config would say "  x  " while the value
+// read back is "x", which Terraform reports as "provider produced inconsistent
+// result after apply" and which would otherwise show up as a permanent diff.
+// Failing at plan time with an explanation is clearer than silently trimming the
+// practitioner's input behind their back.
+//
+// Only this normalization is mirrored client-side. Fleet's actual template
+// validation (the supported-variable allow-list, the 255-character and 63-byte
+// limits, control characters, and whether a referenced $FLEET_SECRET_* variable
+// exists) is left server-side on purpose: the allow-list grows between Fleet
+// releases, so a copy here would reject templates a newer Fleet accepts, and the
+// secret-existence check needs a datastore lookup that is impossible at plan
+// time. Fleet returns a precise 422 for each of those cases.
+type hostNameTemplateNotPadded struct{}
+
+func (v hostNameTemplateNotPadded) Description(context.Context) string {
+	return "must not have leading or trailing whitespace"
+}
+
+func (v hostNameTemplateNotPadded) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v hostNameTemplateNotPadded) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	tmpl := req.ConfigValue.ValueString()
+	trimmed := strings.TrimSpace(tmpl)
+	if tmpl == trimmed {
+		return
+	}
+	detail := fmt.Sprintf(
+		"Fleet trims a host name template before storing it, so %q would be saved as %q and Terraform would report the difference on every plan. Write it as %q.",
+		tmpl, trimmed, trimmed,
+	)
+	if trimmed == "" {
+		detail = fmt.Sprintf(
+			"Fleet trims a host name template before storing it, so %q is empty once trimmed and Fleet rejects it. Use \"\" to clear the template.",
+			tmpl,
+		)
+	}
+	resp.Diagnostics.AddAttributeError(req.Path, "Padded Host Name Template", detail)
 }
 
 // logoMirrorPlanModifier keeps a deprecated org logo alias and its canonical
@@ -479,6 +562,14 @@ func (r *ConfigurationResource) buildUpdateRequest(data *ConfigurationResourceMo
 		}
 	}
 
+	// Only send mdm.name_template when the practitioner manages it. Omitting the
+	// whole mdm object leaves every MDM setting — including a template set from
+	// the Fleet UI — untouched, because Fleet merges the request onto the stored
+	// config. An explicit "" is still sent: that is how the template is cleared.
+	if tmpl := optionalStringPtr(data.HostNameTemplate); tmpl != nil {
+		req.MDM = &fleetdm.MDMSettingsUpdate{NameTemplate: tmpl}
+	}
+
 	// Handle agent options if provided
 	if !data.AgentOptions.IsNull() && !data.AgentOptions.IsUnknown() && data.AgentOptions.ValueString() != "" {
 		agentOptionsJSON := json.RawMessage(data.AgentOptions.ValueString())
@@ -539,6 +630,16 @@ func (r *ConfigurationResource) updateModelFromConfig(data *ConfigurationResourc
 
 	// Fleet Desktop
 	data.TransparencyURL = types.StringValue(config.FleetDesktop.TransparencyURL)
+
+	// MDM. host_name_template is Optional without Computed, so it must stay null
+	// when it was never configured — Fleet reports an unset template as "", and
+	// writing that into state would make state disagree with config. A response
+	// without an mdm object likewise leaves the prior value alone.
+	var nameTemplate *string
+	if config.MDM != nil {
+		nameTemplate = &config.MDM.NameTemplate
+	}
+	data.HostNameTemplate = refreshOptionalString(data.HostNameTemplate, nameTemplate)
 
 	// Agent Options
 	if config.AgentOptions != nil {

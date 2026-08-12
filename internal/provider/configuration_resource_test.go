@@ -213,3 +213,92 @@ resource "fleetdm_configuration" "test" {
 		},
 	})
 }
+
+// TestAccConfigurationResource_hostNameTemplate exercises the global ("No team")
+// host name template: setting it, changing it, and clearing it with "".
+//
+// The final step must leave the template cleared. This is a singleton resource
+// on a shared Fleet instance and Delete deliberately does not revert anything,
+// so a template left behind would apply to every "No team" host for the rest of
+// the run.
+func TestAccConfigurationResource_hostNameTemplate(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccConfigurationResourceConfigHostNameTemplate(
+					"Host Name Template Org", `tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_configuration.test", "host_name_template",
+						"tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"),
+				),
+			},
+			// Change the template to a different supported variable.
+			{
+				Config: testAccConfigurationResourceConfigHostNameTemplate(
+					"Host Name Template Org", `tf-acc-$FLEET_VAR_HOST_UUID`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_configuration.test", "host_name_template",
+						"tf-acc-$FLEET_VAR_HOST_UUID"),
+				),
+			},
+			// Clear it, which also restores the shared instance for other tests.
+			{
+				Config: testAccConfigurationResourceConfigHostNameTemplate("Host Name Template Org", ""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_configuration.test", "host_name_template", ""),
+				),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationResource_hostNameTemplateUnmanaged verifies the opt-in
+// convention: a configuration that never mentions host_name_template leaves the
+// attribute null rather than absorbing Fleet's value into state.
+func TestAccConfigurationResource_hostNameTemplateUnmanaged(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + `
+resource "fleetdm_configuration" "test" {
+  org_name = "Unmanaged Template Org"
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("fleetdm_configuration.test", "host_name_template"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationResource_hostNameTemplatePadded checks that a template with
+// surrounding whitespace is rejected at plan time. Fleet would silently store the
+// trimmed form, which Terraform reports as an inconsistent result after apply.
+func TestAccConfigurationResource_hostNameTemplatePadded(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccConfigurationResourceConfigHostNameTemplate(
+					"Padded Template Org", `  tf-acc-padded  `),
+				// Diagnostics are line-wrapped, so match across arbitrary whitespace.
+				ExpectError: regexp.MustCompile(`Padded\s+Host\s+Name\s+Template`),
+			},
+		},
+	})
+}
+
+func testAccConfigurationResourceConfigHostNameTemplate(orgName, template string) string {
+	return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_configuration" "test" {
+  org_name           = %[1]q
+  host_name_template = %[2]q
+}
+`, orgName, template)
+}

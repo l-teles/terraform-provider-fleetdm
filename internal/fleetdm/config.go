@@ -134,6 +134,11 @@ type MDMConfig struct {
 	// POST /software/web_apps sit behind Fleet's VerifyAndroidMDM middleware
 	// and answer 400 "Android MDM isn't turned on." when this is false.
 	AndroidEnabledAndConfigured bool `json:"android_enabled_and_configured"`
+
+	// NameTemplate is the "No team" (global) host name template Fleet applies to
+	// MDM-enrolled Apple hosts. It is the global counterpart of the per-team
+	// TeamMDMSettings.NameTemplate. An unset template reads back as "".
+	NameTemplate string `json:"name_template"`
 }
 
 // AppConfig represents the Fleet application configuration
@@ -224,6 +229,18 @@ type OrgInfoUpdate struct {
 	ContactURL                string  `json:"contact_url"`
 }
 
+// MDMSettingsUpdate is the partial "mdm" object sent in PATCH /config. Fleet
+// unmarshals the request body onto a copy of the stored AppConfig, so any mdm
+// key left out keeps its current server-side value; only the fields present here
+// are ever touched.
+//
+// NameTemplate is a pointer so an unmanaged template is omitted entirely
+// (leaving Fleet's value alone) while a pointer to "" is still serialized, which
+// is how the template is cleared.
+type MDMSettingsUpdate struct {
+	NameTemplate *string `json:"name_template,omitempty"`
+}
+
 // UpdateAppConfigRequest represents a partial app config update
 type UpdateAppConfigRequest struct {
 	OrgInfo                *OrgInfoUpdate          `json:"org_info,omitempty"`
@@ -233,6 +250,7 @@ type UpdateAppConfigRequest struct {
 	Features               *Features               `json:"features,omitempty"`
 	FleetDesktop           *FleetDesktopSettings   `json:"fleet_desktop,omitempty"`
 	WebhookSettings        *WebhookSettings        `json:"webhook_settings,omitempty"`
+	MDM                    *MDMSettingsUpdate      `json:"mdm,omitempty"`
 	AgentOptions           *json.RawMessage        `json:"agent_options,omitempty"`
 }
 
