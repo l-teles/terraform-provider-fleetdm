@@ -42,7 +42,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_configuration`         | Manage global Fleet configuration                          |
 | `fleetdm_configuration_profile` | Manage MDM configuration profiles (Premium)                |
 | `fleetdm_setup_experience`      | Manage macOS setup experience settings (Premium)           |
-| `fleetdm_certificate_authority` | Manage certificate authorities for issuing client certificates |
+| `fleetdm_certificate_authority` | Manage certificate authorities for issuing client certificates (Premium) |
 | `fleetdm_certificate`           | Manage certificate templates binding a CA to a subject name (Premium, Fleet 4.90+) |
 | `fleetdm_team` *(deprecated)*   | Deprecated alias for `fleetdm_fleet`                       |
 | `fleetdm_query` *(deprecated)*  | Deprecated alias for `fleetdm_report`                      |

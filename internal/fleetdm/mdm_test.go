@@ -871,6 +871,23 @@ func TestClient_GetConfigProfileContent_Error(t *testing.T) {
 	}
 }
 
+// TestClient_GetConfigProfileContent_RejectsOversizeResponse pins that the
+// raw content path, which bypasses doRequest, still applies the response cap.
+func TestClient_GetConfigProfileContent_RejectsOversizeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		streamOversizeBody(w, maxResponseBytes+1)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+
+	_, err := client.GetConfigProfileContent(context.Background(), "p-oversize")
+	if err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("expected a body-limit error, got: %v", err)
+	}
+}
+
 func TestProfileIdentifierFromContent(t *testing.T) {
 	mobileconfig := `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

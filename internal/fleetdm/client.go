@@ -164,14 +164,14 @@ func newAPIError(statusCode int, respBody []byte) *APIError {
 // misbehaving Fleet — or anything else answering on the configured server
 // address — can drive the provider to exhaust memory during a plan or apply.
 //
-// The cap only has to clear the largest legitimate JSON envelope Fleet
-// produces. The biggest ones in practice are full host, software and activity
-// listings, which run to a few MB even on large deployments; script and
-// configuration profile *content* is fetched through dedicated helpers
-// (GetScriptContent, GetConfigProfileContent) that do not go through
-// doRequest, so their sizes are not a factor here. 100MiB leaves several
-// orders of magnitude of headroom, which is why exceeding it is treated as a
-// broken server rather than a limit worth tuning.
+// The cap only has to clear the largest legitimate response Fleet produces.
+// The biggest JSON envelopes in practice are full host, software and activity
+// listings, which run to a few MB even on large deployments. The raw-content
+// helpers that bypass doRequest (GetScriptContent, GetConfigProfileContent)
+// apply the same cap through readResponseBody, and Fleet limits script and
+// profile content server-side far below it. 100MiB leaves several orders of
+// magnitude of headroom, which is why exceeding it is treated as a broken
+// server rather than a limit worth tuning.
 const maxResponseBytes = 100 << 20
 
 // readResponseBody buffers a response body up to maxResponseBytes, returning
@@ -226,7 +226,10 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body in
 
 	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
-		return err
+		// Keep the status and endpoint: an oversize body aborts before
+		// newAPIError runs, and a bare limit message gives the practitioner
+		// nothing to locate the failing call with.
+		return fmt.Errorf("HTTP %d from %s %s: %w", resp.StatusCode, method, endpoint, err)
 	}
 
 	if resp.StatusCode >= 400 {

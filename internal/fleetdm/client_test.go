@@ -470,6 +470,23 @@ func TestReadResponseBodyLimit(t *testing.T) {
 //
 // The bodies are streamed and the success case is read with a nil result, so no
 // case holds more than one copy of the payload in memory.
+// streamOversizeBody writes size bytes in fixed chunks so neither side
+// allocates the whole payload. Shared by the oversize tests for doRequest and
+// for the raw-content helpers that bypass it.
+func streamOversizeBody(w http.ResponseWriter, size int) {
+	chunk := make([]byte, 1<<20)
+	for i := range chunk {
+		chunk[i] = 'a'
+	}
+	for remaining := size; remaining > 0; {
+		n := min(remaining, len(chunk))
+		if _, err := w.Write(chunk[:n]); err != nil {
+			return
+		}
+		remaining -= n
+	}
+}
+
 func TestClient_RejectsOversizeResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -482,19 +499,7 @@ func TestClient_RejectsOversizeResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				// Stream in chunks so the server does not allocate the
-				// whole payload either.
-				chunk := make([]byte, 1<<20)
-				for i := range chunk {
-					chunk[i] = 'a'
-				}
-				for remaining := tc.size; remaining > 0; {
-					n := min(remaining, len(chunk))
-					if _, err := w.Write(chunk[:n]); err != nil {
-						return
-					}
-					remaining -= n
-				}
+				streamOversizeBody(w, tc.size)
 			}))
 			defer server.Close()
 

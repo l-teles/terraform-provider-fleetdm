@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 )
@@ -121,9 +120,9 @@ func (c *Client) GetScriptContent(ctx context.Context, id int64) (string, error)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
+		return "", fmt.Errorf("failed to get script content %d: %w", id, err)
 	}
 
 	if resp.StatusCode >= 400 {

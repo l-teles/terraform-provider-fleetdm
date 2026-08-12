@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -301,6 +302,26 @@ func TestClient_GetScriptContent(t *testing.T) {
 	}
 	if content != wantContent {
 		t.Errorf("expected content %q, got: %q", wantContent, content)
+	}
+}
+
+// TestClient_GetScriptContent_RejectsOversizeResponse pins that the raw
+// content path, which bypasses doRequest, still applies the response cap.
+func TestClient_GetScriptContent_RejectsOversizeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		streamOversizeBody(w, maxResponseBytes+1)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	_, err = client.GetScriptContent(context.Background(), 7)
+	if err == nil || !strings.Contains(err.Error(), "byte limit") {
+		t.Fatalf("expected a body-limit error, got: %v", err)
 	}
 }
 
