@@ -906,7 +906,7 @@ func (r *CertificateAuthorityResource) Read(ctx context.Context, req resource.Re
 		return
 	}
 
-	ca, err := r.client.GetCertificateAuthority(ctx, int(id))
+	ca, err := r.client.GetCertificateAuthority(ctx, id)
 	if err != nil {
 		if isNotFound(err) {
 			tflog.Info(ctx, "Certificate authority not found, removing from state", map[string]interface{}{
@@ -1069,7 +1069,7 @@ func (r *CertificateAuthorityResource) Update(ctx context.Context, req resource.
 		"type": payload.Type(),
 	})
 
-	if err := r.client.UpdateCertificateAuthority(ctx, int(id), payload); err != nil {
+	if err := r.client.UpdateCertificateAuthority(ctx, id, payload); err != nil {
 		resp.Diagnostics.AddError(
 			"Error Updating Certificate Authority",
 			"Could not update certificate authority: "+err.Error(),
@@ -1107,7 +1107,7 @@ func (r *CertificateAuthorityResource) Delete(ctx context.Context, req resource.
 		"id": data.ID.ValueString(),
 	})
 
-	if err := r.client.DeleteCertificateAuthority(ctx, int(id)); err != nil {
+	if err := r.client.DeleteCertificateAuthority(ctx, id); err != nil {
 		if isNotFound(err) {
 			return
 		}
@@ -1138,7 +1138,7 @@ func (r *CertificateAuthorityResource) ImportState(ctx context.Context, req reso
 		return
 	}
 
-	ca, err := r.client.GetCertificateAuthority(ctx, int(id))
+	ca, err := r.client.GetCertificateAuthority(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error Importing Certificate Authority",

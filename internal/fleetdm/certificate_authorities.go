@@ -30,7 +30,7 @@ const NDESCAName = "NDES"
 // CertificateAuthoritySummary is a certificate authority as returned by
 // GET /certificate_authorities. The list endpoint returns identity only.
 type CertificateAuthoritySummary struct {
-	ID   int    `json:"id"`
+	ID   int64    `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
@@ -40,7 +40,7 @@ type CertificateAuthoritySummary struct {
 // fields relevant to the CA's type, with every secret replaced by
 // MaskedCASecret. Fields absent for a given type decode as zero values.
 type CertificateAuthority struct {
-	ID   int    `json:"id"`
+	ID   int64    `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 
@@ -231,7 +231,7 @@ func (c *Client) ListCertificateAuthorities(ctx context.Context) ([]CertificateA
 
 // GetCertificateAuthority retrieves a single certificate authority. Every
 // secret in the response is masked as MaskedCASecret.
-func (c *Client) GetCertificateAuthority(ctx context.Context, id int) (*CertificateAuthority, error) {
+func (c *Client) GetCertificateAuthority(ctx context.Context, id int64) (*CertificateAuthority, error) {
 	var ca CertificateAuthority
 	if err := c.Get(ctx, fmt.Sprintf("/certificate_authorities/%d", id), nil, &ca); err != nil {
 		return nil, fmt.Errorf("failed to get certificate authority %d: %w", id, err)
@@ -255,7 +255,7 @@ func (c *Client) CreateCertificateAuthority(ctx context.Context, payload *Certif
 
 // UpdateCertificateAuthority updates a certificate authority in place. The
 // payload's type must match the stored type; Fleet rejects a type change.
-func (c *Client) UpdateCertificateAuthority(ctx context.Context, id int, payload *CertificateAuthorityPayload) error {
+func (c *Client) UpdateCertificateAuthority(ctx context.Context, id int64, payload *CertificateAuthorityPayload) error {
 	if payload == nil || payload.Type() == "" {
 		return fmt.Errorf("failed to update certificate authority %d: no certificate authority configuration was provided", id)
 	}
@@ -267,7 +267,7 @@ func (c *Client) UpdateCertificateAuthority(ctx context.Context, id int, payload
 
 // DeleteCertificateAuthority deletes a certificate authority. Fleet returns a
 // conflict when certificate templates still reference it.
-func (c *Client) DeleteCertificateAuthority(ctx context.Context, id int) error {
+func (c *Client) DeleteCertificateAuthority(ctx context.Context, id int64) error {
 	if err := c.Delete(ctx, fmt.Sprintf("/certificate_authorities/%d", id), nil, nil); err != nil {
 		return fmt.Errorf("failed to delete certificate authority %d: %w", id, err)
 	}
