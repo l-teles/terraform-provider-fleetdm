@@ -314,3 +314,110 @@ func TestUpdateAppConfig(t *testing.T) {
 		t.Errorf("Expected org name 'Updated Org', got '%s'", config.OrgInfo.OrgName)
 	}
 }
+
+// TestUpdateAppConfigHostNameTemplate pins the wire shape of the global ("No
+// team") host name template in PATCH /config. Fleet merges the request body onto
+// the stored config, so an omitted mdm object must mean "leave every MDM setting
+// alone", while an explicitly empty template must still be serialized — that
+// empty string is how the template is cleared.
+func TestUpdateAppConfigHostNameTemplate(t *testing.T) {
+	tests := []struct {
+		name string
+		mdm  *MDMSettingsUpdate
+		// want is the expected "mdm" fragment of the request body, or "" when the
+		// key must be absent entirely.
+		want string
+	}{
+		{
+			name: "unmanaged template omits the mdm object",
+			mdm:  nil,
+			want: "",
+		},
+		{
+			name: "template is sent verbatim",
+			mdm:  &MDMSettingsUpdate{NameTemplate: strPtr("host-$FLEET_VAR_HOST_HARDWARE_SERIAL")},
+			want: `{"name_template":"host-$FLEET_VAR_HOST_HARDWARE_SERIAL"}`,
+		},
+		{
+			// Clearing the template requires an explicit empty string; a nil pointer
+			// would omit the key and leave Fleet's current template in place.
+			name: "empty string is sent, not omitted",
+			mdm:  &MDMSettingsUpdate{NameTemplate: strPtr("")},
+			want: `{"name_template":""}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/fleet/config" {
+					t.Errorf("expected PATCH /api/v1/fleet/config, got %s %s", r.Method, r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decoding request body: %v", err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(AppConfig{}); err != nil {
+					t.Errorf("encoding response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-token", VerifyTLS: false})
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+
+			if _, err := client.UpdateAppConfig(context.Background(), &UpdateAppConfigRequest{
+				OrgInfo: &OrgInfoUpdate{OrgName: "Org"},
+				MDM:     tt.mdm,
+			}); err != nil {
+				t.Fatalf("UpdateAppConfig failed: %v", err)
+			}
+
+			raw, present := body["mdm"]
+			if tt.want == "" {
+				if present {
+					t.Errorf("expected no mdm key in the request body, got %s", raw)
+				}
+				return
+			}
+			if !present {
+				t.Fatal("expected an mdm key in the request body, none sent")
+			}
+			if string(raw) != tt.want {
+				t.Errorf("mdm fragment = %s, want %s", raw, tt.want)
+			}
+		})
+	}
+}
+
+// TestGetAppConfigHostNameTemplate verifies the global host name template is
+// read from GET /config at mdm.name_template.
+func TestGetAppConfigHostNameTemplate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"mdm":{"name_template":"host-$FLEET_VAR_HOST_UUID","enabled_and_configured":true}}`)); err != nil {
+			t.Errorf("writing response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-token", VerifyTLS: false})
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+
+	config, err := client.GetAppConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetAppConfig failed: %v", err)
+	}
+	if config.MDM == nil {
+		t.Fatal("expected an MDM section in the parsed config")
+	}
+	if got, want := config.MDM.NameTemplate, "host-$FLEET_VAR_HOST_UUID"; got != want {
+		t.Errorf("NameTemplate = %q, want %q", got, want)
+	}
+}
