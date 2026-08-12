@@ -1463,6 +1463,11 @@ func TestClient_ListPoliciesByPatchSoftwareTitleID_Global(t *testing.T) {
 		if r.URL.Path != "/api/v1/fleet/global/policies" {
 			t.Errorf("expected global policies path, got: %s", r.URL.Path)
 		}
+		// The patch helper shares the whole-scope contract: no pagination
+		// parameters, so Fleet returns every policy.
+		if r.URL.Query().Has("page") || r.URL.Query().Has("per_page") {
+			t.Errorf("expected no pagination params, got: %s", r.URL.RawQuery)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(ListPoliciesResponse{
 			Policies: []Policy{

@@ -32,7 +32,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_user`                  | Manage Fleet users and permissions                         |
 | `fleetdm_custom_host_vital`     | Manage named slots for host data Fleet does not collect     |
 | `fleetdm_custom_variable`       | Manage encrypted secrets substituted into scripts and profiles |
-| `fleetdm_software_custom_package`       | Upload custom installer packages — `.pkg`, `.msi`, `.deb`, `.rpm`, `.exe` (Premium) |
+| `fleetdm_software_custom_package`       | Upload custom installer packages (`.pkg`, `.msi`, `.exe`, `.zip`, `.deb`, `.rpm`, `.tar.gz`, `.ipa`) and script installers (`.sh`, `.py`, `.ps1`) (Premium) |
 | `fleetdm_software_app_store_app`        | Manage Apple Volume Purchase Program (App Store) apps (Premium)                     |
 | `fleetdm_software_fleet_maintained_app` | Add Fleet-curated apps to a team (Premium)                                          |
 | `fleetdm_software_web_app`             | Create Android web apps (web clips) (Premium, requires Android MDM)                 |
