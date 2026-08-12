@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages a FleetDM user.
   Users can have either a global role or team-specific roles. Use global_role for global access or teams for team-based access.
+  ~> Secrets are written to Terraform state. Both password and the API token Fleet mints for API-only users are stored in the state file in cleartext, as Terraform state has no notion of write-only values. Anyone who can read the state file can authenticate as these users. Use a remote backend with encryption at rest and restricted access, never commit state to version control, and prefer passing passwords in through variables sourced from a secrets manager rather than literals in configuration.
   Example Usage
   Global Admin User
   
@@ -16,6 +17,8 @@ description: |-
   }
   
   API-Only User
+  Fleet mints an API token for API-only users and returns it only once, at
+  creation. It is exported as the sensitive token attribute.
   
   resource "fleetdm_user" "api_user" {
     name        = "API Service Account"
@@ -23,6 +26,36 @@ description: |-
     password    = "SecurePassword123!"
     global_role = "maintainer"
     api_only    = true
+  }
+  
+  output "api_user_token" {
+    value     = fleetdm_user.api_user.token
+    sensitive = true
+  }
+  
+  API-Only User Restricted to Specific Endpoints (Fleet Premium)
+  api_endpoints narrows an API-only user to the listed endpoints; calls to
+  anything else are rejected with a 403. Omit it to leave the user able to reach
+  every endpoint its role allows. Use the fleetdm_rest_api_endpoints data
+  source to discover valid method/path pairs.
+  
+  resource "fleetdm_user" "host_reader" {
+    name        = "Host Reader"
+    email       = "host-reader@example.com"
+    password    = "SecurePassword123!"
+    global_role = "observer"
+    api_only    = true
+  
+    api_endpoints = [
+      {
+        method = "GET"
+        path   = "/api/v1/fleet/hosts"
+      },
+      {
+        method = "GET"
+        path   = "/api/v1/fleet/hosts/:id"
+      },
+    ]
   }
   
   Team-Based User (Fleet Premium)
@@ -56,6 +89,8 @@ Manages a FleetDM user.
 
 Users can have either a global role or team-specific roles. Use `global_role` for global access or `teams` for team-based access.
 
+~> **Secrets are written to Terraform state.** Both `password` and the API `token` Fleet mints for API-only users are stored in the state file in cleartext, as Terraform state has no notion of write-only values. Anyone who can read the state file can authenticate as these users. Use a remote backend with encryption at rest and restricted access, never commit state to version control, and prefer passing passwords in through variables sourced from a secrets manager rather than literals in configuration.
+
 ## Example Usage
 
 ### Global Admin User
@@ -71,6 +106,9 @@ resource "fleetdm_user" "admin" {
 
 ### API-Only User
 
+Fleet mints an API token for API-only users and returns it only once, at
+creation. It is exported as the sensitive `token` attribute.
+
 ```hcl
 resource "fleetdm_user" "api_user" {
   name        = "API Service Account"
@@ -78,6 +116,39 @@ resource "fleetdm_user" "api_user" {
   password    = "SecurePassword123!"
   global_role = "maintainer"
   api_only    = true
+}
+
+output "api_user_token" {
+  value     = fleetdm_user.api_user.token
+  sensitive = true
+}
+```
+
+### API-Only User Restricted to Specific Endpoints (Fleet Premium)
+
+`api_endpoints` narrows an API-only user to the listed endpoints; calls to
+anything else are rejected with a 403. Omit it to leave the user able to reach
+every endpoint its role allows. Use the `fleetdm_rest_api_endpoints` data
+source to discover valid method/path pairs.
+
+```hcl
+resource "fleetdm_user" "host_reader" {
+  name        = "Host Reader"
+  email       = "host-reader@example.com"
+  password    = "SecurePassword123!"
+  global_role = "observer"
+  api_only    = true
+
+  api_endpoints = [
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts"
+    },
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts/:id"
+    },
+  ]
 }
 ```
 
@@ -148,6 +219,29 @@ resource "fleetdm_user" "api_user" {
   api_only    = true
 }
 
+# Create an API-only user restricted to specific REST API endpoints.
+# Calls to anything outside the scope are rejected with a 403. Omit
+# api_endpoints to leave the user able to reach every endpoint its role allows.
+# Fleet Premium only, and requires Fleet 4.90 or later.
+resource "fleetdm_user" "host_reader" {
+  name        = "Host Inventory Reader"
+  email       = "host-reader@example.com"
+  password    = var.host_reader_password
+  global_role = "observer"
+  api_only    = true
+
+  api_endpoints = [
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts"
+    },
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts/:id"
+    },
+  ]
+}
+
 # Create a team-specific user (no global role, assigned to teams)
 resource "fleetdm_user" "team_admin" {
   name     = "Engineering Team Admin"
@@ -192,6 +286,11 @@ variable "team_admin_password" {
   sensitive = true
 }
 
+variable "host_reader_password" {
+  type      = string
+  sensitive = true
+}
+
 # Output user IDs
 output "admin_user_id" {
   description = "ID of the admin user"
@@ -201,6 +300,15 @@ output "admin_user_id" {
 output "api_user_id" {
   description = "ID of the API automation user"
   value       = fleetdm_user.api_user.id
+}
+
+# Fleet mints an API token for API-only users and returns it only once, when
+# the user is created. It is stored in Terraform state and cannot be recovered
+# by re-reading the user.
+output "api_user_token" {
+  description = "API token of the API automation user"
+  value       = fleetdm_user.api_user.token
+  sensitive   = true
 }
 ```
 
@@ -214,6 +322,7 @@ output "api_user_id" {
 
 ### Optional
 
+- `api_endpoints` (Attributes Set) Restricts an API-only user to this set of REST API endpoints. Only valid when `api_only` is `true`. Omit the attribute to leave the user unrestricted (able to call every endpoint its role allows); removing it later restores that unrestricted access. Each method/path pair must match an entry of the `fleetdm_rest_api_endpoints` catalog. Fleet Premium only, and requires Fleet 4.90 or later. (see [below for nested schema](#nestedatt--api_endpoints))
 - `api_only` (Boolean) Whether this user is API-only (cannot use web UI). Immutable after create — Fleet's user-update endpoint rejects `api_only`, so changing this value forces the user to be destroyed and recreated.
 - `force_password_reset` (Boolean) Whether the user is required to reset their password on next login.
 - `global_role` (String) The global role assigned to the user. Options: `admin`, `maintainer`, `observer`, `observer_plus`, `gitops`. Mutually exclusive with `teams`.
@@ -226,6 +335,16 @@ output "api_user_id" {
 
 - `gravatar_url` (String) The Gravatar URL for the user.
 - `id` (Number) The unique identifier of the user.
+- `token` (String, Sensitive) The API token Fleet mints for API-only, non-SSO users. Fleet returns it once, when the user is created, and never again — it is therefore stored in Terraform state and cannot be recovered by re-reading the user. Null for every other user, and for users adopted through `terraform import`.
+
+<a id="nestedatt--api_endpoints"></a>
+### Nested Schema for `api_endpoints`
+
+Required:
+
+- `method` (String) The HTTP method of the endpoint. Options: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`.
+- `path` (String) The route template of the endpoint, with `:name` placeholders for path parameters, for example `/api/v1/fleet/hosts/:id`.
+
 
 <a id="nestedatt--teams"></a>
 ### Nested Schema for `teams`
