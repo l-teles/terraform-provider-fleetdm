@@ -31,13 +31,15 @@ type LabelsDataSourceModel struct {
 
 // LabelModel describes a single label in the list.
 type LabelModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Description types.String `tfsdk:"description"`
-	Query       types.String `tfsdk:"query"`
-	Platform    types.String `tfsdk:"platform"`
-	LabelType   types.String `tfsdk:"label_type"`
-	HostCount   types.Int64  `tfsdk:"host_count"`
+	ID                  types.String `tfsdk:"id"`
+	Name                types.String `tfsdk:"name"`
+	Description         types.String `tfsdk:"description"`
+	Query               types.String `tfsdk:"query"`
+	Criteria            types.Object `tfsdk:"criteria"`
+	Platform            types.String `tfsdk:"platform"`
+	LabelType           types.String `tfsdk:"label_type"`
+	LabelMembershipType types.String `tfsdk:"label_membership_type"`
+	HostCount           types.Int64  `tfsdk:"host_count"`
 }
 
 func (d *LabelsDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -46,7 +48,10 @@ func (d *LabelsDataSource) Metadata(ctx context.Context, req datasource.Metadata
 
 func (d *LabelsDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Use this data source to retrieve information about all FleetDM labels.",
+		MarkdownDescription: "Use this data source to retrieve information about all FleetDM labels.\n\n" +
+			"Fleet's list endpoint is a full echo of each label: it reports `label_membership_type` and the complete " +
+			"`criteria` block for host vitals labels, so this data source needs no per-label lookup and every " +
+			"attribute here matches what the `fleetdm_label` data source returns for the same label.",
 
 		Attributes: map[string]schema.Attribute{
 			"labels": schema.ListNestedAttribute{
@@ -68,8 +73,9 @@ func (d *LabelsDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 						},
 						"query": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The SQL query that defines which hosts belong to this label.",
+							MarkdownDescription: "The SQL query that defines which hosts belong to this label. Empty for manual and host vitals labels.",
 						},
+						"criteria": labelCriteriaDataSourceSchema(),
 						"platform": schema.StringAttribute{
 							Computed:            true,
 							MarkdownDescription: "The platform the label is restricted to.",
@@ -77,6 +83,11 @@ func (d *LabelsDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 						"label_type": schema.StringAttribute{
 							Computed:            true,
 							MarkdownDescription: "The type of the label.",
+						},
+						"label_membership_type": schema.StringAttribute{
+							Computed: true,
+							MarkdownDescription: "How Fleet resolves membership for this label: `dynamic` (driven by `query`), " +
+								"`host_vitals` (driven by `criteria`) or `manual` (assigned host-by-host).",
 						},
 						"host_count": schema.Int64Attribute{
 							Computed:            true,
@@ -111,13 +122,15 @@ func (d *LabelsDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.Labels = make([]LabelModel, len(labels))
 	for i, label := range labels {
 		data.Labels[i] = LabelModel{
-			ID:          types.StringValue(strconv.Itoa(label.ID)),
-			Name:        types.StringValue(label.Name),
-			Description: types.StringValue(label.Description),
-			Query:       types.StringValue(label.Query),
-			Platform:    types.StringValue(label.Platform),
-			LabelType:   types.StringValue(label.LabelType),
-			HostCount:   types.Int64Value(int64(label.HostCount)),
+			ID:                  types.StringValue(strconv.Itoa(label.ID)),
+			Name:                types.StringValue(label.Name),
+			Description:         types.StringValue(label.Description),
+			Query:               types.StringValue(label.Query),
+			Criteria:            labelCriteriaToObject(label.Criteria, &resp.Diagnostics),
+			Platform:            types.StringValue(label.Platform),
+			LabelType:           types.StringValue(label.LabelType),
+			LabelMembershipType: types.StringValue(label.LabelMembershipType),
+			HostCount:           types.Int64Value(int64(label.HostCount)),
 		}
 	}
 
