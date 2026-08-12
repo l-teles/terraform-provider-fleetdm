@@ -35,9 +35,14 @@ type fakeFleetSoftwareServer struct {
 	titleName          string
 	titleSelfService   bool
 	titleInstallScript string
-	titleAppStoreID    string
-	titlePlatform      string
-	titleSource        string // "pkg" / "app_store_app" / "fma" — drives detectSoftwareType branching
+	// titleUninstallScript mirrors the stored uninstall script. Fleet echoes
+	// both scripts on the title GET, so the fake must too: a resource that owns
+	// uninstall_script refreshes it on every Read and would otherwise see an
+	// empty value and plan a spurious change.
+	titleUninstallScript string
+	titleAppStoreID      string
+	titlePlatform        string
+	titleSource          string // "pkg" / "app_store_app" / "fma" — drives detectSoftwareType branching
 	// titleHashSHA256 is what the title GET reports as the stored package
 	// hash. Defaults to the hash of "FAKEPKG" (what most tests upload); tests
 	// that upload different bytes must set this to match, or the resource's
@@ -309,6 +314,7 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.fmaCreateIncludeAll = body.LabelsIncludeAll
 			f.fmaTeamID = body.TeamID
 			f.titleInstallScript = body.InstallScript
+			f.titleUninstallScript = body.UninstallScript
 			f.titleSelfService = body.SelfService
 			f.titleSource = "fma"
 			id := f.titleID
@@ -334,11 +340,12 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				payload["categories"] = f.titleCategories
 			}
 			pkgBody := map[string]any{
-				"title_id":       f.titleID,
-				"platform":       "darwin",
-				"hash_sha256":    f.titleHashSHA256,
-				"self_service":   f.titleSelfService,
-				"install_script": f.titleInstallScript,
+				"title_id":         f.titleID,
+				"platform":         "darwin",
+				"hash_sha256":      f.titleHashSHA256,
+				"self_service":     f.titleSelfService,
+				"install_script":   f.titleInstallScript,
+				"uninstall_script": f.titleUninstallScript,
 			}
 			// install_during_setup mirrors the setup_experience set.
 			for _, id := range f.setupExperienceSet {
@@ -528,6 +535,9 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.patchCategories = r.FormValue("categories")
 			if installSeen {
 				f.titleInstallScript = f.patchInstallScript
+			}
+			if uninstallVals, ok := r.MultipartForm.Value["uninstall_script"]; ok && len(uninstallVals) > 0 {
+				f.titleUninstallScript = uninstallVals[0]
 			}
 			if f.patchDisplayName != "" {
 				f.titleDisplayName = f.patchDisplayName
