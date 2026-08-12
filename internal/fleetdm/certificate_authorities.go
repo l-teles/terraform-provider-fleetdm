@@ -30,7 +30,7 @@ const NDESCAName = "NDES"
 // CertificateAuthoritySummary is a certificate authority as returned by
 // GET /certificate_authorities. The list endpoint returns identity only.
 type CertificateAuthoritySummary struct {
-	ID   int64    `json:"id"`
+	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
@@ -40,7 +40,7 @@ type CertificateAuthoritySummary struct {
 // fields relevant to the CA's type, with every secret replaced by
 // MaskedCASecret. Fields absent for a given type decode as zero values.
 type CertificateAuthority struct {
-	ID   int64    `json:"id"`
+	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 
