@@ -27,3 +27,39 @@ resource "fleetdm_label" "low_disk_space" {
   description = "Hosts with less than 10GB free disk space"
   query       = "SELECT 1 FROM disk_info WHERE free_space < 10737418240"
 }
+
+# A host vitals label: membership follows a host attribute instead of a query.
+# Here, the end user's IdP group.
+resource "fleetdm_label" "engineering" {
+  name        = "Engineering"
+  description = "Hosts whose end user is in the Engineering IdP group"
+
+  criteria = {
+    vital = "end_user_idp_group"
+    value = "Engineering"
+  }
+}
+
+# Host vitals labels can also match a custom host vital's per-host value.
+resource "fleetdm_custom_host_vital" "asset_tag" {
+  name = "Asset tag"
+}
+
+resource "fleetdm_label" "leased_hardware" {
+  name        = "Leased hardware"
+  description = "Hosts whose asset tag marks them as leased"
+
+  criteria = {
+    vital                = "custom_host_vital"
+    operator             = "LIKE"
+    value                = "LEASE-%"
+    custom_host_vital_id = fleetdm_custom_host_vital.asset_tag.id
+  }
+}
+
+# A manual label: neither query nor criteria, with membership assigned
+# host-by-host outside Terraform.
+resource "fleetdm_label" "quarantine" {
+  name        = "Quarantine"
+  description = "Hosts pulled aside for investigation"
+}

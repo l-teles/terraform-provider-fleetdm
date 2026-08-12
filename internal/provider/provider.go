@@ -211,6 +211,7 @@ func (p *FleetDMProvider) Resources(ctx context.Context) []func() resource.Resou
 		NewFleetResource,
 		NewTeamResource, // deprecated alias for NewFleetResource
 		NewLabelResource,
+		NewCustomHostVitalResource,
 		NewReportResource,
 		NewQueryResource, // deprecated alias for NewReportResource
 		NewPolicyResource,
@@ -240,6 +241,7 @@ func (p *FleetDMProvider) DataSources(ctx context.Context) []func() datasource.D
 		NewTeamsDataSource, // deprecated alias for NewFleetsDataSource
 		NewLabelDataSource,
 		NewLabelsDataSource,
+		NewCustomHostVitalsDataSource,
 		NewReportDataSource,
 		NewQueryDataSource, // deprecated alias for NewReportDataSource
 		NewReportsDataSource,

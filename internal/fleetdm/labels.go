@@ -5,19 +5,59 @@ import (
 	"fmt"
 )
 
+// Host vitals recognized by a label's Criteria. Fleet 4.90 registers exactly
+// these three; anything else is rejected with "unknown vital <x>".
+const (
+	// HostVitalEndUserIDPGroup matches on the end user's IdP group.
+	HostVitalEndUserIDPGroup = "end_user_idp_group"
+	// HostVitalEndUserIDPDepartment matches on the end user's IdP department.
+	HostVitalEndUserIDPDepartment = "end_user_idp_department"
+	// HostVitalCustomHostVital matches on a custom host vital's per-host value.
+	// This vital does not self-identify which vital to read, so a criterion
+	// using it must also carry CustomHostVitalID.
+	HostVitalCustomHostVital = "custom_host_vital"
+)
+
+// Comparison operators accepted by HostVitalCriteria.Operator.
+const (
+	HostVitalOperatorEqual    = "="
+	HostVitalOperatorNotEqual = "!="
+	HostVitalOperatorGreater  = ">"
+	HostVitalOperatorLess     = "<"
+	HostVitalOperatorLike     = "LIKE"
+)
+
+// HostVitalCriteria defines membership for a host-vitals label: hosts join the
+// label when the named vital compares true against Value.
+//
+// Fleet's wire format also has `and`/`or` arrays for composing criteria, but
+// 4.90 rejects them at evaluation time ("And/Or criteria not supported in host
+// vitals labels yet"), so only a single condition is modeled here.
+type HostVitalCriteria struct {
+	Vital    string `json:"vital"`
+	Value    string `json:"value"`
+	Operator string `json:"operator,omitempty"`
+	// CustomHostVitalID selects which custom host vital to match. Required
+	// when Vital is HostVitalCustomHostVital, and rejected otherwise.
+	CustomHostVitalID *int `json:"custom_host_vital_id,omitempty"`
+}
+
 // Label represents a FleetDM label.
 type Label struct {
-	ID                  int    `json:"id,omitempty"`
-	Name                string `json:"name"`
-	Description         string `json:"description"`
-	Query               string `json:"query"`
-	Platform            string `json:"platform,omitempty"`
-	LabelType           string `json:"label_type,omitempty"`
-	LabelMembershipType string `json:"label_membership_type,omitempty"`
-	HostCount           int    `json:"host_count,omitempty"`
-	DisplayText         string `json:"display_text,omitempty"`
-	CreatedAt           string `json:"created_at,omitempty"`
-	UpdatedAt           string `json:"updated_at,omitempty"`
+	ID          int    `json:"id,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Query       string `json:"query"`
+	// Criteria is set for host-vitals labels and absent for dynamic
+	// (query-based) and manual labels.
+	Criteria            *HostVitalCriteria `json:"criteria,omitempty"`
+	Platform            string             `json:"platform,omitempty"`
+	LabelType           string             `json:"label_type,omitempty"`
+	LabelMembershipType string             `json:"label_membership_type,omitempty"`
+	HostCount           int                `json:"host_count,omitempty"`
+	DisplayText         string             `json:"display_text,omitempty"`
+	CreatedAt           string             `json:"created_at,omitempty"`
+	UpdatedAt           string             `json:"updated_at,omitempty"`
 }
 
 // ListLabelsResponse represents the response from the list labels endpoint.
@@ -31,11 +71,16 @@ type GetLabelResponse struct {
 }
 
 // CreateLabelRequest represents the request to create a label.
+//
+// Fleet accepts at most one of Query, Criteria or hosts/host_ids: a label is
+// dynamic, host-vitals, or manual (all three empty). An empty Query string
+// alongside Criteria is fine — Fleet only counts a non-empty query.
 type CreateLabelRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Query       string `json:"query"`
-	Platform    string `json:"platform,omitempty"`
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Query       string             `json:"query"`
+	Criteria    *HostVitalCriteria `json:"criteria,omitempty"`
+	Platform    string             `json:"platform,omitempty"`
 }
 
 // CreateLabelResponse represents the response from the create label endpoint.
@@ -87,7 +132,11 @@ func (c *Client) CreateLabel(ctx context.Context, req CreateLabelRequest) (*Labe
 }
 
 // UpdateLabel updates an existing label.
-// Note: Only name and description can be updated. Query and platform are immutable.
+//
+// Note: Only name and description can be updated. Query, platform and criteria
+// are immutable — Fleet's modify-label payload has no field for them, so a
+// PATCH carrying `criteria` answers 200 with the *original* criteria still in
+// place rather than reporting an error.
 func (c *Client) UpdateLabel(ctx context.Context, id int, req UpdateLabelRequest) (*Label, error) {
 	var resp UpdateLabelResponse
 	endpoint := fmt.Sprintf("/labels/%d", id)
