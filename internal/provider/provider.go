@@ -230,6 +230,7 @@ func (p *FleetDMProvider) Resources(ctx context.Context) []func() resource.Resou
 		NewBootstrapPackageResource,
 		NewSetupExperienceResource,
 		NewCustomVariableResource,
+		NewCertificateAuthorityResource,
 	}
 }
 
@@ -271,6 +272,7 @@ func (p *FleetDMProvider) DataSources(ctx context.Context) []func() datasource.D
 		NewFleetMaintainedAppsDataSource,
 		NewAppStoreAppsDataSource,
 		NewSoftwareSelfServiceCategoriesDataSource,
+		NewCertificateAuthoritiesDataSource,
 		NewRESTAPIEndpointsDataSource,
 	}
 }
