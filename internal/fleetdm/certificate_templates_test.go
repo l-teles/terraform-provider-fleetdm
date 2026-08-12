@@ -202,6 +202,27 @@ func TestCreateCertificateTemplateDuplicateName(t *testing.T) {
 	}
 }
 
+// TestCreateCertificateTemplateDegenerateResponse checks a 200 whose body
+// carries no template is rejected rather than decoded to a zero-value
+// template. Accepting it would write id 0 into state, and the next read
+// would 404 on /certificates/0 and drop the resource — orphaning the
+// template Fleet actually stored.
+func TestCreateCertificateTemplateDegenerateResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	_, err := newTestCertificateTemplateClient(t, server.URL).CreateCertificateTemplate(
+		context.Background(),
+		CreateCertificateTemplateRequest{Name: "Degenerate", CertificateAuthorityID: 1, SubjectName: "CN=x"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "response contained no certificate template") {
+		t.Fatalf("Expected a no-certificate-template error, got %v", err)
+	}
+}
+
 // TestGetCertificateTemplate checks the wrapped response shape and that every
 // read-only field lands on the struct.
 func TestGetCertificateTemplate(t *testing.T) {

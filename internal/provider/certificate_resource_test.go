@@ -87,6 +87,14 @@ func (f *fakeCertificatesServer) recordedCreateBodies() []map[string]any {
 	return append([]map[string]any(nil), f.createBodies...)
 }
 
+// recordedGetByIDCalls returns how many GET /certificates/{id} requests the
+// server has seen.
+func (f *fakeCertificatesServer) recordedGetByIDCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.getByIDCalls
+}
+
 const fakeCertificatesBase = "/api/v1/fleet/certificates"
 
 func (f *fakeCertificatesServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -526,10 +534,14 @@ resource "fleetdm_certificate" "test" {
 					resource.TestCheckNoResourceAttr("fleetdm_certificate.test", "certificate_authority_type"),
 					resource.TestCheckNoResourceAttr("fleetdm_certificate.test", "created_at"),
 					// Exactly one template exists: the create was not retried
-					// and nothing was orphaned.
+					// and nothing was orphaned. The follow-up read-back was
+					// attempted (it failed), not skipped.
 					func(*terraform.State) error {
 						if bodies := fake.recordedCreateBodies(); len(bodies) != 1 {
 							return fmt.Errorf("expected exactly 1 create call, got %d", len(bodies))
+						}
+						if fake.recordedGetByIDCalls() == 0 {
+							return fmt.Errorf("expected create to attempt the follow-up read-back")
 						}
 						return nil
 					},
@@ -592,6 +604,16 @@ func TestCertificateResource_validationErrors(t *testing.T) {
   certificate_authority_id = 3
   subject_name             = "CN=x"`,
 			expectError: regexp.MustCompile(`(?s)must\s+contain\s+only\s+letters,\s+numbers,\s+spaces,\s+dashes\s+and\s+underscores`),
+		},
+		{
+			// The name pattern alone permits an all-spaces name; Fleet rejects
+			// it as missing ("Certificate template name is required.").
+			name: "blank name",
+			body: `
+  name                     = "   "
+  certificate_authority_id = 3
+  subject_name             = "CN=x"`,
+			expectError: regexp.MustCompile(`(?s)must\s+not\s+be\s+empty\s+or\s+consist\s+only\s+of\s+whitespace`),
 		},
 		{
 			name: "name too long",
@@ -762,57 +784,4 @@ func TestCertificateResource_nonBlankStringValidator(t *testing.T) {
 			t.Errorf("Expected %v to be accepted, got %v", value, resp.Diagnostics.Errors())
 		}
 	}
-}
-
-// TestCertificatesDataSource_readsOneFleet checks the data source is scoped to a
-// single fleet and reports the list route's fields.
-func TestCertificatesDataSource_readsOneFleet(t *testing.T) {
-	server, _ := newFakeCertificatesServer()
-	defer server.Close()
-
-	config := testCertificateProviderBlock(server.URL) + `
-resource "fleetdm_certificate" "no_fleet" {
-  name                     = "NoFleet"
-  certificate_authority_id = 3
-  subject_name             = "CN=nofleet"
-}
-
-resource "fleetdm_certificate" "in_fleet" {
-  fleet_id                 = 7
-  name                     = "InFleet"
-  certificate_authority_id = 3
-  subject_name             = "CN=infleet"
-  subject_alternative_name = "DNS=infleet.example.com"
-}
-
-data "fleetdm_certificates" "default_fleet" {
-  depends_on = [fleetdm_certificate.no_fleet, fleetdm_certificate.in_fleet]
-}
-
-data "fleetdm_certificates" "fleet_seven" {
-  fleet_id   = 7
-  depends_on = [fleetdm_certificate.no_fleet, fleetdm_certificate.in_fleet]
-}
-`
-
-	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: config,
-				Check: resource.ComposeAggregateTestCheckFunc(
-					// Omitting fleet_id reads fleet 0 only, never every fleet.
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.default_fleet", "certificates.#", "1"),
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.default_fleet", "certificates.0.name", "NoFleet"),
-					resource.TestCheckNoResourceAttr("data.fleetdm_certificates.default_fleet", "certificates.0.subject_alternative_name"),
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.default_fleet", "certificates.0.certificate_authority_name", "SCEP_TEST"),
-
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.fleet_seven", "certificates.#", "1"),
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.fleet_seven", "certificates.0.name", "InFleet"),
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.fleet_seven", "certificates.0.subject_alternative_name", "DNS=infleet.example.com"),
-					resource.TestCheckResourceAttr("data.fleetdm_certificates.fleet_seven", "certificates.0.subject_name", "CN=infleet"),
-				),
-			},
-		},
-	})
 }

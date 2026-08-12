@@ -131,19 +131,19 @@ func (d *certificatesDataSource) Read(ctx context.Context, req datasource.ReadRe
 
 	state.Certificates = make([]certificateSummaryModel, 0, len(templates))
 	for _, template := range templates {
-		summary := certificateSummaryModel{
+		// Absent API strings map to null rather than "", matching the
+		// resource's mapTemplateToModel. The list route always reports
+		// certificate_authority_name and created_at on Fleet 4.90, so the
+		// null case for those two is defensive only.
+		state.Certificates = append(state.Certificates, certificateSummaryModel{
 			ID:                       types.Int64Value(template.ID),
 			Name:                     types.StringValue(template.Name),
 			SubjectName:              types.StringValue(template.SubjectName),
-			SubjectAlternativeName:   types.StringNull(),
+			SubjectAlternativeName:   emptyStringToNull(template.SubjectAlternativeName),
 			CertificateAuthorityID:   types.Int64Value(template.CertificateAuthorityID),
-			CertificateAuthorityName: types.StringValue(template.CertificateAuthorityName),
-			CreatedAt:                types.StringValue(template.CreatedAt),
-		}
-		if template.SubjectAlternativeName != "" {
-			summary.SubjectAlternativeName = types.StringValue(template.SubjectAlternativeName)
-		}
-		state.Certificates = append(state.Certificates, summary)
+			CertificateAuthorityName: emptyStringToNull(template.CertificateAuthorityName),
+			CreatedAt:                emptyStringToNull(template.CreatedAt),
+		})
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)

@@ -99,6 +99,9 @@ func (r *CertificateResource) Schema(_ context.Context, _ resource.SchemaRequest
 						fleetdm.CertificateTemplateNamePattern,
 						"must contain only letters, numbers, spaces, dashes and underscores",
 					),
+					// The pattern alone permits an all-spaces name, which Fleet
+					// rejects ("Certificate template name is required.").
+					nonBlankStringValidator{},
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -164,8 +167,10 @@ func (r *CertificateResource) Schema(_ context.Context, _ resource.SchemaRequest
 // nonBlankStringValidator rejects a value that is empty or consists only of
 // whitespace.
 //
-// Fleet rejects a blank subject_name outright ("Certificate template subject
-// name is required."). It accepts a blank subject_alternative_name but stores it
+// Fleet rejects a blank name ("Certificate template name is required." — the
+// name character pattern alone permits an all-spaces name) and a blank
+// subject_name ("Certificate template subject name is required.") outright.
+// It accepts a blank subject_alternative_name but stores it
 // as absent, so the value read back differs from the one configured and
 // Terraform aborts the apply with "Provider produced inconsistent result after
 // apply" (verified live on 4.90: a template created with

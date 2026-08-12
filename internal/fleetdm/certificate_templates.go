@@ -138,6 +138,13 @@ func (c *Client) CreateCertificateTemplate(ctx context.Context, req CreateCertif
 	if err := c.Post(ctx, certificateTemplatesPath, req, &template); err != nil {
 		return nil, fmt.Errorf("failed to create certificate template: %w", err)
 	}
+	// Guard against a degenerate 200 (an empty or foreign JSON body decodes to
+	// a zero-value template). Accepting it would write id 0 into state; the
+	// next read would GET /certificates/0, 404, and drop the resource from
+	// state — orphaning the template Fleet actually stored.
+	if template.ID == 0 {
+		return nil, fmt.Errorf("failed to create certificate template: response contained no certificate template")
+	}
 	return &template, nil
 }
 
