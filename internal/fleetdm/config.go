@@ -74,8 +74,11 @@ type HostStatusWebhookSettings struct {
 type FailingPoliciesWebhookSettings struct {
 	Enable         bool   `json:"enable_failing_policies_webhook"`
 	DestinationURL string `json:"destination_url"`
-	PolicyIDs      []uint `json:"policy_ids"`
-	HostBatchSize  int    `json:"host_batch_size"`
+	// PolicyIDs are Fleet policy database IDs. Held as int64 to match the rest
+	// of this package's ID types, and so the provider needs no numeric
+	// conversion when moving them in and out of a Terraform Int64 set.
+	PolicyIDs     []int64 `json:"policy_ids"`
+	HostBatchSize int     `json:"host_batch_size"`
 }
 
 // VulnerabilitiesWebhookSettings contains vulnerabilities webhook settings

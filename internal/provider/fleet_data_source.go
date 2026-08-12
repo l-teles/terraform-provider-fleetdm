@@ -159,8 +159,8 @@ func (d *FleetDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 		config.HostExpiryWindow = types.Int64Null()
 	}
 
-	if team.MDM != nil {
-		config.EnableDiskEncryption = types.BoolValue(team.MDM.EnableDiskEncryption)
+	if team.MDM != nil && team.MDM.EnableDiskEncryption != nil {
+		config.EnableDiskEncryption = types.BoolValue(*team.MDM.EnableDiskEncryption)
 	} else {
 		config.EnableDiskEncryption = types.BoolValue(false)
 	}
