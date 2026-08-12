@@ -3,7 +3,6 @@ package fleetdm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -125,22 +124,7 @@ func (c *Client) sendMultipart(ctx context.Context, method, endpoint string, bod
 	}
 
 	if resp.StatusCode >= 400 {
-		var apiErr APIError
-		apiErr.StatusCode = resp.StatusCode
-		apiErr.Message = string(respBody)
-
-		var errResp struct {
-			Message string        `json:"message"`
-			Errors  []ErrorDetail `json:"errors"`
-		}
-		if json.Unmarshal(respBody, &errResp) == nil {
-			if errResp.Message != "" {
-				apiErr.Message = errResp.Message
-			}
-			apiErr.Errors = errResp.Errors
-		}
-
-		return nil, &apiErr
+		return nil, newAPIError(resp.StatusCode, respBody)
 	}
 
 	return respBody, nil
