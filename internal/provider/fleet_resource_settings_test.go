@@ -461,7 +461,7 @@ resource "fleetdm_fleet" "test" {
   mdm = {
     enable_recovery_lock_password = true
     windows_require_bitlocker_pin = true
-    name_template                 = "$HOST_HW_SERIAL"
+    name_template                 = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
 
     macos_updates = {
       minimum_version  = "26.6.1"
@@ -493,7 +493,7 @@ resource "fleetdm_fleet" "test" {
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "true"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.enable_recovery_lock_password", "true"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_require_bitlocker_pin", "true"),
-					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.name_template", "$HOST_HW_SERIAL"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.name_template", "$FLEET_VAR_HOST_HARDWARE_SERIAL"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.minimum_version", "26.6.1"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.deadline", "2026-12-01"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.update_new_hosts", "true"),
@@ -985,7 +985,7 @@ resource "fleetdm_fleet" "test" {
 
   mdm = {
     windows_require_bitlocker_pin = true
-    name_template                 = "tf-acc-$HOST_HW_SERIAL"
+    name_template                 = "tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"
     windows_updates = {
       deadline_days     = 7
       grace_period_days = 2
@@ -1016,7 +1016,7 @@ resource "fleetdm_fleet" "test" {
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_status_webhook.host_percentage", "10"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_status_webhook.days_count", "3"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_require_bitlocker_pin", "true"),
-					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.name_template", "tf-acc-$HOST_HW_SERIAL"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.name_template", "tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_updates.deadline_days", "7"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_updates.grace_period_days", "2"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "integrations.conditional_access_enabled", "false"),

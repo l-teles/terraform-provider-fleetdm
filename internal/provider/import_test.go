@@ -274,3 +274,64 @@ resource "fleetdm_configuration" "import_test" {
 }
 `
 }
+
+// TestAccUserResource_import tests importing a user resource, using an
+// API-only user with an endpoint scope so that the import path is covered for
+// `api_endpoints` too — Fleet returns the scope on a read, so it must survive
+// an import unchanged.
+//
+// Two attributes are genuinely unrecoverable from the API and are therefore
+// ignored by the verification:
+//
+//   - `password` is write-only. Fleet stores a bcrypt hash and no endpoint
+//     ever returns the cleartext.
+//   - `token` is minted once, in the create response. No read endpoint returns
+//     it, so an imported user's token is always null and the only way to get a
+//     new one is to recreate the user.
+func TestAccUserResource_import(t *testing.T) {
+	userName := "tf-acc-import-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	userEmail := userName + "@example.com"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// Create
+			{
+				Config: providerConfig() + testAccUserResourceConfig_forImport(userName, userEmail),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_user.import_test", "name", userName),
+					resource.TestCheckResourceAttr("fleetdm_user.import_test", "api_only", "true"),
+					resource.TestCheckResourceAttr("fleetdm_user.import_test", "api_endpoints.#", "1"),
+					resource.TestCheckResourceAttrSet("fleetdm_user.import_test", "id"),
+				),
+			},
+			// Import
+			{
+				ResourceName:            "fleetdm_user.import_test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password", "token"},
+			},
+		},
+	})
+}
+
+func testAccUserResourceConfig_forImport(name, email string) string {
+	return fmt.Sprintf(`
+resource "fleetdm_user" "import_test" {
+  name        = %[1]q
+  email       = %[2]q
+  password    = "FleetTest@12345!"
+  global_role = "observer"
+  api_only    = true
+
+  api_endpoints = [
+    {
+      method = "GET"
+      path   = "/api/v1/fleet/hosts"
+    },
+  ]
+}
+`, name, email)
+}

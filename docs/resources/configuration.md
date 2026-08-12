@@ -19,6 +19,10 @@ description: |-
   
     enable_host_users         = true
     enable_software_inventory = true
+  
+    # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
+    # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
+    host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
   }
 ---
 
@@ -44,6 +48,10 @@ resource "fleetdm_configuration" "main" {
 
   enable_host_users         = true
   enable_software_inventory = true
+
+  # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
+  # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
+  host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
 }
 ```
 
@@ -68,6 +76,7 @@ resource "fleetdm_configuration" "main" {
 - `enable_software_inventory` (Boolean) Whether to collect software inventory from hosts.
 - `host_expiry_enabled` (Boolean) Whether to automatically remove hosts that have not checked in.
 - `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in.
+- `host_name_template` (String) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the "No team" scope), for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
 - `org_logo_url` (String, Deprecated) Deprecated alias of `org_logo_url_dark_mode`. When omitted, Fleet's current value is preserved.
 - `org_logo_url_dark_mode` (String) URL of the organization logo shown on top of dark backgrounds. When omitted, Fleet's current value is preserved.

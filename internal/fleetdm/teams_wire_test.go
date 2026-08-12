@@ -181,8 +181,8 @@ func TestUpdateTeamRequest_WireFormat_OmitsUnsetFields(t *testing.T) {
 		},
 		{
 			name: "name_template alone",
-			req:  base(&TeamMDMSettings{NameTemplate: strPtr("$HOST_HW_SERIAL")}),
-			want: `{"name":"t","description":"d","mdm":{"name_template":"$HOST_HW_SERIAL"}}`,
+			req:  base(&TeamMDMSettings{NameTemplate: strPtr("$FLEET_VAR_HOST_HARDWARE_SERIAL")}),
+			want: `{"name":"t","description":"d","mdm":{"name_template":"$FLEET_VAR_HOST_HARDWARE_SERIAL"}}`,
 		},
 		{
 			// Clearing name_template requires an explicit empty string; a nil

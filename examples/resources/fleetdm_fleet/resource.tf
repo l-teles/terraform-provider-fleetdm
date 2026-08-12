@@ -62,7 +62,7 @@ resource "fleetdm_fleet" "managed_laptops" {
 
   mdm = {
     windows_require_bitlocker_pin = true
-    name_template                 = "$HOST_HW_SERIAL"
+    name_template                 = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
 
     # minimum_version must be a version Apple still publishes, given exactly:
     # Fleet checks it against Apple's Software Lookup Service.

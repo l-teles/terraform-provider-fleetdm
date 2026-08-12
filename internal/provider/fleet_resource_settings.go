@@ -267,8 +267,8 @@ func fleetMDMAttribute() schema.Attribute {
 				Optional:            true,
 			},
 			"name_template": schema.StringAttribute{
-				Description:         "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example \"$HOST_HW_SERIAL\". Set to \"\" to clear it.",
-				MarkdownDescription: "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$HOST_HW_SERIAL`. Set to `\"\"` to clear it.",
+				Description:         "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example \"$FLEET_VAR_HOST_HARDWARE_SERIAL\". Set to \"\" to clear it.",
+				MarkdownDescription: "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it.",
 				Optional:            true,
 			},
 			"macos_updates":  appleUpdates("macOS"),

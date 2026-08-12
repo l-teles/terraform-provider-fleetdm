@@ -878,7 +878,7 @@ func TestAccSoftwareTitleIconResource_rejectsNonPNG(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config:      testAccSoftwareTitleIconConfig(server.URL, badPath),
+				Config: testAccSoftwareTitleIconConfig(server.URL, badPath),
 				// Whitespace-tolerant: Terraform line-wraps diagnostics at a
 				// point that depends on the tmp-dir path length, so a literal
 				// space between any two words can be a newline in CI.

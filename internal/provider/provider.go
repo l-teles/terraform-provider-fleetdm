@@ -273,5 +273,6 @@ func (p *FleetDMProvider) DataSources(ctx context.Context) []func() datasource.D
 		NewAppStoreAppsDataSource,
 		NewSoftwareSelfServiceCategoriesDataSource,
 		NewCertificateAuthoritiesDataSource,
+		NewRESTAPIEndpointsDataSource,
 	}
 }
