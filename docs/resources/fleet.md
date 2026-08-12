@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages a FleetDM fleet.
   Fleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.
+  The webhook_settings, mdm, integrations and features blocks are opt-in: a block you do not declare is neither written to Fleet nor read into state, so this resource can coexist with settings managed in the Fleet UI or through GitOps. Within a block, attributes you omit are left alone too, with one exception: inside a declared webhook_settings sub-block or inside integrations.google_calendar, Fleet replaces the whole object, so every attribute of that sub-block goes on the wire and the ones you omit are sent as zero values. Declare those sub-blocks in full. One consequence of the opt-in design is that terraform import brings a fleet in with all four blocks null, since which of them you intend to manage is only expressed in your configuration.
 ---
 
 # fleetdm_fleet (Resource)
@@ -12,6 +13,8 @@ description: |-
 Manages a FleetDM fleet.
 
 Fleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.
+
+The `webhook_settings`, `mdm`, `integrations` and `features` blocks are opt-in: a block you do not declare is neither written to Fleet nor read into state, so this resource can coexist with settings managed in the Fleet UI or through GitOps. Within a block, attributes you omit are left alone too, with one exception: inside a declared `webhook_settings` sub-block or inside `integrations.google_calendar`, Fleet replaces the whole object, so every attribute of that sub-block goes on the wire and the ones you omit are sent as zero values. Declare those sub-blocks in full. One consequence of the opt-in design is that `terraform import` brings a fleet in with all four blocks null, since which of them you intend to manage is only expressed in your configuration.
 
 ## Example Usage
 
@@ -31,7 +34,11 @@ resource "fleetdm_fleet" "servers" {
   host_expiry_window  = 30 # Days
 }
 
-# Create a fleet with disk encryption enabled
+# Create a fleet with disk encryption enabled.
+#
+# Note that enable_disk_encryption is NOT opt-in: it defaults to false and is
+# written on every apply, so leaving it out of a fleet's configuration disables
+# disk encryption even if an operator turned it on in the Fleet UI.
 resource "fleetdm_fleet" "secure_workstations" {
   name        = "Secure Workstations"
   description = "Workstations with enhanced security"
@@ -39,6 +46,70 @@ resource "fleetdm_fleet" "secure_workstations" {
   enable_disk_encryption = true
   host_expiry_enabled    = true
   host_expiry_window     = 14
+}
+
+# Create a fleet with webhook, MDM, integration and feature settings.
+#
+# These four blocks are opt-in: a block you do not declare is neither sent to
+# Fleet nor read back into state, so this resource can share a fleet with
+# settings managed in the Fleet UI or through GitOps. Within the `mdm` and
+# `features` blocks the same holds per attribute — anything you leave out keeps
+# whatever value it already has in Fleet.
+#
+# The exception is a `webhook_settings` sub-block or `integrations.google_calendar`:
+# Fleet replaces those objects wholesale, so once you declare one, every one of
+# its attributes is written and the ones you omit are written as zero values.
+# Declare those sub-blocks in full.
+resource "fleetdm_fleet" "managed_laptops" {
+  name        = "Managed Laptops"
+  description = "Laptops with OS update enforcement and webhook automations"
+
+  # Prefer https: webhook payloads carry host identifiers, and webhook URLs
+  # often embed a secret token in the path.
+  webhook_settings = {
+    failing_policies_webhook = {
+      enable_failing_policies_webhook = true
+      destination_url                 = "https://automation.example.com/fleet/failing-policies"
+      policy_ids                      = [] # omitted attributes are written as zero values
+      host_batch_size                 = 100
+    }
+    host_status_webhook = {
+      enable_host_status_webhook = true
+      destination_url            = "https://automation.example.com/fleet/host-status"
+      host_percentage            = 10
+      days_count                 = 3
+    }
+  }
+
+  mdm = {
+    windows_require_bitlocker_pin = true
+    name_template                 = "$HOST_HW_SERIAL"
+
+    # minimum_version must be a version Apple still publishes, given exactly:
+    # Fleet checks it against Apple's Software Lookup Service.
+    macos_updates = {
+      minimum_version = "26.6.1"
+      deadline        = "2026-12-01"
+    }
+
+    # deadline_days (0-30) and grace_period_days (0-7) must be set together.
+    windows_updates = {
+      deadline_days     = 7
+      grace_period_days = 2
+    }
+  }
+
+  integrations = {
+    # Enabling either of these requires the matching integration to already
+    # exist in the global Fleet configuration.
+    conditional_access_enabled = false
+  }
+
+  features = {
+    historical_data = {
+      vulnerabilities = true
+    }
+  }
 }
 ```
 
@@ -53,14 +124,137 @@ resource "fleetdm_fleet" "secure_workstations" {
 
 - `description` (String) A description of the fleet.
 - `enable_disk_encryption` (Boolean) Whether disk encryption is enforced for hosts in this fleet.
+
+~> **Warning:** unlike the opt-in `mdm` block, this attribute defaults to `false` and is written on every apply, so leaving it out of your configuration actively **disables** disk encryption -- including encryption an operator turned on in the Fleet UI. Set it to `true` explicitly if this fleet should have disk encryption enforced. Making it opt-in like the `mdm` block would change that behaviour and is deferred to the next major version.
+- `features` (Attributes) Feature settings for this fleet. Only historical_data is writable through the fleet API; enable_host_users, enable_software_inventory and additional_queries can only be set per-fleet through Fleet's GitOps fleet spec, so they are not exposed here. (see [below for nested schema](#nestedatt--features))
 - `host_expiry_enabled` (Boolean) Whether host expiry is enabled for this fleet.
 - `host_expiry_window` (Number) The number of days after which hosts are considered expired.
+- `integrations` (Attributes) Third-party integrations for this fleet. Jira and Zendesk are not exposed because Fleet only accepts a fleet-level ticketing integration that exactly matches one already present in the global configuration, which Terraform cannot express as a standalone fleet attribute. (see [below for nested schema](#nestedatt--integrations))
+- `mdm` (Attributes) MDM settings for this fleet. Requires Fleet 4.87.0 or later. Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. Each attribute is sent only when you declare it, so settings you leave out keep whatever value they already have in Fleet. (see [below for nested schema](#nestedatt--mdm))
+- `webhook_settings` (Attributes) Webhook automations for this fleet. Fleet replaces this whole block on every write, so a sub-block you omit is cleared server-side rather than left untouched: declare both sub-blocks if you want both to persist. The same applies one level down -- a sub-block you do declare is sent in full, with any attribute you left out sent as its zero value -- so declare each sub-block completely. Omitting `webhook_settings` entirely leaves the fleet's webhook configuration alone. (see [below for nested schema](#nestedatt--webhook_settings))
 
 ### Read-Only
 
 - `host_count` (Number) The number of hosts in the fleet.
 - `id` (Number) The unique identifier of the fleet.
 - `user_count` (Number) The number of users in the fleet.
+
+<a id="nestedatt--features"></a>
+### Nested Schema for `features`
+
+Optional:
+
+- `historical_data` (Attributes) Which historical datasets Fleet collects for this fleet. Each sub-attribute is applied independently. (see [below for nested schema](#nestedatt--features--historical_data))
+
+<a id="nestedatt--features--historical_data"></a>
+### Nested Schema for `features.historical_data`
+
+Optional:
+
+- `uptime` (Boolean) Whether historical host uptime is collected.
+- `vulnerabilities` (Boolean) Whether historical vulnerability data is collected.
+
+
+
+<a id="nestedatt--integrations"></a>
+### Nested Schema for `integrations`
+
+Optional:
+
+- `conditional_access_enabled` (Boolean) Whether conditional access is enforced for this fleet. Enabling it requires a conditional access integration in the global configuration.
+- `google_calendar` (Attributes) Google Calendar event automation. Enabling it requires a Google Calendar integration in the global configuration. Like the `webhook_settings` sub-blocks, this object is sent to Fleet in full, so both attributes are written on every apply and must be declared together. (see [below for nested schema](#nestedatt--integrations--google_calendar))
+
+<a id="nestedatt--integrations--google_calendar"></a>
+### Nested Schema for `integrations.google_calendar`
+
+Optional:
+
+- `enable_calendar_events` (Boolean) Whether calendar events are created for this fleet's failing policies.
+- `webhook_url` (String) URL called when a calendar event is due. Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http.
+
+
+
+<a id="nestedatt--mdm"></a>
+### Nested Schema for `mdm`
+
+Optional:
+
+- `enable_recovery_lock_password` (Boolean) Whether Fleet escrows a recovery lock password for the fleet's Apple silicon hosts. Requires MDM to be turned on in Fleet.
+- `ios_updates` (Attributes) Minimum iOS version enforced on this fleet's hosts. Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example "26.6.1", not "26.6"). Set both minimum_version and deadline to "" to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ios_updates))
+- `ipados_updates` (Attributes) Minimum iPadOS version enforced on this fleet's hosts. Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example "26.6.1", not "26.6"). Set both minimum_version and deadline to "" to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ipados_updates))
+- `macos_updates` (Attributes) Minimum macOS version enforced on this fleet's hosts. Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example "26.6.1", not "26.6"). Set both minimum_version and deadline to "" to clear the requirement. (see [below for nested schema](#nestedatt--mdm--macos_updates))
+- `name_template` (String) Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$HOST_HW_SERIAL`. Set to `""` to clear it.
+- `windows_require_bitlocker_pin` (Boolean) Whether a BitLocker PIN is required before Fleet considers a Windows host compliant.
+- `windows_updates` (Attributes) Windows update enforcement for this fleet. Set both attributes to `0` to clear it. (see [below for nested schema](#nestedatt--mdm--windows_updates))
+
+<a id="nestedatt--mdm--ios_updates"></a>
+### Nested Schema for `mdm.ios_updates`
+
+Optional:
+
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.
+- `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--ipados_updates"></a>
+### Nested Schema for `mdm.ipados_updates`
+
+Optional:
+
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.
+- `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--macos_updates"></a>
+### Nested Schema for `mdm.macos_updates`
+
+Optional:
+
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.
+- `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--windows_updates"></a>
+### Nested Schema for `mdm.windows_updates`
+
+Optional:
+
+- `deadline_days` (Number) Days a host has to install an available update before it is forced, between `0` and `30`. Must be set together with `grace_period_days`.
+- `grace_period_days` (Number) Days a host has to restart once the deadline has passed, between `0` and `7`. Must be set together with `deadline_days`.
+
+
+
+<a id="nestedatt--webhook_settings"></a>
+### Nested Schema for `webhook_settings`
+
+Optional:
+
+- `failing_policies_webhook` (Attributes) Sends a webhook when a host starts failing a policy. Sent to Fleet in full: attributes you omit are written as their zero values. (see [below for nested schema](#nestedatt--webhook_settings--failing_policies_webhook))
+- `host_status_webhook` (Attributes) Sends a webhook when too many of the fleet's hosts stop reporting in. Sent to Fleet in full: attributes you omit are written as their zero values. (see [below for nested schema](#nestedatt--webhook_settings--host_status_webhook))
+
+<a id="nestedatt--webhook_settings--failing_policies_webhook"></a>
+### Nested Schema for `webhook_settings.failing_policies_webhook`
+
+Optional:
+
+- `destination_url` (String) URL the webhook payload is sent to. Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http.
+- `enable_failing_policies_webhook` (Boolean) Whether the failing policies webhook is enabled.
+- `host_batch_size` (Number) Maximum number of hosts per webhook request. `0` sends them all in one request.
+- `policy_ids` (Set of Number) Policy IDs the webhook fires for. Omit to fire for all of the fleet's policies.
+
+
+<a id="nestedatt--webhook_settings--host_status_webhook"></a>
+### Nested Schema for `webhook_settings.host_status_webhook`
+
+Optional:
+
+- `days_count` (Number) Number of days a host must be offline before it counts towards `host_percentage`.
+- `destination_url` (String) URL the webhook payload is sent to. Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http.
+- `enable_host_status_webhook` (Boolean) Whether the host status webhook is enabled.
+- `host_percentage` (Number) Percentage of offline hosts that triggers the webhook.
 
 ## Import
 
