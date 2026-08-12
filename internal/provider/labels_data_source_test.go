@@ -62,6 +62,7 @@ func TestAccLabelsDataSource_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("data.fleetdm_labels.test", "labels.0.label_membership_type", "manual"),
 					resource.TestCheckResourceAttr("data.fleetdm_labels.test", "labels.0.host_count", "5"),
 					resource.TestCheckNoResourceAttr("data.fleetdm_labels.test", "labels.0.criteria.vital"),
+					resource.TestCheckNoResourceAttr("data.fleetdm_labels.test", "labels.0.criteria.%"),
 
 					// Dynamic: still no criteria.
 					resource.TestCheckResourceAttr("data.fleetdm_labels.test", "labels.1.name", "dynamic-label"),
@@ -69,6 +70,7 @@ func TestAccLabelsDataSource_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("data.fleetdm_labels.test", "labels.1.label_membership_type", "dynamic"),
 					resource.TestCheckResourceAttr("data.fleetdm_labels.test", "labels.1.host_count", "3"),
 					resource.TestCheckNoResourceAttr("data.fleetdm_labels.test", "labels.1.criteria.vital"),
+					resource.TestCheckNoResourceAttr("data.fleetdm_labels.test", "labels.1.criteria.%"),
 
 					// Host vitals via IdP group: the list route carries criteria.
 					resource.TestCheckResourceAttr("data.fleetdm_labels.test", "labels.2.label_membership_type", "host_vitals"),

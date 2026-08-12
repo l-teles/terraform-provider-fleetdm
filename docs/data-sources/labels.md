@@ -4,14 +4,14 @@ page_title: "fleetdm_labels Data Source - fleetdm"
 subcategory: ""
 description: |-
   Use this data source to retrieve information about all FleetDM labels.
-  Fleet's list endpoint is a full echo of each label: it reports label_membership_type and the complete criteria block for host vitals labels, so this data source needs no per-label lookup and every attribute here matches what the fleetdm_label data source returns for the same label.
+  Fleet's list endpoint is a full echo of each label: it reports label_membership_type and the complete criteria block for host vitals labels, so this data source needs no per-label lookup and every attribute value matches what the fleetdm_label data source returns for the same label (note id is a string here, a number there).
 ---
 
 # fleetdm_labels (Data Source)
 
 Use this data source to retrieve information about all FleetDM labels.
 
-Fleet's list endpoint is a full echo of each label: it reports `label_membership_type` and the complete `criteria` block for host vitals labels, so this data source needs no per-label lookup and every attribute here matches what the `fleetdm_label` data source returns for the same label.
+Fleet's list endpoint is a full echo of each label: it reports `label_membership_type` and the complete `criteria` block for host vitals labels, so this data source needs no per-label lookup and every attribute value matches what the `fleetdm_label` data source returns for the same label (note `id` is a string here, a number there).
 
 ## Example Usage
 
@@ -72,7 +72,7 @@ Read-Only:
 - `label_membership_type` (String) How Fleet resolves membership for this label: `dynamic` (driven by `query`), `host_vitals` (driven by `criteria`) or `manual` (assigned host-by-host).
 - `label_type` (String) The type of the label.
 - `name` (String) The name of the label.
-- `platform` (String) The platform the label is restricted to.
+- `platform` (String) The platform the label is restricted to (darwin, windows, linux, chrome).
 - `query` (String) The SQL query that defines which hosts belong to this label. Empty for manual and host vitals labels.
 
 <a id="nestedatt--labels--criteria"></a>

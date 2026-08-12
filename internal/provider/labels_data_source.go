@@ -51,7 +51,8 @@ func (d *LabelsDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 		MarkdownDescription: "Use this data source to retrieve information about all FleetDM labels.\n\n" +
 			"Fleet's list endpoint is a full echo of each label: it reports `label_membership_type` and the complete " +
 			"`criteria` block for host vitals labels, so this data source needs no per-label lookup and every " +
-			"attribute here matches what the `fleetdm_label` data source returns for the same label.",
+			"attribute value matches what the `fleetdm_label` data source returns for the same label (note `id` is " +
+			"a string here, a number there).",
 
 		Attributes: map[string]schema.Attribute{
 			"labels": schema.ListNestedAttribute{
@@ -78,7 +79,7 @@ func (d *LabelsDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 						"criteria": labelCriteriaDataSourceSchema(),
 						"platform": schema.StringAttribute{
 							Computed:            true,
-							MarkdownDescription: "The platform the label is restricted to.",
+							MarkdownDescription: "The platform the label is restricted to (darwin, windows, linux, chrome).",
 						},
 						"label_type": schema.StringAttribute{
 							Computed:            true,

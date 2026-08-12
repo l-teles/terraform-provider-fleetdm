@@ -82,12 +82,14 @@ func TestAccLabelDataSource_membershipKinds(t *testing.T) {
 					resource.TestCheckResourceAttr("data.fleetdm_label.manual", "label_membership_type", "manual"),
 					resource.TestCheckResourceAttr("data.fleetdm_label.manual", "host_count", "2"),
 					resource.TestCheckNoResourceAttr("data.fleetdm_label.manual", "criteria.vital"),
+					resource.TestCheckNoResourceAttr("data.fleetdm_label.manual", "criteria.%"),
 
 					// Dynamic label: query drives it, still no criteria.
 					resource.TestCheckResourceAttr("data.fleetdm_label.dynamic", "label_membership_type", "dynamic"),
 					resource.TestCheckResourceAttr("data.fleetdm_label.dynamic", "platform", "darwin"),
 					resource.TestCheckResourceAttr("data.fleetdm_label.dynamic", "host_count", "3"),
 					resource.TestCheckNoResourceAttr("data.fleetdm_label.dynamic", "criteria.vital"),
+					resource.TestCheckNoResourceAttr("data.fleetdm_label.dynamic", "criteria.%"),
 
 					// Host vitals on an IdP group: operator and id stay null.
 					resource.TestCheckResourceAttr("data.fleetdm_label.idp", "label_membership_type", "host_vitals"),
