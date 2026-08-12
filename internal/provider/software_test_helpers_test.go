@@ -62,7 +62,11 @@ type fakeFleetSoftwareServer struct {
 	patchExcludeLabels       []string
 	patchIncludeAllLabels    []string
 	patchInstallScript       string
-	patchSelfService         string
+	patchInstallScriptSeen   bool
+	patchUninstallScriptSeen bool
+	// patchFleetID is the mandatory scope Fleet reads out of the PATCH form.
+	patchFleetID     string
+	patchSelfService string
 
 	// Fleet 4.90 version pinning. patchVersionOnlyCount counts PATCHes that
 	// carried `version` as their ONLY form field — the shape Fleet demands.
@@ -419,14 +423,45 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				http.Error(w, "bad multipart", http.StatusBadRequest)
 				return
 			}
-			// Fleet 4.90 rejects `version` combined with any other field:
-			// "Couldn't update. \"version\" can't be changed at the same time
-			// as other fields." (verified live). Modelling the rejection —
+			// Fleet requires the target fleet on this endpoint and answers
+			// HTTP 400 when it is missing, so the fake enforces it too: a
+			// regression that drops the scope fails the resource tests here
+			// rather than only against a real server. Fleet reads it from the
+			// parsed form, so a query parameter deliberately does not satisfy
+			// this check.
+			fleetIDVals, fleetIDSeen := r.MultipartForm.Value["fleet_id"]
+			if !fleetIDSeen || len(fleetIDVals) == 0 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"message": "Bad request",
+					"errors": []map[string]any{{
+						"name":   "base",
+						"reason": "fleet_id is required; enter 0 for unassigned",
+					}},
+				})
+				return
+			}
+			f.mu.Lock()
+			f.patchFleetID = fleetIDVals[0]
+			f.mu.Unlock()
+
+			// Fleet 4.90 rejects `version` combined with any other content
+			// field: "Couldn't update. \"version\" can't be changed at the same
+			// time as other fields." (verified live). Modelling the rejection —
 			// rather than just recording the field — means any regression that
 			// folds the pin into the metadata PATCH fails the resource tests
-			// instead of silently passing against a permissive fake.
+			// instead of silently passing against a permissive fake. fleet_id is
+			// exempt: it is mandatory scoping, and a live Fleet v4.90.0 accepts
+			// version alongside it.
 			if versionVals, versionSeen := r.MultipartForm.Value["version"]; versionSeen {
-				if len(r.MultipartForm.Value) > 1 {
+				extra := false
+				for key := range r.MultipartForm.Value {
+					if key != "version" && key != "fleet_id" {
+						extra = true
+						break
+					}
+				}
+				if extra {
 					w.WriteHeader(http.StatusBadRequest)
 					_ = json.NewEncoder(w).Encode(map[string]any{
 						"message": "Bad request",
@@ -477,11 +512,21 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			if incAllSeen && len(vals) > 0 {
 				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeAllLabels)
 			}
-			f.patchInstallScript = r.FormValue("install_script")
+			// Presence matters as much as the value: an absent script field is
+			// "leave Fleet's script alone", while a present-and-empty one is an
+			// explicit clear. Recording both lets tests assert that a caller
+			// which does not manage the script never sends it.
+			installVals, installSeen := r.MultipartForm.Value["install_script"]
+			f.patchInstallScriptSeen = installSeen
+			f.patchInstallScript = ""
+			if installSeen && len(installVals) > 0 {
+				f.patchInstallScript = installVals[0]
+			}
+			_, f.patchUninstallScriptSeen = r.MultipartForm.Value["uninstall_script"]
 			f.patchSelfService = r.FormValue("self_service")
 			f.patchDisplayName = r.FormValue("display_name")
 			f.patchCategories = r.FormValue("categories")
-			if f.patchInstallScript != "" {
+			if installSeen {
 				f.titleInstallScript = f.patchInstallScript
 			}
 			if f.patchDisplayName != "" {

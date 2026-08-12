@@ -713,12 +713,26 @@ func (c *Client) DeleteSoftwarePackage(ctx context.Context, titleID int, teamID 
 // pending installs for the old package; non-binary metadata-only PATCHes
 // (Software == nil) leave install state alone.
 type PatchSoftwarePackageRequest struct {
-	TeamID            *int   `json:"team_id,omitempty"`
-	InstallScript     string `json:"install_script"`
-	UninstallScript   string `json:"uninstall_script"`
-	PreInstallQuery   string `json:"pre_install_query"`
-	PostInstallScript string `json:"post_install_script"`
-	SelfService       bool   `json:"self_service"`
+	TeamID *int `json:"team_id,omitempty"`
+	// InstallScript / UninstallScript follow the nil-means-omit convention:
+	//
+	//   - nil              → field is left out of the form, so Fleet keeps
+	//     whatever script the package already has. This is
+	//     what a caller that does not manage the script
+	//     must send, so an unrelated metadata update never
+	//     rewrites a script Fleet owns.
+	//   - pointer to value → field is sent, replacing the stored script.
+	//
+	// Fleet's PATCH decoder only reads a script out of the form when the
+	// field is present, so omission is a genuine "no change" rather than a
+	// clear. PreInstallQuery / PostInstallScript stay plain strings because
+	// they have no Fleet-generated default: for those, the empty string is
+	// the caller's way of clearing the value.
+	InstallScript     *string `json:"install_script"`
+	UninstallScript   *string `json:"uninstall_script"`
+	PreInstallQuery   string  `json:"pre_install_query"`
+	PostInstallScript string  `json:"post_install_script"`
+	SelfService       bool    `json:"self_service"`
 	// DisplayName, when non-empty, overrides the title's display name.
 	// Pass "" to leave Fleet's existing display_name untouched (no clear path
 	// is exposed today — Fleet's API doesn't accept an empty-string override).
@@ -764,23 +778,41 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 		return fmt.Errorf("PatchSoftwarePackage: Filename is required when Software is provided")
 	}
 	endpoint := fmt.Sprintf("/software/titles/%d/package", titleID)
+
+	// Fleet requires the target fleet on this endpoint and rejects the request
+	// with HTTP 400 ("fleet_id is required; enter 0 for unassigned") when it is
+	// absent, so it is always sent — 0 stands for "no team". A nil TeamID means
+	// the resource has no team_id in its configuration, which is Fleet 0, not
+	// "unscoped".
+	//
+	// It goes in the multipart body as `fleet_id` rather than the URL: Fleet's
+	// decoder for this endpoint reads the fleet only out of the parsed form, and
+	// a `fleet_id` query parameter is silently ignored (verified against a live
+	// Fleet v4.90.0 — query `fleet_id` still fails the required check). Fleet
+	// does promote a `team_id` form or query value to `fleet_id`, but that path
+	// is deprecated and logs a warning server-side.
+	tid := 0
 	if req.TeamID != nil {
-		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *req.TeamID)
+		tid = *req.TeamID
 	}
 
-	// Every script + boolean field is sent unconditionally — empty strings
-	// included — because PATCH semantics here are "set to exactly this", not
-	// "merge": for an update, omitting a field that previously had a value
-	// would leave the stale value in place. This differs from
-	// UploadSoftwarePackage, which skips empty script fields so Fleet picks
-	// defaults on create. The label fields use *[]string instead so the
-	// caller can distinguish nil (omit) from empty (clear).
+	// pre_install_query, post_install_script and self_service are sent
+	// unconditionally — empty strings included — because PATCH semantics here
+	// are "set to exactly this", not "merge": for those fields, omitting one
+	// that previously had a value would leave the stale value in place. The
+	// script and label fields use pointers instead so the caller can
+	// distinguish nil (omit) from empty (clear).
 	fields := map[string]string{
-		"install_script":      req.InstallScript,
-		"uninstall_script":    req.UninstallScript,
+		"fleet_id":            strconv.Itoa(tid),
 		"pre_install_query":   req.PreInstallQuery,
 		"post_install_script": req.PostInstallScript,
 		"self_service":        strconv.FormatBool(req.SelfService),
+	}
+	if req.InstallScript != nil {
+		fields["install_script"] = *req.InstallScript
+	}
+	if req.UninstallScript != nil {
+		fields["uninstall_script"] = *req.UninstallScript
 	}
 	if req.DisplayName != "" {
 		fields["display_name"] = req.DisplayName
@@ -833,8 +865,8 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 }
 
 // PatchSoftwarePackagePinnedVersion pins a Fleet-maintained app to a specific
-// (or major) version via PATCH /software/titles/{id}/package, sending ONLY the
-// `version` form field.
+// (or major) version via PATCH /software/titles/{id}/package, sending only the
+// `version` form field plus the mandatory `fleet_id` scope.
 //
 // The dedicated method exists because Fleet rejects `version` combined with
 // anything else on this endpoint. Verified against a live Fleet v4.90.0:
@@ -860,12 +892,21 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 //     mean "no change" must simply not call this method.
 func (c *Client) PatchSoftwarePackagePinnedVersion(ctx context.Context, titleID int, teamID *int, version string) error {
 	endpoint := fmt.Sprintf("/software/titles/%d/package", titleID)
+
+	// fleet_id is mandatory on this endpoint and does not count as one of the
+	// "other fields" Fleet refuses to combine with version — a form carrying
+	// both is accepted and pins the title (verified against a live Fleet
+	// v4.90.0). See PatchSoftwarePackage for why it travels in the body.
+	tid := 0
 	if teamID != nil {
-		endpoint = fmt.Sprintf("%s?team_id=%d", endpoint, *teamID)
+		tid = *teamID
 	}
 
-	// Deliberately the only field in the form — see the doc comment.
-	fields := map[string]string{"version": version}
+	// version + fleet_id only — see the doc comment.
+	fields := map[string]string{
+		"version":  version,
+		"fleet_id": strconv.Itoa(tid),
+	}
 
 	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
 		return fmt.Errorf("failed to set pinned version on software package: %w", err)

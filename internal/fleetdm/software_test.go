@@ -264,6 +264,8 @@ func TestClient_GetSoftwareInstaller(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected method GET, got: %s", r.Method)
 		}
+		// This read scopes with a team_id query parameter, unlike the PATCH on
+		// the same path which requires the scope in the multipart body.
 		if r.URL.Query().Get("team_id") != "5" {
 			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
 		}
@@ -354,8 +356,8 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
 			t.Errorf("expected path /api/v1/fleet/software/titles/42/package, got: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("team_id") != "5" {
-			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected the fleet scope in the form body, not the query string, got: %q", r.URL.RawQuery)
 		}
 
 		// Fleet's PATCH /software/titles/{id}/package endpoint rejects
@@ -366,6 +368,12 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 		}
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		// The target fleet travels in the multipart body as fleet_id, not as a
+		// query parameter — Fleet's decoder for this endpoint reads it only from
+		// the parsed form.
+		if got := r.FormValue("fleet_id"); got != "5" {
+			t.Errorf("expected fleet_id form field '5', got: %q", got)
 		}
 		if got := r.FormValue("install_script"); got != "new install script" {
 			t.Errorf("expected install_script 'new install script', got: %q", got)
@@ -400,7 +408,7 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 	teamID := 5
 	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
 		TeamID:        &teamID,
-		InstallScript: "new install script",
+		InstallScript: strPtr("new install script"),
 		SelfService:   true,
 	})
 	if err != nil {
@@ -535,8 +543,8 @@ func TestClient_PatchSoftwarePackage_WithBinary(t *testing.T) {
 		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("team_id") != "5" {
-			t.Errorf("expected team_id=5, got %q", r.URL.Query().Get("team_id"))
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected the fleet scope in the form body, not the query string, got: %q", r.URL.RawQuery)
 		}
 		ct := r.Header.Get("Content-Type")
 		if !strings.HasPrefix(ct, "multipart/form-data;") {
@@ -582,6 +590,11 @@ func TestClient_PatchSoftwarePackage_WithBinary(t *testing.T) {
 		if got := r.FormValue("self_service"); got != "true" {
 			t.Errorf("self_service: got %q", got)
 		}
+		// The binary-replacement path shares the endpoint, so it must carry the
+		// same mandatory scope as a metadata-only PATCH.
+		if got := r.FormValue("fleet_id"); got != "5" {
+			t.Errorf("expected fleet_id form field '5', got: %q", got)
+		}
 		if got := r.FormValue("display_name"); got != "Mozilla Firefox" {
 			t.Errorf("display_name: got %q", got)
 		}
@@ -613,8 +626,8 @@ func TestClient_PatchSoftwarePackage_WithBinary(t *testing.T) {
 		Software:          wantBinary,
 		Filename:          wantFilename,
 		DisplayName:       "Mozilla Firefox",
-		InstallScript:     "msiexec /i install.msi /quiet",
-		UninstallScript:   "msiexec /x {GUID}",
+		InstallScript:     strPtr("msiexec /i install.msi /quiet"),
+		UninstallScript:   strPtr("msiexec /x {GUID}"),
 		PreInstallQuery:   "SELECT 1 FROM os_version",
 		PostInstallScript: "echo done",
 		SelfService:       true,
@@ -1192,11 +1205,14 @@ func TestClient_ListSoftwareVersionsWithFilters(t *testing.T) {
 // --- Fleet 4.90: Fleet-maintained app version pinning -----------------------
 
 // TestClient_PatchSoftwarePackagePinnedVersion is the load-bearing assertion
-// for the version pin: Fleet rejects `version` combined with ANY other field
-// ("Couldn't update. \"version\" can't be changed at the same time as other
-// fields.", verified against a live Fleet v4.90.0), so this method must send a
-// form containing exactly one value — nothing borrowed from
-// PatchSoftwarePackage's always-send-everything shape.
+// for the version pin: Fleet rejects `version` combined with any other content
+// field ("Couldn't update. \"version\" can't be changed at the same time as
+// other fields.", verified against a live Fleet v4.90.0), so this method must
+// send version plus the mandatory fleet_id scope and nothing else — nothing
+// borrowed from PatchSoftwarePackage's always-send-everything shape.
+//
+// fleet_id does not count as one of those "other fields": a form carrying both
+// is accepted and pins the title (verified against a live Fleet v4.90.0).
 func TestClient_PatchSoftwarePackagePinnedVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPatch {
@@ -1205,8 +1221,8 @@ func TestClient_PatchSoftwarePackagePinnedVersion(t *testing.T) {
 		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("team_id"); got != "7" {
-			t.Errorf("expected team_id=7 query param, got: %q", got)
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected the fleet scope in the form body, not the query string, got: %q", r.URL.RawQuery)
 		}
 		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "multipart/form-data;") {
 			t.Errorf("expected multipart/form-data Content-Type, got: %s", ct)
@@ -1218,10 +1234,13 @@ func TestClient_PatchSoftwarePackagePinnedVersion(t *testing.T) {
 		if got := r.FormValue("version"); got != "2.5.1" {
 			t.Errorf("expected version '2.5.1', got: %q", got)
 		}
-		// The whole point of the dedicated method: exactly one form value, and
+		if got := r.FormValue("fleet_id"); got != "7" {
+			t.Errorf("expected fleet_id form field '7', got: %q", got)
+		}
+		// The whole point of the dedicated method: version + fleet_id only, and
 		// no file part.
-		if len(r.MultipartForm.Value) != 1 {
-			t.Errorf("expected exactly 1 form value (version), got %d: %v", len(r.MultipartForm.Value), r.MultipartForm.Value)
+		if len(r.MultipartForm.Value) != 2 {
+			t.Errorf("expected exactly 2 form values (version, fleet_id), got %d: %v", len(r.MultipartForm.Value), r.MultipartForm.Value)
 		}
 		if len(r.MultipartForm.File) != 0 {
 			t.Errorf("expected no file parts, got: %v", r.MultipartForm.File)
@@ -1265,8 +1284,8 @@ func TestClient_PatchSoftwarePackagePinnedVersion_Unpin(t *testing.T) {
 		if len(values) != 1 || values[0] != "" {
 			t.Errorf("expected a single empty version value, got: %v", values)
 		}
-		if len(r.MultipartForm.Value) != 1 {
-			t.Errorf("expected exactly 1 form value, got %d: %v", len(r.MultipartForm.Value), r.MultipartForm.Value)
+		if len(r.MultipartForm.Value) != 2 {
+			t.Errorf("expected exactly 2 form values (version, fleet_id), got %d: %v", len(r.MultipartForm.Value), r.MultipartForm.Value)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1278,13 +1297,21 @@ func TestClient_PatchSoftwarePackagePinnedVersion_Unpin(t *testing.T) {
 	}
 }
 
-// TestClient_PatchSoftwarePackagePinnedVersion_NoTeam checks the team_id query
-// param is omitted for a nil team (the "No team" case), matching
-// PatchSoftwarePackage's endpoint construction.
+// TestClient_PatchSoftwarePackagePinnedVersion_NoTeam pins the "No team" case:
+// Fleet requires the scope on this endpoint and answers HTTP 400 ("fleet_id is
+// required; enter 0 for unassigned") when it is missing, so a nil team must be
+// sent as fleet_id=0 rather than omitted. Reproduced against a live Fleet
+// v4.90.0, where omitting it failed every update of a team-less package.
 func TestClient_PatchSoftwarePackagePinnedVersion_NoTeam(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "" {
-			t.Errorf("expected no query string for nil team, got: %q", r.URL.RawQuery)
+			t.Errorf("expected no query string, the scope belongs in the form: %q", r.URL.RawQuery)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if got := r.FormValue("fleet_id"); got != "0" {
+			t.Errorf("expected fleet_id form field '0' for a nil team, got: %q", got)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1767,5 +1794,100 @@ func TestSameAppConfiguration(t *testing.T) {
 				t.Errorf("SameAppConfiguration(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestClient_PatchSoftwarePackage_NoTeamSendsFleetIDZero is the regression test
+// for the bug this endpoint had: the scope was only sent when TeamID was
+// non-nil, so every metadata update of a package with no team failed against a
+// live Fleet v4.90.0 with HTTP 400 "fleet_id is required; enter 0 for
+// unassigned". Fleet's decoder reads the scope out of the parsed form only, so
+// the assertion is on the multipart body — a query parameter does not satisfy
+// the server-side check.
+func TestClient_PatchSoftwarePackage_NoTeamSendsFleetIDZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query string, the scope belongs in the form: %q", r.URL.RawQuery)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		if got := r.FormValue("fleet_id"); got != "0" {
+			t.Errorf("expected fleet_id form field '0' for a nil team, got: %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	if err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_OmitsNilScripts pins the nil-means-omit
+// contract on the script fields. A caller that does not manage a script leaves
+// the pointer nil, and the field must then be absent from the form so Fleet
+// keeps the script it generated — sending "" would wipe it. This is what lets a
+// Fleet Maintained App take an unrelated metadata update without losing the
+// install script Fleet maintains upstream.
+func TestClient_PatchSoftwarePackage_OmitsNilScripts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		for _, field := range []string{"install_script", "uninstall_script"} {
+			if _, present := r.MultipartForm.Value[field]; present {
+				t.Errorf("expected %s absent for a nil pointer, got: %q", field, r.FormValue(field))
+			}
+		}
+		// The fields with no Fleet-generated default keep their always-send
+		// shape, so an unrelated update still applies them verbatim.
+		for _, field := range []string{"pre_install_query", "post_install_script", "self_service"} {
+			if _, present := r.MultipartForm.Value[field]; !present {
+				t.Errorf("expected %s to be sent unconditionally", field)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 3
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		TeamID:      &teamID,
+		SelfService: true,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_PatchSoftwarePackage_SendsEmptyScriptWhenSet is the other half of
+// the pointer contract: a pointer to "" is an explicit request to clear the
+// script, so the field must be present-and-empty rather than dropped. Without
+// this, "omit" and "clear" would be indistinguishable on the wire.
+func TestClient_PatchSoftwarePackage_SendsEmptyScriptWhenSet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		values, present := r.MultipartForm.Value["install_script"]
+		if !present {
+			t.Fatal("expected install_script present for a pointer to empty (explicit clear)")
+		}
+		if len(values) != 1 || values[0] != "" {
+			t.Errorf("expected a single empty install_script value, got: %v", values)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+		InstallScript: strPtr(""),
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
 }
