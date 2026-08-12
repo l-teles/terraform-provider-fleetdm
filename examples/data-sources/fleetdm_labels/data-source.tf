@@ -15,3 +15,21 @@ output "labels_with_hosts" {
 output "total_labeled_hosts" {
   value = sum([for label in data.fleetdm_labels.all.labels : label.host_count])
 }
+
+# Group labels by how they select hosts
+output "labels_by_membership_type" {
+  value = {
+    for label in data.fleetdm_labels.all.labels :
+    label.name => label.label_membership_type
+  }
+}
+
+# Host vitals labels and the attribute comparison behind each one. The list
+# endpoint echoes criteria in full, so no extra lookup is needed.
+output "host_vitals_labels" {
+  value = {
+    for label in data.fleetdm_labels.all.labels :
+    label.name => label.criteria
+    if label.label_membership_type == "host_vitals"
+  }
+}

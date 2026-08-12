@@ -50,14 +50,24 @@ type Label struct {
 	Query       string `json:"query"`
 	// Criteria is set for host-vitals labels and absent for dynamic
 	// (query-based) and manual labels.
-	Criteria            *HostVitalCriteria `json:"criteria,omitempty"`
-	Platform            string             `json:"platform,omitempty"`
-	LabelType           string             `json:"label_type,omitempty"`
-	LabelMembershipType string             `json:"label_membership_type,omitempty"`
-	HostCount           int                `json:"host_count,omitempty"`
-	DisplayText         string             `json:"display_text,omitempty"`
-	CreatedAt           string             `json:"created_at,omitempty"`
-	UpdatedAt           string             `json:"updated_at,omitempty"`
+	Criteria  *HostVitalCriteria `json:"criteria,omitempty"`
+	Platform  string             `json:"platform,omitempty"`
+	LabelType string             `json:"label_type,omitempty"`
+	// LabelMembershipType is how Fleet resolves membership: "manual",
+	// "dynamic" (query-driven) or "host_vitals" (criteria-driven). Every label
+	// route reports it, including the list route.
+	LabelMembershipType string `json:"label_membership_type,omitempty"`
+	// HostCount is the number of hosts in the label. Fleet's wire key is
+	// `count`, not `host_count` — POST /labels, GET /labels/{id} and
+	// GET /labels all emit `count` and none of them emits `host_count`
+	// (verified against Fleet 4.90.0). The tag used to read `host_count`, so
+	// this field silently decoded to 0 on every response; the client's own
+	// tests missed it because they encode the fixture through this same
+	// struct, which makes any tag round-trip symmetrically.
+	HostCount   int    `json:"count,omitempty"`
+	DisplayText string `json:"display_text,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 // ListLabelsResponse represents the response from the list labels endpoint.
