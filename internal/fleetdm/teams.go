@@ -88,7 +88,6 @@ type TeamMDMSettings struct {
 	// by the fleetdm_configuration_profile resource instead).
 	MacOSSettings   *MacOSMDMSettings   `json:"macos_settings,omitempty"`
 	WindowsSettings *WindowsMDMSettings `json:"windows_settings,omitempty"`
-	MacOSSetup      *MacOSSetup         `json:"macos_setup,omitempty"`
 }
 
 // AppleOSUpdates represents the OS update settings for an Apple platform. The
@@ -164,13 +163,6 @@ type CustomSetting struct {
 	LabelsIncludeAll []string `json:"labels_include_all,omitempty"`
 	LabelsIncludeAny []string `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny []string `json:"labels_exclude_any,omitempty"`
-}
-
-// MacOSSetup represents macOS setup experience settings.
-type MacOSSetup struct {
-	BootstrapPackage            string `json:"bootstrap_package,omitempty"`
-	EnableEndUserAuthentication bool   `json:"enable_end_user_authentication"`
-	MacOSSetupAssistant         string `json:"macos_setup_assistant,omitempty"`
 }
 
 // HostExpirySettings represents host expiry configuration.

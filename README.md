@@ -19,7 +19,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 
 > **Requires Fleet 4.82.0+.** All resources and data sources in this provider version — including the deprecated `fleetdm_team` and `fleetdm_query` aliases — route through the new Fleet API endpoints (`/fleets`, `/reports`). These endpoints are only available on Fleet 4.82.0+.
 
-### Resources (15)
+### Resources (24)
 
 | Resource                        | Description                                                |
 | ------------------------------- | ---------------------------------------------------------- |
@@ -30,19 +30,25 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_script`                | Manage shell/PowerShell scripts                            |
 | `fleetdm_enroll_secret`         | Manage enrollment secrets (global and fleet)               |
 | `fleetdm_user`                  | Manage Fleet users and permissions                         |
-| `fleetdm_software_custom_package`       | Upload custom installer packages — `.pkg`, `.msi`, `.deb`, `.rpm`, `.exe` (Premium) |
+| `fleetdm_custom_host_vital`     | Manage named slots for host data Fleet does not collect     |
+| `fleetdm_custom_variable`       | Manage encrypted secrets substituted into scripts and profiles |
+| `fleetdm_software_custom_package`       | Upload custom installer packages (`.pkg`, `.msi`, `.exe`, `.zip`, `.deb`, `.rpm`, `.tar.gz`, `.ipa`) and script installers (`.sh`, `.py`, `.ps1`) (Premium) |
 | `fleetdm_software_app_store_app`        | Manage Apple Volume Purchase Program (App Store) apps (Premium)                     |
 | `fleetdm_software_fleet_maintained_app` | Add Fleet-curated apps to a team (Premium)                                          |
 | `fleetdm_software_web_app`             | Create Android web apps (web clips) (Premium, requires Android MDM)                 |
+| `fleetdm_software_self_service_category` | Group self-service software into browsable categories (Premium, Fleet 4.90+)       |
+| `fleetdm_software_title_icon`           | Set a custom icon for a software title (Premium, Fleet 4.90+)                      |
 | `fleetdm_bootstrap_package`     | Manage bootstrap packages for setup assistant (Premium)    |
 | `fleetdm_configuration`         | Manage global Fleet configuration                          |
 | `fleetdm_configuration_profile` | Manage MDM configuration profiles (Premium)                |
 | `fleetdm_setup_experience`      | Manage macOS setup experience settings (Premium)           |
+| `fleetdm_certificate_authority` | Manage certificate authorities for issuing client certificates (Premium) |
+| `fleetdm_certificate`           | Manage certificate templates binding a CA to a subject name (Premium, Fleet 4.90+) |
 | `fleetdm_team` *(deprecated)*   | Deprecated alias for `fleetdm_fleet`                       |
 | `fleetdm_query` *(deprecated)*  | Deprecated alias for `fleetdm_report`                      |
 | `fleetdm_software_package` *(deprecated)* | Split into the three `fleetdm_software_*` resources above — see the migration guide |
 
-### Data Sources (30)
+### Data Sources (38)
 
 | Data Source                                              | Description                               |
 | -------------------------------------------------------- | ----------------------------------------- |
@@ -63,6 +69,13 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_mdm_summary`                                    | Get MDM enrollment summary (Premium)      |
 | `fleetdm_abm_tokens`                                     | Read Apple Business Manager tokens        |
 | `fleetdm_vpp_tokens`                                     | Read Apple Volume Purchase tokens         |
+| `fleetdm_custom_host_vitals`                             | Read custom host vitals, including ones created outside Terraform |
+| `fleetdm_fleet_maintained_app` / `fleetdm_fleet_maintained_apps` | Read Fleet-maintained app information     |
+| `fleetdm_app_store_apps`                                 | Read available App Store (VPP) apps for a fleet (Premium) |
+| `fleetdm_software_self_service_categories`               | Read self-service software categories on a fleet (Premium, Fleet 4.90+) |
+| `fleetdm_certificate_authorities`                        | Read configured certificate authorities (Premium) |
+| `fleetdm_certificates`                                   | Read certificate templates on a fleet (Premium, Fleet 4.90+) |
+| `fleetdm_rest_api_endpoints`                             | Read Fleet's REST API endpoint catalog    |
 | `fleetdm_team` / `fleetdm_teams` *(deprecated)*          | Deprecated aliases for `fleetdm_fleet` / `fleetdm_fleets` |
 | `fleetdm_query` / `fleetdm_queries` *(deprecated)*       | Deprecated aliases for `fleetdm_report` / `fleetdm_reports` |
 

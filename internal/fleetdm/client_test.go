@@ -2,10 +2,13 @@ package fleetdm
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -369,6 +372,156 @@ func TestAPIError_Error(t *testing.T) {
 			result := tt.err.Error()
 			if result != tt.expected {
 				t.Errorf("expected: %s, got: %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestNewClient_PinsTLSMinVersion asserts the constructed transport refuses to
+// negotiate below TLS 1.2 on both the verify_tls=true and verify_tls=false
+// paths. The same tls.Config serves both, so a regression on either would be a
+// silent downgrade rather than a visible failure.
+func TestNewClient_PinsTLSMinVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		verifyTLS              bool
+		wantInsecureSkipVerify bool
+	}{
+		{name: "verify TLS enabled", verifyTLS: true, wantInsecureSkipVerify: false},
+		{name: "verify TLS disabled", verifyTLS: false, wantInsecureSkipVerify: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := NewClient(ClientConfig{
+				ServerAddress: "https://fleet.example.com",
+				APIKey:        "test-api-key",
+				VerifyTLS:     tc.verifyTLS,
+			})
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+
+			transport, ok := client.HTTPClient.Transport.(*http.Transport)
+			if !ok {
+				t.Fatalf("expected *http.Transport, got %T", client.HTTPClient.Transport)
+			}
+			if transport.TLSClientConfig == nil {
+				t.Fatal("expected an explicit TLSClientConfig; a nil one leaves MinVersion up to the Go default")
+			}
+			if got := transport.TLSClientConfig.MinVersion; got != tls.VersionTLS12 {
+				t.Errorf("expected MinVersion TLS 1.2 (%#x), got %#x", uint16(tls.VersionTLS12), got)
+			}
+			if got := transport.TLSClientConfig.InsecureSkipVerify; got != tc.wantInsecureSkipVerify {
+				t.Errorf("expected InsecureSkipVerify=%v, got %v", tc.wantInsecureSkipVerify, got)
+			}
+		})
+	}
+}
+
+// TestReadResponseBodyLimit covers the cap's boundary at a small injected
+// limit: at the limit is a success, one byte past it is an error naming the
+// cap. Doing it here rather than over HTTP keeps the exact-boundary assertions
+// from having to move 100MiB per case.
+func TestReadResponseBodyLimit(t *testing.T) {
+	const limit = 16
+
+	for _, tc := range []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "empty", size: 0},
+		{name: "under the limit", size: limit - 1},
+		{name: "exactly at the limit", size: limit},
+		{name: "one byte over the limit", size: limit + 1, wantErr: true},
+		{name: "far over the limit", size: limit * 10, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Repeat("a", tc.size)
+
+			got, err := readResponseBodyLimit(strings.NewReader(body), limit)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for a %d byte body, got nil", tc.size)
+				}
+				// The error must name the cap so an operator can tell a
+				// too-large response from a transport failure.
+				if !strings.Contains(err.Error(), fmt.Sprintf("%d byte limit", limit)) {
+					t.Errorf("expected the error to name the %d byte limit, got: %v", limit, err)
+				}
+				if got != nil {
+					t.Errorf("expected no body on error, got %d bytes", len(got))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error for a %d byte body, got: %v", tc.size, err)
+			}
+			if string(got) != body {
+				t.Errorf("expected the body to round-trip intact, got %d of %d bytes", len(got), tc.size)
+			}
+		})
+	}
+}
+
+// TestClient_RejectsOversizeResponse checks the real maxResponseBytes cap is
+// actually wired into doRequest: a server that streams more than the cap gets
+// an error rather than having its body buffered, while a body just under it
+// still succeeds.
+//
+// The bodies are streamed and the success case is read with a nil result, so no
+// case holds more than one copy of the payload in memory.
+// streamOversizeBody writes size bytes in fixed chunks so neither side
+// allocates the whole payload. Shared by the oversize tests for doRequest and
+// for the raw-content helpers that bypass it.
+func streamOversizeBody(w http.ResponseWriter, size int) {
+	chunk := make([]byte, 1<<20)
+	for i := range chunk {
+		chunk[i] = 'a'
+	}
+	for remaining := size; remaining > 0; {
+		n := min(remaining, len(chunk))
+		if _, err := w.Write(chunk[:n]); err != nil {
+			return
+		}
+		remaining -= n
+	}
+}
+
+func TestClient_RejectsOversizeResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "just under the cap", size: maxResponseBytes - 1},
+		{name: "just over the cap", size: maxResponseBytes + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				streamOversizeBody(w, tc.size)
+			}))
+			defer server.Close()
+
+			client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			if err != nil {
+				t.Fatalf("expected no error creating client, got: %v", err)
+			}
+
+			// nil result skips json.Unmarshal, which this payload is not
+			// valid JSON for anyway — the cap is enforced before decoding.
+			err = client.Get(context.Background(), "/anything", nil, nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for a %d byte body, got nil", tc.size)
+				}
+				if !strings.Contains(err.Error(), "byte limit") {
+					t.Errorf("expected a body-limit error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error for a %d byte body, got: %v", tc.size, err)
 			}
 		})
 	}

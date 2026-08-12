@@ -24,20 +24,26 @@ Supports both **FleetDM Free** and **Premium** editions. Not affiliated with Fle
 | `fleetdm_user` | Users and permissions |
 | `fleetdm_enroll_secret` | Enrollment secrets (global and fleet) |
 | `fleetdm_configuration` | Global Fleet server configuration |
+| `fleetdm_custom_host_vital` | Named slots for host data Fleet does not collect itself |
+| `fleetdm_custom_variable` | Encrypted secrets substituted into scripts and configuration profiles |
 | `fleetdm_software_custom_package` | Upload custom installer packages (.pkg/.msi/.exe/.zip/.deb/.rpm/.tar.gz/.ipa) and script installers (.sh/.py/.ps1) — Premium |
 | `fleetdm_software_app_store_app` | Apple Volume Purchase Program (App Store) apps — Premium |
 | `fleetdm_software_fleet_maintained_app` | Fleet-curated apps bound to a team — Premium |
 | `fleetdm_software_web_app` | Android web apps (web clips) — Premium, requires Android MDM |
+| `fleetdm_software_self_service_category` | Categories grouping self-service software on a fleet — Premium, Fleet 4.90+ |
+| `fleetdm_software_title_icon` | Custom icon for a software title — Premium, Fleet 4.90+ |
 | `fleetdm_software_package` *(deprecated)* | Split into the three resources above — see the migration guide |
 | `fleetdm_bootstrap_package` | Bootstrap packages for DEP enrollment (Premium) |
 | `fleetdm_configuration_profile` | MDM configuration profiles (Premium) |
 | `fleetdm_setup_experience` | macOS setup experience settings (Premium) |
+| `fleetdm_certificate_authority` | Certificate authorities for issuing client certificates (Premium) |
+| `fleetdm_certificate` | Certificate templates binding a CA to a subject name — Premium, Fleet 4.90+ |
 | `fleetdm_team` *(deprecated)* | Deprecated alias for `fleetdm_fleet` |
 | `fleetdm_query` *(deprecated)* | Deprecated alias for `fleetdm_report` |
 
 ## Data Sources
 
-Singular and plural data sources for: fleets, reports, policies, labels, scripts, users, hosts, software titles, software versions, configuration, configuration profiles, enroll secrets, activities, ABM tokens, VPP tokens, MDM summary, and server version.
+Singular and plural data sources for: fleets, reports, policies, labels, scripts, users, hosts, software titles, software versions, Fleet-maintained apps, App Store (VPP) apps, self-service software categories, custom host vitals, certificate authorities, certificate templates, configuration, configuration profiles, enroll secrets, activities, ABM tokens, VPP tokens, MDM summary, the REST API endpoint catalog, and server version.
 
 ## Authentication
 

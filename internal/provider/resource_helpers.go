@@ -59,12 +59,28 @@ func isConflict(err error) bool {
 
 // parseIDFromString parses a numeric string ID and adds a diagnostic error on failure.
 // Returns the parsed int and true on success, or 0 and false on failure.
+//
+// Negative values are rejected: no Fleet ID is ever negative, so "-1" is a
+// typo or a mangled composite import ID, and accepting it would push the bad
+// value into state and turn a clear import error into a confusing 404 (or, for
+// the fleet_id half of a composite ID, a wrong-scope lookup).
+//
+// Zero is deliberately accepted. It is a meaningful value in several places:
+// fleet_id/team_id 0 is Fleet's "no team" scope, which is why import IDs like
+// "0:5" are legitimate.
 func parseIDFromString(id string, resourceName string, diagnostics *diag.Diagnostics) (int64, bool) {
 	parsed, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		diagnostics.AddError(
 			fmt.Sprintf("Error Importing FleetDM %s", resourceName),
 			fmt.Sprintf("Could not parse %s ID '%s': %s", resourceName, id, err),
+		)
+		return 0, false
+	}
+	if parsed < 0 {
+		diagnostics.AddError(
+			fmt.Sprintf("Error Importing FleetDM %s", resourceName),
+			fmt.Sprintf("Could not parse %s ID '%s': ID must not be negative", resourceName, id),
 		)
 		return 0, false
 	}

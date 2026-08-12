@@ -84,8 +84,14 @@ func NewClient(config ClientConfig) (*Client, error) {
 		timeout = 30
 	}
 
-	// Configure TLS
+	// Configure TLS. MinVersion is pinned rather than left to the Go default
+	// so the negotiated version never depends on the toolchain's current
+	// default, and so a server offering only TLS 1.0/1.1 is refused instead of
+	// silently downgraded. This is the only tls.Config the client builds — the
+	// same transport serves both the verify_tls=true and verify_tls=false
+	// paths, so the floor applies either way.
 	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: !config.VerifyTLS, // #nosec G402 -- user-controlled provider config //nolint:gosec
 	}
 
@@ -153,6 +159,42 @@ func newAPIError(statusCode int, respBody []byte) *APIError {
 	return apiErr
 }
 
+// maxResponseBytes caps how much of a JSON API response body the client will
+// buffer. Without a cap, io.ReadAll grows without limit, so a compromised or
+// misbehaving Fleet — or anything else answering on the configured server
+// address — can drive the provider to exhaust memory during a plan or apply.
+//
+// The cap only has to clear the largest legitimate response Fleet produces.
+// The biggest JSON envelopes in practice are full host, software and activity
+// listings, which run to a few MB even on large deployments. The raw-content
+// helpers that bypass doRequest (GetScriptContent, GetConfigProfileContent)
+// apply the same cap through readResponseBody, and Fleet limits script and
+// profile content server-side far below it. 100MiB leaves several orders of
+// magnitude of headroom, which is why exceeding it is treated as a broken
+// server rather than a limit worth tuning.
+const maxResponseBytes = 100 << 20
+
+// readResponseBody buffers a response body up to maxResponseBytes, returning
+// an error rather than a truncated body when the server sends more.
+func readResponseBody(body io.Reader) ([]byte, error) {
+	return readResponseBodyLimit(body, maxResponseBytes)
+}
+
+// readResponseBodyLimit is readResponseBody with the cap injected, so the
+// boundary can be tested without moving 100MiB through a test server. It reads
+// one byte past the limit so "exactly at the limit" stays a success and only a
+// genuine overrun fails.
+func readResponseBodyLimit(body io.Reader, limit int) ([]byte, error) {
+	buf, err := io.ReadAll(io.LimitReader(body, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if len(buf) > limit {
+		return nil, fmt.Errorf("response body exceeds the %d byte limit; refusing to buffer it", limit)
+	}
+	return buf, nil
+}
+
 // doRequest performs an HTTP request to the FleetDM API.
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body interface{}, result interface{}) error {
 	reqURL := c.BaseURL + endpoint
@@ -182,9 +224,12 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body in
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		// Keep the status and endpoint: an oversize body aborts before
+		// newAPIError runs, and a bare limit message gives the practitioner
+		// nothing to locate the failing call with.
+		return fmt.Errorf("HTTP %d from %s %s: %w", resp.StatusCode, method, endpoint, err)
 	}
 
 	if resp.StatusCode >= 400 {

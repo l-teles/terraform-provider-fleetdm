@@ -118,9 +118,9 @@ func (c *Client) sendMultipart(ctx context.Context, method, endpoint string, bod
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode >= 400 {

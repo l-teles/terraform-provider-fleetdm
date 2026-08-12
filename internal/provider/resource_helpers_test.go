@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -375,6 +376,67 @@ func TestIsNotFound(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isNotFound(tt.err); got != tt.want {
 				t.Errorf("isNotFound(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseIDFromString(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      string
+		want    int64
+		wantErr bool
+	}{
+		{name: "positive ID", id: "5", want: 5},
+		{
+			// Zero must stay valid: fleet_id/team_id 0 is Fleet's "no team"
+			// scope, so import IDs like "0" and the "0:5" composite form are
+			// legitimate. A guard that rejected 0 would break importing
+			// no-team bootstrap packages, setup experiences, certificate
+			// templates and self-service categories.
+			name: "zero is a valid ID",
+			id:   "0",
+			want: 0,
+		},
+		{name: "large ID", id: "9223372036854775807", want: 9223372036854775807},
+		{name: "negative ID", id: "-1", wantErr: true},
+		{name: "negative zero", id: "-0", want: 0},
+		{name: "large negative ID", id: "-9223372036854775808", wantErr: true},
+		{name: "overflows int64", id: "9223372036854775808", wantErr: true},
+		{name: "empty string", id: "", wantErr: true},
+		{name: "not a number", id: "abc", wantErr: true},
+		{name: "float", id: "1.5", wantErr: true},
+		{name: "leading plus", id: "+7", want: 7},
+		{name: "surrounding whitespace", id: " 7 ", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			got, ok := parseIDFromString(tt.id, "Test Resource", &diags)
+
+			if tt.wantErr {
+				if ok {
+					t.Errorf("parseIDFromString(%q) = (%d, true), want failure", tt.id, got)
+				}
+				if !diags.HasError() {
+					t.Errorf("parseIDFromString(%q) failed without adding a diagnostic", tt.id)
+				}
+				if got != 0 {
+					t.Errorf("parseIDFromString(%q) returned %d on failure, want 0", tt.id, got)
+				}
+				return
+			}
+
+			if !ok {
+				t.Fatalf("parseIDFromString(%q) failed unexpectedly: %v", tt.id, diags.Errors())
+			}
+			if diags.HasError() {
+				t.Errorf("parseIDFromString(%q) succeeded but added a diagnostic: %v", tt.id, diags.Errors())
+			}
+			if got != tt.want {
+				t.Errorf("parseIDFromString(%q) = %d, want %d", tt.id, got, tt.want)
 			}
 		})
 	}

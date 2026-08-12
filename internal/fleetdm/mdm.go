@@ -365,9 +365,9 @@ func (c *Client) GetConfigProfileContent(ctx context.Context, profileUUID string
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
+		return "", fmt.Errorf("failed to get config profile content %s: %w", profileUUID, err)
 	}
 
 	if resp.StatusCode >= 400 {
