@@ -89,7 +89,7 @@ func (r *softwareFleetMaintainedAppResource) Metadata(_ context.Context, req res
 // attributes (fleet_maintained_app_id and the script fields).
 func (r *softwareFleetMaintainedAppResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	attrs := softwareCommonSchemaAttributes()
-	for k, v := range softwareScriptAttributes() {
+	for k, v := range fleetMaintainedAppScriptAttributes() {
 		attrs[k] = v
 	}
 	attrs["categories"] = softwareCategoriesAttribute()
@@ -211,25 +211,12 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 	} else if plan.Platform.IsNull() || plan.Platform.IsUnknown() {
 		plan.Platform = types.StringValue("")
 	}
-	// install_script / uninstall_script are Optional+Computed: when the user
-	// omits them, Fleet generates a default for the package type and returns
-	// it on the GetSoftwareTitle round-trip inside AddFleetMaintainedApp.
-	// Hydrate the plan with Fleet's value so the post-apply state holds a
-	// known value (the framework rejects unknown values in saved state) and
-	// the next plan sees no diff. Mirror Read's non-empty guard, falling back
-	// to "" only if Fleet returned nothing and the value is still unknown.
-	if title.SoftwarePackage != nil && title.SoftwarePackage.InstallScript != "" {
-		plan.InstallScript = types.StringValue(title.SoftwarePackage.InstallScript)
-	}
-	if plan.InstallScript.IsUnknown() {
-		plan.InstallScript = types.StringValue("")
-	}
-	if title.SoftwarePackage != nil && title.SoftwarePackage.UninstallScript != "" {
-		plan.UninstallScript = types.StringValue(title.SoftwarePackage.UninstallScript)
-	}
-	if plan.UninstallScript.IsUnknown() {
-		plan.UninstallScript = types.StringValue("")
-	}
+	// install_script / uninstall_script are deliberately NOT hydrated from the
+	// Add response. They are Optional-only on this resource, so an undeclared
+	// script stays null and Fleet keeps ownership of it — see
+	// fleetMaintainedAppScriptAttributes() for why. A declared script needs no
+	// hydration either: the plan already holds the configured value, which the
+	// Add request sent to Fleet.
 	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
 
 	// Persist a baseline state right after the FMA title is created in
@@ -261,10 +248,12 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 	needsFollowupPatch := !userDisplayName.IsNull() && !userDisplayName.IsUnknown() && userDisplayName.ValueString() != "" && userDisplayName.ValueString() != title.DisplayName
 	needsFollowupPatch = needsFollowupPatch || !plan.Categories.IsNull()
 	if needsFollowupPatch {
+		// The script pointers stay nil unless the HCL declares the attribute, so
+		// this display_name / categories PATCH never rewrites a script Fleet owns.
 		patch := &fleetdm.PatchSoftwarePackageRequest{
 			TeamID:            optionalIntPtr(plan.TeamID),
-			InstallScript:     plan.InstallScript.ValueString(),
-			UninstallScript:   plan.UninstallScript.ValueString(),
+			InstallScript:     optionalStringPtr(plan.InstallScript),
+			UninstallScript:   optionalStringPtr(plan.UninstallScript),
 			PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 			PostInstallScript: plan.PostInstallScript.ValueString(),
 			SelfService:       plan.SelfService.ValueBool(),
@@ -381,10 +370,22 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	if pkg.Platform != "" {
 		state.Platform = types.StringValue(pkg.Platform)
 	}
-	if pkg.InstallScript != "" {
+	// install_script / uninstall_script follow the opt-in convention (see
+	// pinned_version below and fleetMaintainedAppScriptAttributes()): refresh
+	// them only while Terraform is the owner, so a script Fleet maintains — or
+	// one edited through the Fleet UI on a title whose HCL omits the attribute —
+	// never materializes into state and starts a fight.
+	//
+	// Inside the owned branch the refresh is unconditional, deliberately without
+	// the usual non-empty guard: an owned script that came back empty has to
+	// reach state, or a Fleet-side edit that blanked it would leave state holding
+	// the configured value, produce no diff, and quietly keep an empty script on
+	// hosts. Fleet always echoes the key for a package title, so an empty value
+	// means empty rather than absent.
+	if !state.InstallScript.IsNull() {
 		state.InstallScript = types.StringValue(pkg.InstallScript)
 	}
-	if pkg.UninstallScript != "" {
+	if !state.UninstallScript.IsNull() {
 		state.UninstallScript = types.StringValue(pkg.UninstallScript)
 	}
 	if pkg.PreInstallQuery != "" {
@@ -497,10 +498,15 @@ func (r *softwareFleetMaintainedAppResource) Update(ctx context.Context, req res
 		return
 	}
 
+	// A null script means the HCL does not declare it, so the field is omitted
+	// and Fleet keeps the script it maintains — including when this PATCH fires
+	// for an unrelated change such as self_service or a label edit. Removing a
+	// previously declared script from HCL therefore hands ownership back to
+	// Fleet rather than clearing the script.
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
 		TeamID:            teamID,
-		InstallScript:     plan.InstallScript.ValueString(),
-		UninstallScript:   plan.UninstallScript.ValueString(),
+		InstallScript:     optionalStringPtr(plan.InstallScript),
+		UninstallScript:   optionalStringPtr(plan.UninstallScript),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),

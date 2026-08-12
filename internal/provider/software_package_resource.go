@@ -1306,10 +1306,19 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 	// pointers stay nil unless the HCL attribute is set — that's how we
 	// avoid sending both labels_include_any and labels_exclude_any in the
 	// same multipart body, which Fleet rejects ("Only one of …").
+	//
+	// The scripts are always sent, empty string included: this deprecated
+	// resource declares them Optional without Computed, so a null value means
+	// "not configured" and Terraform is authoritative over the field. That is
+	// the behaviour this resource has always had, and it is deliberately left
+	// alone — fleetdm_software_fleet_maintained_app is where the omit-when-null
+	// convention applies.
+	installScript := plan.InstallScript.ValueString()
+	uninstallScript := plan.UninstallScript.ValueString()
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
 		TeamID:            teamID,
-		InstallScript:     plan.InstallScript.ValueString(),
-		UninstallScript:   plan.UninstallScript.ValueString(),
+		InstallScript:     &installScript,
+		UninstallScript:   &uninstallScript,
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
@@ -1398,13 +1407,17 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 	}
 	plan.Filename = types.StringValue(filename)
 
+	// Scripts always sent — see the metadata PATCH above for why this
+	// deprecated resource keeps that shape.
+	installScript := plan.InstallScript.ValueString()
+	uninstallScript := plan.UninstallScript.ValueString()
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
 		TeamID:            teamID,
 		Software:          content,
 		Filename:          filename,
 		DisplayName:       plan.DisplayName.ValueString(),
-		InstallScript:     plan.InstallScript.ValueString(),
-		UninstallScript:   plan.UninstallScript.ValueString(),
+		InstallScript:     &installScript,
+		UninstallScript:   &uninstallScript,
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),

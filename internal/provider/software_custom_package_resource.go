@@ -605,8 +605,8 @@ func (r *softwareCustomPackageResource) Update(ctx context.Context, req resource
 
 	patchReq := &fleetdm.PatchSoftwarePackageRequest{
 		TeamID:            teamID,
-		InstallScript:     plan.InstallScript.ValueString(),
-		UninstallScript:   plan.UninstallScript.ValueString(),
+		InstallScript:     optionalStringPtr(plan.InstallScript),
+		UninstallScript:   optionalStringPtr(plan.UninstallScript),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
@@ -715,8 +715,8 @@ func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titl
 		Software:          content,
 		Filename:          filename,
 		DisplayName:       plan.DisplayName.ValueString(),
-		InstallScript:     plan.InstallScript.ValueString(),
-		UninstallScript:   plan.UninstallScript.ValueString(),
+		InstallScript:     optionalStringPtr(plan.InstallScript),
+		UninstallScript:   optionalStringPtr(plan.UninstallScript),
 		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),

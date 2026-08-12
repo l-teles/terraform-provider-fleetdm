@@ -246,6 +246,47 @@ func softwareScriptAttributes() map[string]schema.Attribute {
 	}
 }
 
+// fleetMaintainedAppScriptAttributes returns the script attributes for
+// fleetdm_software_fleet_maintained_app.
+//
+// install_script and uninstall_script differ from the custom-package versions
+// in softwareScriptAttributes(): they are Optional but NOT Computed, so an
+// undeclared script stays null in state and Fleet keeps ownership of it.
+//
+// A Fleet Maintained App's scripts are maintained upstream — Fleet regenerates
+// them as it publishes new versions of the app. Mirroring them into state as a
+// Computed value made Terraform carry a copy it did not manage, with two
+// consequences: every upstream change surfaced as "Objects have changed outside
+// of Terraform" noise on the next plan, and because the PATCH endpoint was sent
+// the stored value on any update, an apply that skipped the refresh (a saved
+// plan, or -refresh=false) could push a stale script back to Fleet. Leaving the
+// attribute null keeps Terraform out of a field it was never asked to own.
+//
+// Declaring either script switches ownership to Terraform in the usual way:
+// the configured value is authoritative, out-of-band edits are reverted, and
+// removing the attribute again hands the script back to Fleet without clearing
+// it (the PATCH omits the field rather than sending "").
+func fleetMaintainedAppScriptAttributes() map[string]schema.Attribute {
+	attrs := softwareScriptAttributes()
+	attrs["install_script"] = schema.StringAttribute{
+		Description: "Script Fleet runs to install the app. Optional: when omitted, the script stays " +
+			"under Fleet's control — Fleet generates it and keeps it current as it publishes new " +
+			"versions of the app, and Terraform neither stores nor reverts it. Set this attribute to " +
+			"take ownership of the script; remove it to hand ownership back to Fleet without clearing " +
+			"the script that is in place.",
+		Optional: true,
+	}
+	attrs["uninstall_script"] = schema.StringAttribute{
+		Description: "Script Fleet runs to uninstall the app. Optional: when omitted, the script stays " +
+			"under Fleet's control — Fleet generates it and keeps it current as it publishes new " +
+			"versions of the app, and Terraform neither stores nor reverts it. Set this attribute to " +
+			"take ownership of the script; remove it to hand ownership back to Fleet without clearing " +
+			"the script that is in place.",
+		Optional: true,
+	}
+	return attrs
+}
+
 // softwareAutomaticInstallPolicyAttribute returns the schema attribute for
 // the policy-based auto-install feature. Only fleetdm_software_custom_package
 // and fleetdm_software_fleet_maintained_app support it — VPP's Add endpoint
