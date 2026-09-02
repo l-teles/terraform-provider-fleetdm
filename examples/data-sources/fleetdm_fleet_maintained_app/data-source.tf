@@ -10,9 +10,26 @@ data "fleetdm_fleet_maintained_app" "chrome_team" {
   team_id = fleetdm_team.workstations.id
 }
 
-# Look up a Fleet Maintained App by ID
+# Look up a Fleet Maintained App by ID, scoped to a team.
 data "fleetdm_fleet_maintained_app" "by_id" {
-  id = 3
+  id      = 3
+  team_id = fleetdm_team.workstations.id
+}
+
+# Disambiguate an app Fleet publishes under the same name on several platforms.
+# Without platform, a name matching more than one platform is an error rather
+# than a guess at which one you meant.
+data "fleetdm_fleet_maintained_app" "firefox_windows" {
+  name     = "Mozilla Firefox"
+  platform = "windows"
+}
+
+# name/platform set alongside id must match the resolved app, or the read
+# errors — they're a consistency check here, not a second lookup key.
+data "fleetdm_fleet_maintained_app" "firefox_by_id" {
+  id       = 93926
+  name     = "Mozilla Firefox"
+  platform = "windows"
 }
 
 # Use the app ID to add it to a team via fleetdm_software_fleet_maintained_app.

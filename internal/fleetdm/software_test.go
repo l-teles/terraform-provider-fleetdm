@@ -1023,7 +1023,7 @@ func TestClient_GetFleetMaintainedApp(t *testing.T) {
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
-	app, err := client.GetFleetMaintainedApp(context.Background(), 1)
+	app, err := client.GetFleetMaintainedApp(context.Background(), 1, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1044,6 +1044,40 @@ func TestClient_GetFleetMaintainedApp(t *testing.T) {
 	}
 	if app.InstallScript != "installer -pkg /tmp/firefox.pkg -target /" {
 		t.Errorf("unexpected install_script: %s", app.InstallScript)
+	}
+}
+
+// TestClient_GetFleetMaintainedApp_WithTeamID covers that a non-nil teamID is
+// actually sent as a query parameter, not silently dropped — Fleet uses it to
+// populate software_title_id for that team.
+func TestClient_GetFleetMaintainedApp_WithTeamID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("team_id"); got != "5" {
+			t.Errorf("expected team_id query param '5', got: %q", got)
+		}
+
+		titleID := 42
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(getFleetMaintainedAppResponse{
+			FleetMaintainedApp: &FleetMaintainedApp{
+				ID:              1,
+				Name:            "Firefox",
+				Slug:            "firefox",
+				Platform:        "darwin",
+				SoftwareTitleID: &titleID,
+			},
+		})
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+	teamID := 5
+	app, err := client.GetFleetMaintainedApp(context.Background(), 1, &teamID)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if app.SoftwareTitleID == nil || *app.SoftwareTitleID != 42 {
+		t.Errorf("expected software_title_id 42, got: %v", app.SoftwareTitleID)
 	}
 }
 

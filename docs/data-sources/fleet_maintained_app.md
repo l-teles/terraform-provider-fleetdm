@@ -25,9 +25,26 @@ data "fleetdm_fleet_maintained_app" "chrome_team" {
   team_id = fleetdm_team.workstations.id
 }
 
-# Look up a Fleet Maintained App by ID
+# Look up a Fleet Maintained App by ID, scoped to a team.
 data "fleetdm_fleet_maintained_app" "by_id" {
-  id = 3
+  id      = 3
+  team_id = fleetdm_team.workstations.id
+}
+
+# Disambiguate an app Fleet publishes under the same name on several platforms.
+# Without platform, a name matching more than one platform is an error rather
+# than a guess at which one you meant.
+data "fleetdm_fleet_maintained_app" "firefox_windows" {
+  name     = "Mozilla Firefox"
+  platform = "windows"
+}
+
+# name/platform set alongside id must match the resolved app, or the read
+# errors — they're a consistency check here, not a second lookup key.
+data "fleetdm_fleet_maintained_app" "firefox_by_id" {
+  id       = 93926
+  name     = "Mozilla Firefox"
+  platform = "windows"
 }
 
 # Use the app ID to add it to a team via fleetdm_software_fleet_maintained_app.
@@ -52,14 +69,14 @@ output "chrome_version" {
 ### Optional
 
 - `id` (Number) The Fleet Maintained App ID. If specified, the app is looked up by ID.
-- `name` (String) The app name (e.g., "1Password", "Google Chrome"). Used for lookup when id is not specified.
-- `team_id` (Number) If specified, includes software_title_id showing whether the app is already added to that team.
+- `name` (String) The app name (e.g., "1Password", "Google Chrome"). Used for lookup when `id` is not specified. When set alongside `id`, it must match the resolved app's actual name — a mismatch is an error, not a hint the resolved app is wrong.
+- `platform` (String) The platform (`darwin`, `windows`, `linux`). Optional as an input: set it alongside `name` to disambiguate apps Fleet publishes under the same name on more than one platform (e.g. "Mozilla Firefox" exists for both `darwin` and `windows`) — a `name` lookup that still matches more than one app is an error asking for `platform`, not a pick-the-first guess. Not needed when looking up by `id`, which is already unique — but if set anyway, it must match the resolved app's actual platform, or the read errors instead of silently resolving in the app's favor. Always reflects the resolved app's actual platform in state.
+- `team_id` (Number) If specified, includes software_title_id showing whether the app is already added to that team. Works with lookup by either `id` or `name`.
 
 ### Read-Only
 
 - `filename` (String) The package filename.
 - `install_script` (String) The default install script.
-- `platform` (String) The platform (darwin, windows, linux).
 - `slug` (String) The app slug (e.g., "1password/darwin").
 - `software_title_id` (Number) Set if the app is already added to the team.
 - `uninstall_script` (String) The default uninstall script.

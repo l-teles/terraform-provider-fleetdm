@@ -961,10 +961,16 @@ type getFleetMaintainedAppResponse struct {
 	FleetMaintainedApp *FleetMaintainedApp `json:"fleet_maintained_app"`
 }
 
-// GetFleetMaintainedApp retrieves a Fleet Maintained App by ID.
-func (c *Client) GetFleetMaintainedApp(ctx context.Context, id int) (*FleetMaintainedApp, error) {
+// GetFleetMaintainedApp retrieves a Fleet Maintained App by ID. teamID is
+// optional and, when set, populates the response's software_title_id with
+// that team's title id instead of leaving it null.
+func (c *Client) GetFleetMaintainedApp(ctx context.Context, id int, teamID *int) (*FleetMaintainedApp, error) {
+	params := make(map[string]string)
+	if teamID != nil {
+		params["team_id"] = strconv.Itoa(*teamID)
+	}
 	var resp getFleetMaintainedAppResponse
-	if err := c.Get(ctx, fmt.Sprintf("/software/fleet_maintained_apps/%d", id), nil, &resp); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/software/fleet_maintained_apps/%d", id), params, &resp); err != nil {
 		return nil, fmt.Errorf("failed to get Fleet Maintained App %d: %w", id, err)
 	}
 	return resp.FleetMaintainedApp, nil
