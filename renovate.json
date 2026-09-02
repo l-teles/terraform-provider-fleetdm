@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "7 days",
+  "prConcurrentLimit": 10,
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["go.mod"],
+      "matchDepTypes": ["require", "indirect"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "commitMessagePrefix": "deps:",
+      "labels": ["dependencies"],
+      "groupName": "go-dependencies"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["go.mod"],
+      "matchDepTypes": ["toolchain"],
+      "separateMinorPatch": true,
+      "commitMessagePrefix": "deps:",
+      "labels": ["dependencies"],
+      "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".github/security-tools/go.mod"],
+      "matchDepTypes": ["require", "indirect"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "commitMessagePrefix": "ci:",
+      "labels": ["chore", "dependencies"],
+      "groupName": "security-tools"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchFileNames": [".github/security-tools/go.mod"],
+      "matchDepTypes": ["toolchain"],
+      "separateMinorPatch": true,
+      "commitMessagePrefix": "ci:",
+      "labels": ["chore", "dependencies"],
+      "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "commitMessagePrefix": "ci:",
+      "labels": ["chore"],
+      "groupName": "github-actions"
+    }
+  ]
+}
