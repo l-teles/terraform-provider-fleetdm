@@ -3,6 +3,7 @@
   "extends": ["config:recommended"],
   "minimumReleaseAge": "7 days",
   "prConcurrentLimit": 10,
+  "labels": ["dependencies"],
   "packageRules": [
     {
       "matchManagers": ["gomod"],
@@ -10,7 +11,6 @@
       "matchDepTypes": ["require", "indirect"],
       "matchUpdateTypes": ["minor", "patch"],
       "commitMessagePrefix": "deps:",
-      "labels": ["dependencies"],
       "groupName": "go-dependencies"
     },
     {
@@ -19,7 +19,6 @@
       "matchDepTypes": ["toolchain"],
       "separateMinorPatch": true,
       "commitMessagePrefix": "deps:",
-      "labels": ["dependencies"],
       "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
     },
     {
@@ -28,7 +27,7 @@
       "matchDepTypes": ["require", "indirect"],
       "matchUpdateTypes": ["minor", "patch"],
       "commitMessagePrefix": "ci:",
-      "labels": ["chore", "dependencies"],
+      "addLabels": ["chore"],
       "groupName": "security-tools"
     },
     {
@@ -37,14 +36,14 @@
       "matchDepTypes": ["toolchain"],
       "separateMinorPatch": true,
       "commitMessagePrefix": "ci:",
-      "labels": ["chore", "dependencies"],
+      "addLabels": ["chore"],
       "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
     },
     {
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "commitMessagePrefix": "ci:",
-      "labels": ["chore"],
+      "addLabels": ["chore"],
       "groupName": "github-actions"
     }
   ]
