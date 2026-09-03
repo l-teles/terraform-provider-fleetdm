@@ -3,6 +3,10 @@
   "extends": ["config:recommended"],
   "minimumReleaseAge": "7 days",
   "prConcurrentLimit": 10,
+  "gomod": {
+    "description": "Run `go mod tidy` after every Go update. Without it Renovate records only the /go.mod hashes for a bumped version, so go.sum ends up missing the module-zip (h1:) hashes and keeps superseded entries. Tool-only modules break outright, because `go install` runs in -mod=readonly.",
+    "postUpdateOptions": ["gomodTidy"]
+  },
   "packageRules": [
     {
       "matchManagers": ["gomod"],
