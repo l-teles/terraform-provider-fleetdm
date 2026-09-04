@@ -101,3 +101,53 @@ provider "fleetdm" {
 data "fleetdm_abm_tokens" "test" {}
 `
 }
+
+// TestAccABMTokensDataSource_tokenInvalid covers the token_invalid flag Fleet
+// 4.91 added, and the older-server case where the key is absent entirely.
+func TestAccABMTokensDataSource_tokenInvalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/fleet/abm_tokens" && r.Method == "GET" {
+			if err := json.NewEncoder(w).Encode(map[string]interface{}{
+				"abm_tokens": []map[string]interface{}{
+					{
+						"id":            1,
+						"apple_id":      "rejected@example.com",
+						"org_name":      "Rejected Corp",
+						"terms_expired": false,
+						"token_invalid": true,
+					},
+					{
+						// Pre-4.91 shape: the key is missing, which must read
+						// as false rather than failing the decode.
+						"id":            2,
+						"apple_id":      "legacy@example.com",
+						"org_name":      "Legacy Corp",
+						"terms_expired": true,
+					},
+				},
+			}); err != nil {
+				t.Errorf("failed to encode response: %v", err)
+			}
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccABMTokensDataSourceConfig(server.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.fleetdm_abm_tokens.test", "tokens.#", "2"),
+					resource.TestCheckResourceAttr("data.fleetdm_abm_tokens.test", "tokens.0.token_invalid", "true"),
+					resource.TestCheckResourceAttr("data.fleetdm_abm_tokens.test", "tokens.0.terms_expired", "false"),
+					resource.TestCheckResourceAttr("data.fleetdm_abm_tokens.test", "tokens.1.token_invalid", "false"),
+					resource.TestCheckResourceAttr("data.fleetdm_abm_tokens.test", "tokens.1.terms_expired", "true"),
+				),
+			},
+		},
+	})
+}

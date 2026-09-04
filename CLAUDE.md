@@ -97,3 +97,4 @@ Dependabot PRs get labels automatically. For all other PRs, add the appropriate 
 - API client: `internal/fleetdm/client.go` (base HTTP methods: Get, Post, Patch, Delete)
 - CI Fleet setup: `.github/fleet-test/docker-compose.yml`, `.github/fleet-test/setup-fleet.sh`
 - Linter config: `.golangci.yml` (suppresses `errcheck` in test files)
+- Design notes: `design/` — proposals and the reasoning behind a schema shape, for decisions too big to live in a code comment (e.g. `design/app-config-mdm-surface.md`)

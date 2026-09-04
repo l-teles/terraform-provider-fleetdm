@@ -36,3 +36,4 @@ Read-Only:
 - `organization_name` (String) The organization name in Apple Business Manager.
 - `renew_date` (String) When the token needs to be renewed.
 - `terms_expired` (Boolean) Whether the ABM terms and conditions have expired.
+- `token_invalid` (Boolean) Whether Apple rejected the token itself — revoked, wrong signature, or a server-side error — as opposed to terms_expired, which only means the Apple Business terms need re-accepting. Requires Fleet 4.91.0 or later; older servers omit the field and it reads as false.

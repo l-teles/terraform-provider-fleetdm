@@ -1,11 +1,16 @@
 package provider
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+
+	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
 func TestAccConfigurationResource_basic(t *testing.T) {
@@ -301,4 +306,126 @@ resource "fleetdm_configuration" "test" {
   host_name_template = %[2]q
 }
 `, orgName, template)
+}
+
+// TestAccConfigurationResource_windowsAutomaticEnrollmentDefaultFleet covers the
+// Fleet 4.91 default fleet for user-driven Windows MDM enrollment. Fleet takes a
+// fleet name here, resolves it on write, and rejects an unknown one.
+func TestAccConfigurationResource_windowsAutomaticEnrollmentDefaultFleet(t *testing.T) {
+	fleetName := "tf-acc-wae-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	cfg := func(defaultFleet string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "target" {
+  name = %[1]q
+}
+
+resource "fleetdm_configuration" "test" {
+  org_name                                   = "Windows Autopilot Org"
+  windows_automatic_enrollment_default_fleet = %[2]s
+}
+`, fleetName, defaultFleet)
+	}
+
+	// app config is a global singleton shared by the whole serial suite, and
+	// the fleet this points at is destroyed at teardown. Clear it from a
+	// cleanup rather than only in a final step: if an earlier step fails, that
+	// step never runs, and Fleet then rejects every later app-config write that
+	// re-sends a name whose fleet no longer exists.
+	if os.Getenv("TF_ACC") != "" {
+		t.Cleanup(func() { clearWindowsAutomaticEnrollmentOutOfBand(t) })
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("fleetdm_fleet.target.name"),
+				Check: resource.TestCheckResourceAttr("fleetdm_configuration.test",
+					"windows_automatic_enrollment_default_fleet", fleetName),
+			},
+			{
+				Config:   cfg("fleetdm_fleet.target.name"),
+				PlanOnly: true,
+			},
+			{
+				// "" is how Fleet expresses "no default": new hosts stay unassigned.
+				// Also restores the shared instance for the other tests.
+				Config: cfg(`""`),
+				Check: resource.TestCheckResourceAttr("fleetdm_configuration.test",
+					"windows_automatic_enrollment_default_fleet", ""),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationResource_windowsAutomaticEnrollmentUnknownFleet pins
+// Fleet's rejection of a name that does not resolve to a fleet.
+func TestAccConfigurationResource_windowsAutomaticEnrollmentUnknownFleet(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + `
+resource "fleetdm_configuration" "test" {
+  org_name                                   = "Windows Autopilot Org"
+  windows_automatic_enrollment_default_fleet = "tf-acc-no-such-fleet-xyz"
+}
+`,
+				ExpectError: regexp.MustCompile(`(?s)doesn't\s+exist`),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationResource_windowsAutomaticEnrollmentUnmanaged verifies the
+// opt-in convention holds for the new attribute too: a configuration that never
+// mentions it leaves it null instead of absorbing Fleet's value.
+func TestAccConfigurationResource_windowsAutomaticEnrollmentUnmanaged(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + `
+resource "fleetdm_configuration" "test" {
+  org_name = "Unmanaged Autopilot Org"
+}
+`,
+				Check: resource.TestCheckNoResourceAttr("fleetdm_configuration.test",
+					"windows_automatic_enrollment_default_fleet"),
+			},
+		},
+	})
+}
+
+// clearWindowsAutomaticEnrollmentOutOfBand resets the global default fleet for
+// Windows MDM enrollment. Fleet rejects a default_fleet naming a fleet that no
+// longer exists, so leaving one behind would break later app-config writes in
+// the same run.
+func clearWindowsAutomaticEnrollmentOutOfBand(t *testing.T) {
+	t.Helper()
+	verifyTLS := true
+	if v := os.Getenv("FLEETDM_VERIFY_TLS"); v == "false" || v == "0" {
+		verifyTLS = false
+	}
+	client, err := fleetdm.NewClient(fleetdm.ClientConfig{
+		ServerAddress: os.Getenv("FLEETDM_URL"),
+		APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
+		VerifyTLS:     verifyTLS,
+	})
+	if err != nil {
+		t.Logf("failed to build fleet client for cleanup: %v", err)
+		return
+	}
+	_, err = client.UpdateAppConfig(context.Background(), &fleetdm.UpdateAppConfigRequest{
+		MDM: &fleetdm.MDMSettingsUpdate{
+			WindowsAutomaticEnrollment: &fleetdm.WindowsAutomaticEnrollment{DefaultFleet: ""},
+		},
+	})
+	if err != nil {
+		t.Logf("failed to clear windows_automatic_enrollment.default_fleet: %v", err)
+	}
 }

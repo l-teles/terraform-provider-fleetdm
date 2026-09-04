@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
@@ -24,7 +25,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // fakeFleet is a stand-in for Fleet's fleets endpoints that reproduces the
-// merge semantics of v4.90.0's PATCH handler. It exists because several of the
+// merge semantics of v4.91.0's PATCH handler. It exists because several of the
 // new attributes cannot be exercised against a live Fleet in dev mode:
 // enable_recovery_lock_password needs MDM turned on, the Google Calendar and
 // conditional access toggles need matching global integrations, and Apple OS
@@ -53,7 +54,8 @@ func newFakeFleet() *fakeFleet {
 		// Fleet reports host_status_webhook as null until it is configured, and
 		// always reports failing_policies_webhook as a fully-populated object.
 		"webhook_settings": map[string]any{
-			"host_status_webhook": nil,
+			"host_status_webhook":     nil,
+			"host_activities_webhook": nil,
 			"failing_policies_webhook": map[string]any{
 				"enable_failing_policies_webhook": false,
 				"destination_url":                 "",
@@ -79,6 +81,10 @@ func newFakeFleet() *fakeFleet {
 				"deadline_days":     nil,
 				"grace_period_days": nil,
 			},
+			"windows_settings": map[string]any{
+				"custom_settings":              nil,
+				"enable_managed_local_account": false,
+			},
 		},
 		"features": map[string]any{
 			"enable_host_users":         true,
@@ -96,6 +102,7 @@ func appleOSUpdatesZero() map[string]any {
 		"update_new_hosts": nil,
 		"minimum_version":  nil,
 		"deadline":         nil,
+		"deadline_days":    nil,
 	}
 }
 
@@ -168,7 +175,7 @@ func (f *fakeFleet) respond(t *testing.T, w http.ResponseWriter) {
 	}
 }
 
-// apply mirrors Fleet v4.90.0's ModifyTeam merge rules.
+// apply mirrors Fleet v4.91.0's ModifyTeam merge rules.
 func (f *fakeFleet) apply(req map[string]any) {
 	for _, key := range []string{"name", "description"} {
 		if v, ok := req[key]; ok {
@@ -183,7 +190,7 @@ func (f *fakeFleet) apply(req map[string]any) {
 		f.state["host_expiry_settings"] = v
 	}
 	if v, ok := req["webhook_settings"].(map[string]any); ok {
-		replacement := map[string]any{"host_status_webhook": nil, "failing_policies_webhook": nil}
+		replacement := map[string]any{"host_status_webhook": nil, "failing_policies_webhook": nil, "host_activities_webhook": nil}
 		if hs, ok := v["host_status_webhook"].(map[string]any); ok {
 			replacement["host_status_webhook"] = withDefaults(hs, map[string]any{
 				"enable_host_status_webhook": false,
@@ -200,6 +207,12 @@ func (f *fakeFleet) apply(req map[string]any) {
 				"host_batch_size":                 float64(0),
 			})
 		}
+		if ha, ok := v["host_activities_webhook"].(map[string]any); ok {
+			replacement["host_activities_webhook"] = withDefaults(ha, map[string]any{
+				"enable_host_activities_webhook": false,
+				"destination_url":                "",
+			})
+		}
 		f.state["webhook_settings"] = replacement
 	}
 
@@ -214,12 +227,36 @@ func (f *fakeFleet) apply(req map[string]any) {
 				mdm[key] = val
 			}
 		}
-		for _, key := range []string{"macos_updates", "ios_updates", "ipados_updates", "windows_updates"} {
+		// Fleet replaces each Apple OS update object wholesale rather than
+		// merging its keys: verified on 4.91, where a PATCH that omits
+		// deadline_days clears the stored value. That is how a fleet migrates
+		// off minimum_version "latest".
+		for _, key := range []string{"macos_updates", "ios_updates", "ipados_updates"} {
 			if sub, ok := v[key].(map[string]any); ok {
-				target := mdm[key].(map[string]any)
-				for k, val := range sub {
-					target[k] = val
-				}
+				mdm[key] = withDefaults(sub, appleOSUpdatesZero())
+			}
+		}
+		// windows_updates is replaced wholesale as well: sending only
+		// grace_period_days makes Fleet 4.91 answer 422 "deadline_days is
+		// required when grace_period_days is provided", so it clearly does not
+		// merge the absent key from the stored value. The schema's mutual
+		// AlsoRequires stops the provider from sending a half object anyway.
+		if sub, ok := v["windows_updates"].(map[string]any); ok {
+			mdm["windows_updates"] = withDefaults(sub, map[string]any{
+				"deadline_days":     nil,
+				"grace_period_days": nil,
+			})
+		}
+		// windows_settings merges per sub-key so that custom_settings, which the
+		// provider never sends, survives a PATCH.
+		if sub, ok := v["windows_settings"].(map[string]any); ok {
+			target, ok := mdm["windows_settings"].(map[string]any)
+			if !ok {
+				target = map[string]any{}
+				mdm["windows_settings"] = target
+			}
+			for k, val := range sub {
+				target[k] = val
 			}
 		}
 	}
@@ -234,7 +271,13 @@ func (f *fakeFleet) apply(req map[string]any) {
 		}
 	}
 
+	// features merges per sub-key: probed on 4.91, a PATCH carrying only
+	// enable_software_inventory leaves historical_data and enable_host_users
+	// as they were.
 	if v, ok := req["features"].(map[string]any); ok {
+		if esi, ok := v["enable_software_inventory"]; ok {
+			f.state["features"].(map[string]any)["enable_software_inventory"] = esi
+		}
 		if hd, ok := v["historical_data"].(map[string]any); ok {
 			target := f.state["features"].(map[string]any)["historical_data"].(map[string]any)
 			for k, val := range hd {
@@ -351,6 +394,7 @@ resource "fleetdm_fleet" "test" {
 			"ios_updates",
 			"ipados_updates",
 			"windows_updates",
+			"windows_settings",
 			"webhook_settings",
 			"integrations",
 			"features",
@@ -849,12 +893,16 @@ func TestAccFleetResource_settingsValidators(t *testing.T) {
 			expectError: `Invalid Attribute Value`,
 		},
 		{
+			// minimum_version no longer declares AlsoRequires(deadline): that
+			// made minimum_version = "latest" impossible to express. The
+			// requirement is now enforced by the block-level validator, which
+			// reports it as a missing value on `deadline`.
 			name: "macos_updates minimum_version without deadline",
 			block: `
   mdm = {
     macos_updates = { minimum_version = "26.6.1" }
   }`,
-			expectError: `Invalid Attribute Combination`,
+			expectError: `Missing required value`,
 		},
 		{
 			name: "ios_updates deadline without minimum_version",
@@ -1139,6 +1187,443 @@ resource "fleetdm_fleet" "test" {
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_updates.deadline_days", "14"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_updates.grace_period_days", "3"),
 				),
+			},
+		},
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Fleet 4.91 additions
+// ---------------------------------------------------------------------------
+
+// TestAccFleetResource_hostActivitiesWebhookMock covers the per-fleet activities
+// webhook added in Fleet 4.91, including the explicit-null read that Fleet
+// reports for an unconfigured webhook.
+func TestAccFleetResource_hostActivitiesWebhookMock(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	configured := provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  webhook_settings = {
+    host_activities_webhook = {
+      enable_host_activities_webhook = true
+      destination_url                = "https://example.com/activities"
+    }
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: configured,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_activities_webhook.enable_host_activities_webhook", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_activities_webhook.destination_url", "https://example.com/activities"),
+				),
+			},
+			{
+				Config:   configured,
+				PlanOnly: true,
+			},
+			{
+				// Removing the whole block leaves it null without touching Fleet.
+				Config: provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+}
+`, name),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("fleetdm_fleet.test", tfjsonpath.New("webhook_settings"), knownvalue.Null()),
+				},
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_appleUpdatesLatestMock covers minimum_version "latest"
+// with deadline_days, and the migration back to an exact version. The provider
+// must leave deadline_days off the wire in the second case: Fleet rejects it
+// alongside an exact version, and omitting it is what clears the stored value.
+func TestAccFleetResource_appleUpdatesLatestMock(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	latest := provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  mdm = {
+    macos_updates = {
+      minimum_version = "latest"
+      deadline_days   = 7
+    }
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: latest,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.minimum_version", "latest"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.deadline_days", "7"),
+				),
+			},
+			{
+				Config:   latest,
+				PlanOnly: true,
+			},
+			{
+				// Migrating off "latest": deadline_days must not be sent.
+				Config: provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  mdm = {
+    macos_updates = {
+      minimum_version = "26.6.1"
+      deadline        = "2027-01-01"
+    }
+  }
+}
+`, name),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.minimum_version", "26.6.1"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.deadline", "2027-01-01"),
+					resource.TestCheckNoResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.deadline_days"),
+					func(*terraform.State) error {
+						for _, body := range fake.patchBodies() {
+							if strings.Contains(body, `"minimum_version":"26.6.1"`) && strings.Contains(body, "deadline_days") {
+								return fmt.Errorf("deadline_days must not be sent with an exact minimum_version: %s", body)
+							}
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_windowsSettingsMock covers mdm.windows_settings, whose
+// only writable key is the managed local account toggle. Configuration profiles
+// must never be sent through it.
+func TestAccFleetResource_windowsSettingsMock(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	configured := provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  mdm = {
+    windows_settings = {
+      enable_managed_local_account = true
+    }
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: configured,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_managed_local_account", "true"),
+					func(*terraform.State) error {
+						for _, body := range fake.patchBodies() {
+							if strings.Contains(body, "custom_settings") {
+								return fmt.Errorf("windows_settings must not carry custom_settings: %s", body)
+							}
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config:   configured,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_enableSoftwareInventoryMock covers the per-fleet software
+// inventory toggle, which Fleet 4.91 added to the fleet PATCH endpoint inside
+// the existing features object.
+func TestAccFleetResource_enableSoftwareInventoryMock(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	configured := provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  features = {
+    enable_software_inventory = false
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: configured,
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_fleet.test", "features.enable_software_inventory", "false"),
+			},
+			{
+				Config:   configured,
+				PlanOnly: true,
+			},
+			{
+				// Omitting the attribute inside a declared block leaves the
+				// stored value alone rather than writing a zero value.
+				Config: provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  features = {
+    historical_data = {
+      uptime          = true
+      vulnerabilities = true
+    }
+  }
+}
+`, name),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue("fleetdm_fleet.test",
+						tfjsonpath.New("features").AtMapKey("enable_software_inventory"), knownvalue.Null()),
+				},
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_appleUpdatesLatestValidators pins the plan-time rules
+// that mirror Fleet 4.91's 422s. Before this, minimum_version declared
+// AlsoRequires(deadline), which made "latest" impossible to express: Terraform
+// demanded a deadline that Fleet then rejected for being set at all.
+func TestAccFleetResource_appleUpdatesLatestValidators(t *testing.T) {
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	cfg := func(body string) string {
+		return fakeFleetProviderConfig("http://127.0.0.1:1") + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  mdm = {
+    macos_updates = {
+%s
+    }
+  }
+}
+`, name, body)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(`      minimum_version = "latest"
+      deadline        = "2027-01-01"
+      deadline_days   = 7`),
+				ExpectError: regexp.MustCompile(`(?s)deadline\s+cannot\s+be\s+set\s+when\s+minimum_version`),
+			},
+			{
+				Config:      cfg(`      minimum_version = "latest"`),
+				ExpectError: regexp.MustCompile(`(?s)deadline_days\s+is\s+required\s+when\s+minimum_version`),
+			},
+			{
+				Config: cfg(`      minimum_version = "latest"
+      deadline_days   = 0`),
+				ExpectError: regexp.MustCompile(`(?s)at\s+least\s+1`),
+			},
+			{
+				Config: cfg(`      minimum_version = "26.6.1"
+      deadline        = "2027-01-01"
+      deadline_days   = 7`),
+				ExpectError: regexp.MustCompile(`(?s)deadline_days\s+can\s+only\s+be\s+set\s+when\s+minimum_version`),
+			},
+			{
+				Config:      cfg(`      minimum_version = "26.6.1"`),
+				ExpectError: regexp.MustCompile(`(?s)deadline\s+is\s+required\s+when\s+minimum_version`),
+			},
+			{
+				// Fleet treats key presence separately from value: it rejects
+				// minimum_version "" with deadline absent, while accepting both
+				// as "" together to clear the requirement.
+				Config:      cfg(`      minimum_version = ""`),
+				ExpectError: regexp.MustCompile(`(?s)deadline\s+is\s+required\s+when\s+minimum_version\s+is\s+set`),
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_nameLengthValidator pins the 255-character cap Fleet
+// enforces on a fleet name (422 "may not exceed 255 characters").
+func TestAccFleetResource_nameLengthValidator(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fakeFleetProviderConfig("http://127.0.0.1:1") + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+}
+`, strings.Repeat("n", 256)),
+				ExpectError: regexp.MustCompile(`(?s)at\s+most\s+255`),
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_fleet491SettingsLive round-trips the three fleet fields
+// Fleet 4.91 added against a live server. The mock tests cannot catch a field
+// the server accepts but does not persist: fakeFleet stores whatever it is
+// handed, so a value Fleet quietly ignored would still read back correctly
+// there and only fail against the real API with "Provider produced
+// inconsistent result after apply".
+func TestAccFleetResource_fleet491SettingsLive(t *testing.T) {
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	cfg := func(softwareInventory bool, managedLocalAccount bool, webhookURL string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+
+  features = {
+    enable_software_inventory = %[2]t
+  }
+
+  mdm = {
+    windows_settings = {
+      enable_managed_local_account = %[3]t
+    }
+  }
+
+  webhook_settings = {
+    host_activities_webhook = {
+      enable_host_activities_webhook = true
+      destination_url                = %[4]q
+    }
+  }
+}
+`, name, softwareInventory, managedLocalAccount, webhookURL)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(false, true, "https://example.com/activities"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "features.enable_software_inventory", "false"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_managed_local_account", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_activities_webhook.enable_host_activities_webhook", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_activities_webhook.destination_url", "https://example.com/activities"),
+				),
+			},
+			{
+				Config:   cfg(false, true, "https://example.com/activities"),
+				PlanOnly: true,
+			},
+			{
+				// Flip every one of them, so a field the server accepts but
+				// never actually stores shows up as an inconsistent result.
+				Config: cfg(true, false, "https://example.com/activities-2"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "features.enable_software_inventory", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_managed_local_account", "false"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_activities_webhook.destination_url", "https://example.com/activities-2"),
+				),
+			},
+			{
+				Config:   cfg(true, false, "https://example.com/activities-2"),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccFleetResource_appleUpdatesLatestLive round-trips minimum_version
+// "latest" against a live server, including the migration back to an exact
+// version, which is the case that depends on Fleet replacing the whole updates
+// object rather than merging deadline_days from the stored value.
+func TestAccFleetResource_appleUpdatesLatestLive(t *testing.T) {
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	latest := providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+
+  mdm = {
+    macos_updates = {
+      minimum_version = "latest"
+      deadline_days   = 7
+    }
+  }
+}
+`, name)
+
+	cleared := providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+
+  mdm = {
+    macos_updates = {
+      minimum_version = ""
+      deadline        = ""
+    }
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: latest,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.minimum_version", "latest"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.deadline_days", "7"),
+				),
+			},
+			{
+				Config:   latest,
+				PlanOnly: true,
+			},
+			{
+				// Migrating off "latest" must leave deadline_days off the wire;
+				// Fleet rejects it next to an exact version.
+				Config: cleared,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.minimum_version", ""),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_updates.deadline", ""),
+				),
+			},
+			{
+				Config:   cleared,
+				PlanOnly: true,
 			},
 		},
 	})
