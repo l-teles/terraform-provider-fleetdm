@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -1114,4 +1115,186 @@ func TestPolicyPlatformForRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAccPolicyResource_patchWhenClosedValidators pins the plan-time rules for
+// patch_when_closed, each mirroring a Fleet 4.91 rejection:
+//
+//   - non-patch policy: 400 `"patch_when_closed" is only supported for patch policies`
+//   - continuous automations off: 400 `If "patch_when_closed" is true,
+//     "continuous_automations_enabled" can't be set to false.`
+//   - global policy: Fleet accepts the request but silently drops the field,
+//     which would be perpetual drift, so the provider requires team_id.
+func TestAccPolicyResource_patchWhenClosedValidators(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  query                          = "SELECT 1;"
+  team_id                        = 1
+  continuous_automations_enabled = true
+  patch_when_closed              = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)patch_when_closed\s+is\s+only\s+supported\s+when\s+type`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  patch_when_closed       = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)continuous_automations_enabled\s+must\s+be\s+true`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name              = %[1]q
+  query             = "SELECT 1;"
+  patch_when_closed = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile("team_id required"),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_patchWhenClosed exercises patch_when_closed against a
+// live Fleet, including toggling it off and back on: Fleet echoes the stored
+// value, so a mismatch would surface as drift.
+func TestAccPolicyResource_patchWhenClosed(t *testing.T) {
+	policyName := "tf-acc-test-pwc-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	teamName := "tf-acc-team-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	// The installer is added out of band rather than with
+	// fleetdm_software_fleet_maintained_app on purpose. Turning on
+	// patch_when_closed makes Fleet write a managed pre_install_query onto the
+	// installer, which a Terraform-managed installer resource would then plan
+	// to clear -- see the note on the attribute. Keeping the installer outside
+	// Terraform lets this test assert patch_when_closed itself.
+	// Set up before the step configs are built: TestStep.Config is a string
+	// evaluated now, whereas PreCheck runs later. Both gates have to be
+	// repeated here -- resource.Test's own TF_ACC skip also happens later, and
+	// this helper writes to the live server, so without the TF_ACC check a
+	// plain `go test ./internal/...` with Fleet credentials exported would
+	// create a fleet and install software before skipping.
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC must be set for live acceptance tests")
+	}
+	testAccPreCheck(t)
+	fleetID, titleID := addFleetMaintainedAppOutOfBand(t, teamName, "1Password", "darwin")
+
+	cfg := func(patchWhenClosed bool) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  team_id                        = %[2]d
+  type                           = "patch"
+  patch_software_title_id        = %[3]d
+  continuous_automations_enabled = true
+  patch_when_closed              = %[4]t
+}
+`, policyName, fleetID, titleID, patchWhenClosed)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_policy.test", "patch_when_closed", "true"),
+			},
+			{
+				Config:   cfg(true),
+				PlanOnly: true,
+			},
+			{
+				Config: cfg(false),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_policy.test", "patch_when_closed", "false"),
+			},
+			{
+				Config: cfg(true),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_policy.test", "patch_when_closed", "true"),
+			},
+		},
+	})
+}
+
+// addFleetMaintainedAppOutOfBand creates a fleet and adds a Fleet-maintained
+// app to it directly through the API, returning the fleet ID and the resulting
+// software title ID. Used where a Terraform-managed installer would contend
+// with Fleet's own writes.
+//
+// The app is resolved by name and platform rather than by catalog ID: those IDs
+// are assigned by Fleet's own catalog and shift between releases, so a
+// hardcoded one would break against the non-blocking `latest` Fleet job for a
+// reason unrelated to the test.
+func addFleetMaintainedAppOutOfBand(t *testing.T, fleetName, appName, platform string) (int64, int64) {
+	t.Helper()
+	verifyTLS := true
+	if v := os.Getenv("FLEETDM_VERIFY_TLS"); v == "false" || v == "0" {
+		verifyTLS = false
+	}
+	client, err := fleetdm.NewClient(fleetdm.ClientConfig{
+		ServerAddress: os.Getenv("FLEETDM_URL"),
+		APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
+		VerifyTLS:     verifyTLS,
+	})
+	if err != nil {
+		t.Fatalf("failed to build fleet client: %v", err)
+	}
+
+	ctx := context.Background()
+	fleet, err := client.CreateTeam(ctx, fleetdm.CreateTeamRequest{Name: fleetName})
+	if err != nil {
+		t.Fatalf("failed to create fleet %q: %v", fleetName, err)
+	}
+	apps, err := client.ListFleetMaintainedApps(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to list fleet-maintained apps: %v", err)
+	}
+	appID := 0
+	for _, app := range apps {
+		if app.Name == appName && app.Platform == platform {
+			appID = app.ID
+			break
+		}
+	}
+	if appID == 0 {
+		t.Fatalf("fleet-maintained app %q for %s not found in Fleet's catalog", appName, platform)
+	}
+
+	// AddFleetMaintainedAppRequest still takes int team IDs, so bound the
+	// conversion rather than truncating silently.
+	if fleet.ID > math.MaxInt32 {
+		t.Fatalf("fleet id %d does not fit an int32", fleet.ID)
+	}
+	title, err := client.AddFleetMaintainedApp(ctx, &fleetdm.AddFleetMaintainedAppRequest{
+		TeamID:               int(fleet.ID),
+		FleetMaintainedAppID: appID,
+	})
+	if err != nil {
+		t.Fatalf("failed to add fleet-maintained app %q: %v", appName, err)
+	}
+	t.Cleanup(func() {
+		if err := client.DeleteTeam(context.Background(), fleet.ID); err != nil {
+			t.Logf("failed to clean up fleet %d: %v", fleet.ID, err)
+		}
+	})
+	return fleet.ID, int64(title.ID)
 }

@@ -38,6 +38,7 @@ type abmTokenModel struct {
 	MDMServerURL     types.String `tfsdk:"mdm_server_url"`
 	RenewDate        types.String `tfsdk:"renew_date"`
 	TermsExpired     types.Bool   `tfsdk:"terms_expired"`
+	TokenInvalid     types.Bool   `tfsdk:"token_invalid"`
 	MacOSTeamID      types.Int64  `tfsdk:"macos_team_id"`
 	IOSTeamID        types.Int64  `tfsdk:"ios_team_id"`
 	IPadOSTeamID     types.Int64  `tfsdk:"ipados_team_id"`
@@ -83,6 +84,10 @@ func (d *abmTokensDataSource) Schema(_ context.Context, _ datasource.SchemaReque
 						},
 						"terms_expired": schema.BoolAttribute{
 							Description: "Whether the ABM terms and conditions have expired.",
+							Computed:    true,
+						},
+						"token_invalid": schema.BoolAttribute{
+							Description: "Whether Apple rejected the token itself — revoked, wrong signature, or a server-side error — as opposed to terms_expired, which only means the Apple Business terms need re-accepting. Requires Fleet 4.91.0 or later; older servers omit the field and it reads as false.",
 							Computed:    true,
 						},
 						"macos_team_id": schema.Int64Attribute{
@@ -144,6 +149,7 @@ func (d *abmTokensDataSource) Read(ctx context.Context, req datasource.ReadReque
 			MDMServerURL:     types.StringValue(token.MDMServerURL),
 			RenewDate:        types.StringValue(token.RenewDate),
 			TermsExpired:     types.BoolValue(token.TermsExpired),
+			TokenInvalid:     types.BoolValue(token.TokenInvalid),
 			MacOSTeamName:    types.StringValue(token.MacOSTeamName),
 			IOSTeamName:      types.StringValue(token.IOSTeamName),
 			IPadOSTeamName:   types.StringValue(token.IPadOSTeamName),

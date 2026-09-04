@@ -345,6 +345,32 @@ func TestUpdateAppConfigHostNameTemplate(t *testing.T) {
 			mdm:  &MDMSettingsUpdate{NameTemplate: strPtr("")},
 			want: `{"name_template":""}`,
 		},
+		{
+			name: "windows automatic enrollment alone omits name_template",
+			mdm: &MDMSettingsUpdate{
+				WindowsAutomaticEnrollment: &WindowsAutomaticEnrollment{DefaultFleet: "onboarding"},
+			},
+			want: `{"windows_automatic_enrollment":{"default_fleet":"onboarding"}}`,
+		},
+		{
+			// Fleet accepts one mdm object per request, so both managed keys have
+			// to survive being merged into it.
+			name: "both managed keys share the one mdm object",
+			mdm: &MDMSettingsUpdate{
+				NameTemplate:               strPtr("host-$FLEET_VAR_HOST_UUID"),
+				WindowsAutomaticEnrollment: &WindowsAutomaticEnrollment{DefaultFleet: "onboarding"},
+			},
+			want: `{"name_template":"host-$FLEET_VAR_HOST_UUID","windows_automatic_enrollment":{"default_fleet":"onboarding"}}`,
+		},
+		{
+			// "" is how Fleet expresses "no default fleet", so it must go on the
+			// wire rather than being omitted as a zero value.
+			name: "empty default fleet is sent, not omitted",
+			mdm: &MDMSettingsUpdate{
+				WindowsAutomaticEnrollment: &WindowsAutomaticEnrollment{DefaultFleet: ""},
+			},
+			want: `{"windows_automatic_enrollment":{"default_fleet":""}}`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -70,6 +70,14 @@ type HostStatusWebhookSettings struct {
 	DaysCount      int     `json:"days_count"`
 }
 
+// HostActivitiesWebhookSettings contains the per-fleet host activities webhook
+// settings (Fleet 4.91+). Fleet replaces this object wholesale, so both fields
+// are plain values: every attribute goes on the wire together.
+type HostActivitiesWebhookSettings struct {
+	Enable         bool   `json:"enable_host_activities_webhook"`
+	DestinationURL string `json:"destination_url"`
+}
+
 // FailingPoliciesWebhookSettings contains failing policies webhook settings
 type FailingPoliciesWebhookSettings struct {
 	Enable         bool   `json:"enable_failing_policies_webhook"`
@@ -139,6 +147,21 @@ type MDMConfig struct {
 	// MDM-enrolled Apple hosts. It is the global counterpart of the per-team
 	// TeamMDMSettings.NameTemplate. An unset template reads back as "".
 	NameTemplate string `json:"name_template"`
+
+	// WindowsAutomaticEnrollment configures user-driven Windows MDM enrollment
+	// (Fleet 4.91+). Fleet reports it as an object whose default_fleet is ""
+	// when no default is set.
+	WindowsAutomaticEnrollment *WindowsAutomaticEnrollment `json:"windows_automatic_enrollment,omitempty"`
+}
+
+// WindowsAutomaticEnrollment holds the settings applied to new user-driven
+// Windows MDM enrollments (Windows Autopilot, Entra join).
+//
+// DefaultFleet names a fleet rather than referencing its ID, which is Fleet's
+// own wire format. Fleet resolves the name on write and rejects an unknown one
+// with 422 `fleet %q doesn't exist`; "" means new hosts stay Unassigned.
+type WindowsAutomaticEnrollment struct {
+	DefaultFleet string `json:"default_fleet"`
 }
 
 // AppConfig represents the Fleet application configuration
@@ -239,6 +262,9 @@ type OrgInfoUpdate struct {
 // is how the template is cleared.
 type MDMSettingsUpdate struct {
 	NameTemplate *string `json:"name_template,omitempty"`
+	// WindowsAutomaticEnrollment is omitted unless declared, so a config that
+	// does not manage it leaves Fleet's stored default fleet alone.
+	WindowsAutomaticEnrollment *WindowsAutomaticEnrollment `json:"windows_automatic_enrollment,omitempty"`
 }
 
 // UpdateAppConfigRequest represents a partial app config update

@@ -132,7 +132,7 @@ jobs:
                     - "1.14.*"
                     - "1.15.*"
                 fleet_tag:
-                    - "v4.90.0"
+                    - "v4.91.0"
                 include:
                     # Canary: latest Fleet release on one Terraform version, so a
                     # breaking Fleet update is visible but isolated from the pinned

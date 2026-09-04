@@ -73,7 +73,8 @@ type ConfigurationResourceModel struct {
 	TransparencyURL types.String `tfsdk:"transparency_url"`
 
 	// MDM (global / "No team" scope)
-	HostNameTemplate types.String `tfsdk:"host_name_template"`
+	HostNameTemplate                       types.String `tfsdk:"host_name_template"`
+	WindowsAutomaticEnrollmentDefaultFleet types.String `tfsdk:"windows_automatic_enrollment_default_fleet"`
 
 	// Agent Options (JSON)
 	AgentOptions types.String `tfsdk:"agent_options"`
@@ -254,6 +255,17 @@ resource "fleetdm_configuration" "main" {
 				MarkdownDescription: "Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the \"No team\" scope), " +
 					"for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it. " +
 					"The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.",
+			},
+			// Same opt-in convention as host_name_template: left unconfigured the
+			// attribute stays null and windows_automatic_enrollment never goes on
+			// the wire, so a default fleet chosen in the Fleet UI is not clobbered.
+			"windows_automatic_enrollment_default_fleet": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "Name of the fleet that hosts enrolling through user-driven Windows MDM enrollment (Windows Autopilot, Entra join) are assigned to. " +
+					"The fleet is assigned before the Autopilot Enrollment Status Page runs, so that fleet's software, scripts and configuration profiles apply during out-of-box setup. " +
+					"This is a fleet **name**, which is what Fleet's API accepts here — reference `fleetdm_fleet.example.name` rather than its `id`. " +
+					"Fleet rejects a name that does not exist; set to `\"\"` for no default, leaving new hosts unassigned. " +
+					"Requires Fleet Premium and Fleet 4.91.0 or later.",
 			},
 			// Agent Options
 			"agent_options": schema.StringAttribute{
@@ -566,8 +578,18 @@ func (r *ConfigurationResource) buildUpdateRequest(data *ConfigurationResourceMo
 	// whole mdm object leaves every MDM setting — including a template set from
 	// the Fleet UI — untouched, because Fleet merges the request onto the stored
 	// config. An explicit "" is still sent: that is how the template is cleared.
+	// Fleet accepts one mdm object per request, so every managed mdm attribute
+	// has to be merged into it. Each key is still only set when declared.
 	if tmpl := optionalStringPtr(data.HostNameTemplate); tmpl != nil {
 		req.MDM = &fleetdm.MDMSettingsUpdate{NameTemplate: tmpl}
+	}
+	if fleetName := optionalStringPtr(data.WindowsAutomaticEnrollmentDefaultFleet); fleetName != nil {
+		if req.MDM == nil {
+			req.MDM = &fleetdm.MDMSettingsUpdate{}
+		}
+		req.MDM.WindowsAutomaticEnrollment = &fleetdm.WindowsAutomaticEnrollment{
+			DefaultFleet: *fleetName,
+		}
 	}
 
 	// Handle agent options if provided
@@ -636,10 +658,15 @@ func (r *ConfigurationResource) updateModelFromConfig(data *ConfigurationResourc
 	// writing that into state would make state disagree with config. A response
 	// without an mdm object likewise leaves the prior value alone.
 	var nameTemplate *string
+	var windowsDefaultFleet *string
 	if config.MDM != nil {
 		nameTemplate = &config.MDM.NameTemplate
+		if wae := config.MDM.WindowsAutomaticEnrollment; wae != nil {
+			windowsDefaultFleet = &wae.DefaultFleet
+		}
 	}
 	data.HostNameTemplate = refreshOptionalString(data.HostNameTemplate, nameTemplate)
+	data.WindowsAutomaticEnrollmentDefaultFleet = refreshOptionalString(data.WindowsAutomaticEnrollmentDefaultFleet, windowsDefaultFleet)
 
 	// Agent Options
 	if config.AgentOptions != nil {

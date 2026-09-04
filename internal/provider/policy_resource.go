@@ -78,6 +78,7 @@ type PolicyResourceModel struct {
 	ConditionalAccessEnabled       types.Bool   `tfsdk:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled types.Bool   `tfsdk:"conditional_access_bypass_enabled"`
 	ContinuousAutomationsEnabled   types.Bool   `tfsdk:"continuous_automations_enabled"`
+	PatchWhenClosed                types.Bool   `tfsdk:"patch_when_closed"`
 	AuthorID                       types.Int64  `tfsdk:"author_id"`
 	AuthorName                     types.String `tfsdk:"author_name"`
 	AuthorEmail                    types.String `tfsdk:"author_email"`
@@ -114,10 +115,19 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "The name of the policy. Must be unique.",
 			},
 			"description": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "A description of the policy.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					// No static "" default, and state is reused when the
+					// attribute is unset: Fleet generates a description for
+					// type = "patch" policies, and a planned "" made the applied
+					// value differ from the planned one, so Terraform failed
+					// every patch-policy apply with "Provider produced
+					// inconsistent result after apply". Mirrors `query`, which
+					// Fleet also generates for patch policies.
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				MarkdownDescription: "A description of the policy. Fleet generates one for `type = \"patch\"` policies, so leaving it unset on a patch policy adopts Fleet's text. Once set, removing the attribute keeps the stored value rather than clearing it.",
 			},
 			"query": schema.StringAttribute{
 				Optional: true,
@@ -134,10 +144,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._",
 			},
 			"resolution": schema.StringAttribute{
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString(""),
-				MarkdownDescription: "Instructions for resolving a failing policy check.\n\n**Fleet API limitation:** once set to a non-empty value, `resolution` cannot be cleared via the API. Setting it to `\"\"` after the fact will appear as drift on every plan and never converge — destroy and recreate the policy if you need to remove the resolution.",
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					// Same reasoning as description: Fleet generates a
+					// resolution for patch policies.
+					stringplanmodifier.UseStateForUnknown(),
+				},
+				MarkdownDescription: "Instructions for resolving a failing policy check. Fleet generates them for `type = \"patch\"` policies, so leaving this unset on a patch policy adopts Fleet's text rather than an empty string.\n\n**Fleet API limitation:** once set to a non-empty value, `resolution` cannot be cleared via the API. Setting it to `\"\"` after the fact will appear as drift on every plan and never converge — destroy and recreate the policy if you need to remove the resolution.",
 			},
 			"platform": schema.ListAttribute{
 				Optional:            true,
@@ -224,6 +238,20 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Whether the policy's automations re-run on every failing check instead of only on the transition into failing. Requires `team_id` — Fleet rejects the field on global policies. _Available in Fleet Premium 4.90+._",
+			},
+			"patch_when_closed": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				MarkdownDescription: "Only patch the app on a host while it is not running. Requires `type = \"patch\"`, " +
+					"`continuous_automations_enabled = true`, and `team_id` — Fleet silently drops the field on a global policy. " +
+					"_Available in Fleet Premium 4.91+._\n\n" +
+					"~> **Interaction with the installer resource:** Fleet implements this by writing a managed `pre_install_query` onto the " +
+					"patch target's installer. If that installer is managed by `fleetdm_software_fleet_maintained_app`, " +
+					"`fleetdm_software_custom_package` or `fleetdm_software_app_store_app` without a `pre_install_query` of its own, " +
+					"the next plan will show that query as drift and clear it, turning the behaviour off again. " +
+					"Until the installer resources learn to leave Fleet's managed query alone, either keep the installer outside Terraform " +
+					"or expect to reconcile the two on every apply.",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -506,6 +534,31 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		}
 	}
 
+	// patch_when_closed only means anything on a patch policy, and Fleet
+	// additionally refuses it unless the policy's automations re-run on every
+	// failing check. Both were verified against Fleet 4.91:
+	//   - on a non-patch policy: 400 `"patch_when_closed" is only supported for patch policies`
+	//   - with continuous automations off: 400 `If "patch_when_closed" is true,
+	//     "continuous_automations_enabled" can't be set to false.`
+	// Only enforce when the flag is known to be true; Unknown defers to the API.
+	patchWhenClosedOn := !data.PatchWhenClosed.IsUnknown() && !data.PatchWhenClosed.IsNull() && data.PatchWhenClosed.ValueBool()
+	if patchWhenClosedOn {
+		if typeKnown && !isPatchType {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("patch_when_closed"),
+				"Unsupported field",
+				"patch_when_closed is only supported when type = \"patch\".",
+			)
+		}
+		if !data.ContinuousAutomationsEnabled.IsUnknown() && !data.ContinuousAutomationsEnabled.ValueBool() {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("continuous_automations_enabled"),
+				"Missing required value",
+				"continuous_automations_enabled must be true when patch_when_closed is true.",
+			)
+		}
+	}
+
 	// Team-only fields. Each pair: (model attribute, schema path, "set" predicate).
 	type teamOnly struct {
 		attrPath string
@@ -522,6 +575,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown()},
 		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
 		{"continuous_automations_enabled", !data.ContinuousAutomationsEnabled.IsNull() && !data.ContinuousAutomationsEnabled.IsUnknown()},
+		{"patch_when_closed", !data.PatchWhenClosed.IsNull() && !data.PatchWhenClosed.IsUnknown()},
 	}
 	if teamKnown && !teamSet {
 		for _, c := range checks {
@@ -571,6 +625,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		SoftwareTitleID:              optionalIntPtr(data.SoftwareTitleID),
 		ScriptID:                     optionalIntPtr(data.ScriptID),
 		ContinuousAutomationsEnabled: data.ContinuousAutomationsEnabled.ValueBool(),
+		PatchWhenClosed:              data.PatchWhenClosed.ValueBool(),
 		LabelsIncludeAny:             stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
 		LabelsExcludeAny:             stringSetToSlice(ctx, data.LabelsExcludeAny, &resp.Diagnostics),
 		LabelsIncludeAll:             stringSetToSlice(ctx, data.LabelsIncludeAll, &resp.Diagnostics),
@@ -767,6 +822,7 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
 	data.ContinuousAutomationsEnabled = types.BoolValue(policy.ContinuousAutomationsEnabled)
+	data.PatchWhenClosed = types.BoolValue(policy.PatchWhenClosed)
 	// Fleet doesn't echo conditional_access_bypass_enabled in the response;
 	// the planner-supplied value (config or default) is left unchanged.
 
@@ -886,6 +942,7 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, dia
 		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
 		ContinuousAutomationsEnabled:   optionalBoolPtr(data.ContinuousAutomationsEnabled),
+		PatchWhenClosed:                optionalBoolPtr(data.PatchWhenClosed),
 		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny, diags),
 		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny, diags),
 		LabelsIncludeAll:               stringSetToSlice(ctx, data.LabelsIncludeAll, diags),

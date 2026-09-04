@@ -60,6 +60,10 @@ type EnrollSecret struct {
 type TeamWebhookSettings struct {
 	HostStatusWebhook      *HostStatusWebhookSettings      `json:"host_status_webhook,omitempty"`
 	FailingPoliciesWebhook *FailingPoliciesWebhookSettings `json:"failing_policies_webhook,omitempty"`
+	// HostActivitiesWebhook fires whenever an activity linked to one of the
+	// fleet's hosts is created (Fleet 4.91+). Fleet reports it as an explicit
+	// null when unconfigured.
+	HostActivitiesWebhook *HostActivitiesWebhookSettings `json:"host_activities_webhook,omitempty"`
 }
 
 // TeamMDMSettings represents MDM settings for a fleet.
@@ -82,10 +86,10 @@ type TeamMDMSettings struct {
 	IPadOSUpdates  *AppleOSUpdates `json:"ipados_updates,omitempty"`
 	WindowsUpdates *WindowsUpdates `json:"windows_updates,omitempty"`
 
-	// The remaining blocks are read-only from this client's perspective:
-	// Fleet's team PATCH payload does not carry macos_settings,
-	// windows_settings or android_settings (configuration profiles are managed
-	// by the fleetdm_configuration_profile resource instead).
+	// macos_settings is read-only from this client's perspective, and
+	// windows_settings carries only enable_managed_local_account: Fleet's team
+	// PATCH payload does not accept configuration profiles through either
+	// (those are managed by the fleetdm_configuration_profile resource).
 	MacOSSettings   *MacOSMDMSettings   `json:"macos_settings,omitempty"`
 	WindowsSettings *WindowsMDMSettings `json:"windows_settings,omitempty"`
 }
@@ -100,6 +104,11 @@ type AppleOSUpdates struct {
 	MinimumVersion *string `json:"minimum_version,omitempty"`
 	Deadline       *string `json:"deadline,omitempty"`
 	UpdateNewHosts *bool   `json:"update_new_hosts,omitempty"`
+	// DeadlineDays is the number of days after a version's release date before
+	// the update is enforced. Fleet only accepts it alongside
+	// MinimumVersion "latest", and rejects 0, so it stays a pointer: an unset
+	// value must be omitted from the payload rather than serialised as 0.
+	DeadlineDays *int64 `json:"deadline_days,omitempty"`
 }
 
 // WindowsUpdates represents Windows update settings.
@@ -129,10 +138,11 @@ type TeamGoogleCalendarIntegration struct {
 
 // TeamFeatures represents a fleet's feature settings.
 //
-// Only HistoricalData is writable via PATCH /fleets/{id}; EnableHostUsers and
-// EnableSoftwareInventory are returned by the API but can only be set per-fleet
-// through the GitOps /spec/fleets path, so they carry omitempty and are never
-// populated on a request.
+// Fleet merges this object per sub-key, so a nil field retains its stored
+// value. HistoricalData and, since Fleet 4.91, EnableSoftwareInventory are
+// writable via PATCH /fleets/{id}. EnableHostUsers is returned by the API but
+// can only be set per-fleet through the GitOps /spec/fleets path, so it carries
+// omitempty and is never populated on a request.
 type TeamFeatures struct {
 	EnableHostUsers         *bool                   `json:"enable_host_users,omitempty"`
 	EnableSoftwareInventory *bool                   `json:"enable_software_inventory,omitempty"`
@@ -154,6 +164,11 @@ type MacOSMDMSettings struct {
 // WindowsMDMSettings represents Windows MDM settings.
 type WindowsMDMSettings struct {
 	CustomSettings []CustomSetting `json:"custom_settings,omitempty"`
+	// EnableManagedLocalAccount turns on the managed local admin account that
+	// fleetd creates on Windows hosts during enrollment (Fleet 4.91+, requires
+	// fleetd 1.60.0+). It is the only writable key in this block; CustomSettings
+	// stays omitted so a PATCH never touches configuration profiles.
+	EnableManagedLocalAccount *bool `json:"enable_managed_local_account,omitempty"`
 }
 
 // CustomSetting represents a custom configuration profile setting.
