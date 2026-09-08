@@ -165,6 +165,18 @@ resource "fleetdm_fleet" "test" {
 				Check: resource.TestCheckResourceAttr(
 					"fleetdm_fleet.test", "mdm.enable_recovery_lock_password", "false"),
 			},
+			{
+				// The mdm block is opt-in, so import deliberately brings it
+				// back null: which blocks a configuration manages is expressed
+				// in HCL, not on the server (see the resource's own schema
+				// description). Verifying it would therefore fail by
+				// construction, so the block is ignored and the step covers the
+				// import path and the fleet's top-level attributes.
+				ResourceName:            "fleetdm_fleet.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"mdm"},
+			},
 		},
 	})
 }
@@ -201,6 +213,14 @@ resource "fleetdm_fleet" "test" {
 				Config: cfg(false),
 				Check: resource.TestCheckResourceAttr(
 					"fleetdm_fleet.test", "enable_disk_encryption", "false"),
+			},
+			{
+				// Unlike the mdm block, enable_disk_encryption is a top-level
+				// attribute that Fleet always reports, so import repopulates it
+				// and this genuinely verifies the round trip.
+				ResourceName:      "fleetdm_fleet.test",
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})
