@@ -21,6 +21,10 @@
 #   TF_ACC=1 go test -v -cover ./internal/provider/...
 
 services:
+  # Held on the 8.4 LTS line. Fleet's migrations and generated columns
+  # compute checksums with MySQL's MD5(), which MySQL removed in the 26.x
+  # line — every schema migration fails there. Renovate is capped to <9
+  # (renovate.json) to keep major bumps from reopening this.
   mysql:
     image: mysql:8.4
     network_mode: "host"
