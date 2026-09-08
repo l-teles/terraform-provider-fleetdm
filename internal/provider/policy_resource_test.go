@@ -1264,6 +1264,13 @@ func addFleetMaintainedAppOutOfBand(t *testing.T, fleetName, appName, platform s
 	if err != nil {
 		t.Fatalf("failed to create fleet %q: %v", fleetName, err)
 	}
+	// Registered before the catalog lookup and the install below: either can
+	// t.Fatalf, and without this the fleet would be left behind on the server.
+	t.Cleanup(func() {
+		if err := client.DeleteTeam(context.Background(), fleet.ID); err != nil {
+			t.Logf("failed to clean up fleet %d: %v", fleet.ID, err)
+		}
+	})
 	apps, err := client.ListFleetMaintainedApps(ctx, nil)
 	if err != nil {
 		t.Fatalf("failed to list fleet-maintained apps: %v", err)
@@ -1291,10 +1298,5 @@ func addFleetMaintainedAppOutOfBand(t *testing.T, fleetName, appName, platform s
 	if err != nil {
 		t.Fatalf("failed to add fleet-maintained app %q: %v", appName, err)
 	}
-	t.Cleanup(func() {
-		if err := client.DeleteTeam(context.Background(), fleet.ID); err != nil {
-			t.Logf("failed to clean up fleet %d: %v", fleet.ID, err)
-		}
-	})
 	return fleet.ID, int64(title.ID)
 }
