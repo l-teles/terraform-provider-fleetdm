@@ -9,6 +9,13 @@
   },
   "packageRules": [
     {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["mysql"],
+      "allowedVersions": "<9",
+      "description": "Fleet's migrations and generated columns compute checksums with MySQL's MD5(), which MySQL removed in the 26.x line. Upstream Fleet tests only 8.0.44/8.4.8/9.5.0 and documents 9.6.0 as incompatible, so CI stays on the 8.4 LTS.",
+      "labels": ["chore", "dependencies"]
+    },
+    {
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
       "matchDepTypes": ["require", "indirect"],
