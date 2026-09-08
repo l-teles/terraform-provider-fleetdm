@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -920,6 +921,121 @@ resource "fleetdm_software_custom_package" "py" {
 				ResourceName:      "fleetdm_software_custom_package.py",
 				ImportState:       true,
 				ImportStateVerify: false,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_preInstallQueryOwnership covers the same
+// ownership rule on this resource's two PATCH paths — the metadata Update and
+// the package replacement — which the fleet-maintained-app tests do not reach.
+// Fleet writes a managed pre_install_query onto an installer when a patch
+// policy targeting it sets patch_when_closed (4.91+), so an omitted attribute
+// must leave the field off the wire, while an explicit "" must still be sent to
+// clear a query this resource owns.
+func TestAccSoftwareCustomPackageResource_preInstallQueryOwnership(t *testing.T) {
+	const fleetOwned = "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM apps WHERE bundle_identifier = 'com.example.app');"
+
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 43
+
+	cfg := func(selfService bool, queryLine string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+  self_service   = %[3]t
+%[4]s
+}
+`, f.srv.URL, pkgPath, selfService, queryLine)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true, ""),
+				Check:  resource.TestCheckNoResourceAttr("fleetdm_software_custom_package.test", "pre_install_query"),
+			},
+			{
+				// Fleet now owns a query this config never declared, and an
+				// unrelated attribute changes: the Update PATCH must not carry
+				// pre_install_query at all.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.titlePreInstallQuery = fleetOwned
+					f.patchPreInstallQuerySeen = false
+					f.mu.Unlock()
+				},
+				Config: cfg(false, ""),
+				Check: func(_ *terraform.State) error {
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					if f.patchSelfService != "false" {
+						return fmt.Errorf("expected the self_service change to be sent, got %q", f.patchSelfService)
+					}
+					if f.patchPreInstallQuerySeen {
+						return fmt.Errorf("pre_install_query must be omitted when Fleet owns it, got %q", f.patchPreInstallQuery)
+					}
+					if f.titlePreInstallQuery != fleetOwned {
+						return fmt.Errorf("Fleet's managed query was overwritten: %q", f.titlePreInstallQuery)
+					}
+					return nil
+				},
+			},
+			{
+				// Declaring it takes ownership; the value goes on the wire.
+				Config: cfg(false, `  pre_install_query = "SELECT 1 FROM os_version;"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "pre_install_query", "SELECT 1 FROM os_version;"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if !f.patchPreInstallQuerySeen {
+							return errors.New("pre_install_query must be sent once Terraform owns it")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// An explicit "" clears it, so the field must be present and empty.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.patchPreInstallQuerySeen = false
+					f.patchPreInstallQuery = "unset"
+					f.mu.Unlock()
+				},
+				Config: cfg(false, `  pre_install_query = ""`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "pre_install_query", ""),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if !f.patchPreInstallQuerySeen {
+							return errors.New(`an explicit "" must be sent so Fleet clears the query`)
+						}
+						if f.patchPreInstallQuery != "" {
+							return fmt.Errorf("expected an empty pre_install_query on the wire, got %q", f.patchPreInstallQuery)
+						}
+						if f.titlePreInstallQuery != "" {
+							return fmt.Errorf("Fleet should have stored an empty query, got %q", f.titlePreInstallQuery)
+						}
+						return nil
+					},
+				),
 			},
 		},
 	})

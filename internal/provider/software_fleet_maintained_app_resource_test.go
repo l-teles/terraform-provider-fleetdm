@@ -1397,6 +1397,36 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 				),
 			},
 			{
+				// An explicit "" is the clear path and must still reach the
+				// wire: nil means "leave Fleet's query alone", so only a
+				// present-and-empty field clears a query Terraform owns. This
+				// is the distinction the pointer exists to express.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.patchPreInstallQuerySeen = false
+					f.patchPreInstallQuery = "unset"
+					f.mu.Unlock()
+				},
+				Config: cfg(""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pre_install_query", ""),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if !f.patchPreInstallQuerySeen {
+							return errors.New(`an explicit "" must be sent so Fleet clears the query, not omitted`)
+						}
+						if f.patchPreInstallQuery != "" {
+							return fmt.Errorf("expected an empty pre_install_query on the wire, got %q", f.patchPreInstallQuery)
+						}
+						if f.titlePreInstallQuery != "" {
+							return fmt.Errorf("Fleet should have stored an empty query, got %q", f.titlePreInstallQuery)
+						}
+						return nil
+					},
+				),
+			},
+			{
 				// An owned query blanked out of band has to reach state, or the
 				// plan would be empty and hosts would keep no query at all.
 				PreConfig: func() {
