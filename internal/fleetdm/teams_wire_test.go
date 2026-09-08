@@ -410,3 +410,99 @@ func TestUpdateTeamRequest_WireFormat_IntegrationsAndFeatures(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateTeamRequest_WireFormat_Fleet491 pins the bodies for the fields
+// Fleet 4.91 added to PATCH /fleets/{id}. Two of them carry constraints that
+// only the wire format can express:
+//
+//   - deadline_days must be absent, not 0, when it is unset: Fleet rejects
+//     `deadline_days: 0` alongside an exact minimum_version, and omitting the
+//     key is how a fleet migrates off minimum_version "latest".
+//   - windows_settings must never carry custom_settings, so a PATCH cannot
+//     clobber configuration profiles managed elsewhere.
+func TestUpdateTeamRequest_WireFormat_Fleet491(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	int64Ptr := func(i int64) *int64 { return &i }
+	strPtr := func(s string) *string { return &s }
+
+	tests := []struct {
+		name string
+		req  UpdateTeamRequest
+		want string
+	}{
+		{
+			name: "host activities webhook",
+			req: UpdateTeamRequest{
+				Name:        "t",
+				Description: "d",
+				WebhookSettings: &TeamWebhookSettings{
+					HostActivitiesWebhook: &HostActivitiesWebhookSettings{
+						Enable:         true,
+						DestinationURL: "https://example.com/activities",
+					},
+				},
+			},
+			want: `{"name":"t","description":"d","webhook_settings":{"host_activities_webhook":{"enable_host_activities_webhook":true,"destination_url":"https://example.com/activities"}}}`,
+		},
+		{
+			name: "apple updates latest carries deadline_days and no deadline",
+			req: UpdateTeamRequest{
+				Name:        "t",
+				Description: "d",
+				MDM: &TeamMDMSettings{
+					MacOSUpdates: &AppleOSUpdates{
+						MinimumVersion: strPtr("latest"),
+						DeadlineDays:   int64Ptr(7),
+					},
+				},
+			},
+			want: `{"name":"t","description":"d","mdm":{"macos_updates":{"minimum_version":"latest","deadline_days":7}}}`,
+		},
+		{
+			name: "exact version omits deadline_days entirely rather than sending 0",
+			req: UpdateTeamRequest{
+				Name:        "t",
+				Description: "d",
+				MDM: &TeamMDMSettings{
+					MacOSUpdates: &AppleOSUpdates{
+						MinimumVersion: strPtr("26.6.1"),
+						Deadline:       strPtr("2027-01-01"),
+					},
+				},
+			},
+			want: `{"name":"t","description":"d","mdm":{"macos_updates":{"minimum_version":"26.6.1","deadline":"2027-01-01"}}}`,
+		},
+		{
+			name: "windows settings sends only the managed local account toggle",
+			req: UpdateTeamRequest{
+				Name:        "t",
+				Description: "d",
+				MDM: &TeamMDMSettings{
+					WindowsSettings: &WindowsMDMSettings{
+						EnableManagedLocalAccount: boolPtr(true),
+					},
+				},
+			},
+			want: `{"name":"t","description":"d","mdm":{"windows_settings":{"enable_managed_local_account":true}}}`,
+		},
+		{
+			name: "features enable_software_inventory false is sent, not omitted",
+			req: UpdateTeamRequest{
+				Name:        "t",
+				Description: "d",
+				Features: &TeamFeatures{
+					EnableSoftwareInventory: boolPtr(false),
+				},
+			},
+			want: `{"name":"t","description":"d","features":{"enable_software_inventory":false}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := captureUpdateTeamBody(t, tt.req); got != tt.want {
+				t.Errorf("request body mismatch\n got: %s\nwant: %s", got, tt.want)
+			}
+		})
+	}
+}

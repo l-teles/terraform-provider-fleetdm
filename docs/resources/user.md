@@ -318,7 +318,7 @@ output "api_user_token" {
 ### Required
 
 - `email` (String) The email address of the user.
-- `name` (String) The full name of the user.
+- `name` (String) The full name of the user. At most 255 characters — Fleet's API surfaces a longer value as a raw MySQL `Data too long` error, so the limit is enforced at plan time.
 
 ### Optional
 

@@ -14,12 +14,16 @@ type ABMToken struct {
 	MDMServerURL     string `json:"mdm_server_url,omitempty"`
 	RenewDate        string `json:"renew_date,omitempty"`
 	TermsExpired     bool   `json:"terms_expired,omitempty"`
-	MacOSTeamID      *int   `json:"macos_team_id,omitempty"`
-	IOSTeamID        *int   `json:"ios_team_id,omitempty"`
-	IPadOSTeamID     *int   `json:"ipados_team_id,omitempty"`
-	MacOSTeamName    string `json:"macos_team_name,omitempty"`
-	IOSTeamName      string `json:"ios_team_name,omitempty"`
-	IPadOSTeamName   string `json:"ipados_team_name,omitempty"`
+	// TokenInvalid reports that Apple rejected the token itself (revoked,
+	// invalid signature, or a server-side error), as opposed to TermsExpired
+	// which means the Apple Business terms need re-accepting. Fleet 4.91+.
+	TokenInvalid   bool   `json:"token_invalid,omitempty"`
+	MacOSTeamID    *int   `json:"macos_team_id,omitempty"`
+	IOSTeamID      *int   `json:"ios_team_id,omitempty"`
+	IPadOSTeamID   *int   `json:"ipados_team_id,omitempty"`
+	MacOSTeamName  string `json:"macos_team_name,omitempty"`
+	IOSTeamName    string `json:"ios_team_name,omitempty"`
+	IPadOSTeamName string `json:"ipados_team_name,omitempty"`
 }
 
 // listABMTokensResponse is the API response for listing ABM tokens. Fleet 4.87

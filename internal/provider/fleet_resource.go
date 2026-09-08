@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -13,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -108,9 +110,12 @@ func fleetSchemaAttributes() map[string]schema.Attribute {
 			},
 		},
 		"name": schema.StringAttribute{
-			Description:         "The name of the fleet.",
-			MarkdownDescription: "The name of the fleet.",
+			Description:         "The name of the fleet. At most 255 characters.",
+			MarkdownDescription: "The name of the fleet. At most 255 characters.",
 			Required:            true,
+			Validators: []validator.String{
+				stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+			},
 		},
 		"description": schema.StringAttribute{
 			Description:         "A description of the fleet.",

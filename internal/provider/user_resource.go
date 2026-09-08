@@ -195,9 +195,14 @@ terraform import fleetdm_user.admin 123
 				},
 			},
 			"name": schema.StringAttribute{
-				Description:         "The full name of the user.",
-				MarkdownDescription: "The full name of the user.",
-				Required:            true,
+				Description: "The full name of the user. At most 255 characters — Fleet's API surfaces a longer value as a raw MySQL " +
+					"\"Data too long\" error, so the limit is enforced at plan time.",
+				MarkdownDescription: "The full name of the user. At most 255 characters — Fleet's API surfaces a longer value as a raw MySQL " +
+					"`Data too long` error, so the limit is enforced at plan time.",
+				Required: true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+				},
 			},
 			"email": schema.StringAttribute{
 				Description:         "The email address of the user.",

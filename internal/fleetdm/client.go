@@ -16,6 +16,17 @@ import (
 	"time"
 )
 
+// MaxNameLength is the 255-character limit Fleet's varchar(255) columns impose.
+// Fleet reports an overrun cleanly on some paths (fleet names, certificate
+// authority names) but surfaces a raw MySQL "Error 1406 Data too long" on
+// others (user names, label names and descriptions), so the provider validates
+// the length at plan time instead.
+//
+// It is applied per attribute rather than to every name and description: a
+// fleet description, for one, is not capped at 255 server-side, so validating
+// it here would reject a value Fleet accepts.
+const MaxNameLength = 255
+
 // Client represents a FleetDM API client.
 type Client struct {
 	// BaseURL is the base URL for the FleetDM API.

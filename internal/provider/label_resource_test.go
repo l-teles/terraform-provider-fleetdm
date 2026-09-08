@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -366,4 +367,68 @@ resource "fleetdm_label" "test" {
   platform    = %[2]q
 }
 `, name, platform)
+}
+
+// TestAccLabelResource_linuxPlatform covers `linux` as a label platform, which
+// Fleet 4.91 added to target any distribution. Fleet's accepted set is
+// darwin/windows/linux only — `chrome` is rejected with "invalid platform",
+// despite having been listed in this provider's docs.
+func TestAccLabelResource_linuxPlatform(t *testing.T) {
+	labelName := "tf-acc-label-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	cfg := providerConfig() + fmt.Sprintf(`
+resource "fleetdm_label" "test" {
+  name     = %[1]q
+  query    = "SELECT 1;"
+  platform = "linux"
+}
+`, labelName)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_label.test", "platform", "linux"),
+			},
+			{
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccLabelResource_nameAndDescriptionLength pins the 255-character caps.
+// Fleet's API surfaces an overrun as a raw MySQL "Data too long" error, so
+// catching it at plan time is a real improvement in the message.
+func TestAccLabelResource_nameAndDescriptionLength(t *testing.T) {
+	tooLong := strings.Repeat("a", 256)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fakeFleetProviderConfig("http://127.0.0.1:1") + fmt.Sprintf(`
+resource "fleetdm_label" "test" {
+  name  = %[1]q
+  query = "SELECT 1;"
+}
+`, tooLong),
+				ExpectError: regexp.MustCompile(`(?s)at\s+most\s+255`),
+			},
+			{
+				Config: fakeFleetProviderConfig("http://127.0.0.1:1") + fmt.Sprintf(`
+resource "fleetdm_label" "test" {
+  name        = "tf-acc-desc-len"
+  query       = "SELECT 1;"
+  description = %[1]q
+}
+`, tooLong),
+				ExpectError: regexp.MustCompile(`(?s)at\s+most\s+255`),
+			},
+		},
+	})
 }

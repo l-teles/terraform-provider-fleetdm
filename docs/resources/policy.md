@@ -122,17 +122,20 @@ resource "fleetdm_policy" "scoped" {
 - `conditional_access_enabled` (Boolean) Whether to block single sign-on for end users whose hosts fail this policy. Requires `team_id` — only supported on team policies. _Available in Fleet Premium._
 - `continuous_automations_enabled` (Boolean) Whether the policy's automations re-run on every failing check instead of only on the transition into failing. Requires `team_id` — Fleet rejects the field on global policies. _Available in Fleet Premium 4.90+._
 - `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._
-- `description` (String) A description of the policy.
+- `description` (String) A description of the policy. Fleet generates one for `type = "patch"` policies, so leaving it unset on a patch policy adopts Fleet's text. Once set, removing the attribute keeps the stored value rather than clearing it.
 - `labels_exclude_all` (Set of String) Exclude hosts that have all of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium 4.90+._
 - `labels_exclude_any` (Set of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_exclude_all`. Order-insensitive. _Available in Fleet Premium._
 - `labels_include_all` (Set of String) Target only hosts that have all of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium 4.90+._
 - `labels_include_any` (Set of String) Target only hosts that have any of the specified labels. Mutually exclusive with `labels_include_all`. Order-insensitive. _Available in Fleet Premium._
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title to create a patch policy for. Required when `type = "patch"`. Immutable after create — changing this triggers a replacement. _Available in Fleet Premium, team policies only._
+- `patch_when_closed` (Boolean) Only patch the app on a host while it is not running. Requires `type = "patch"`, `continuous_automations_enabled = true`, and `team_id` — Fleet silently drops the field on a global policy. _Available in Fleet Premium 4.91+._
+
+~> **Interaction with the installer resource:** Fleet implements this by writing a managed `pre_install_query` onto the patch target's installer. If that installer is managed by `fleetdm_software_fleet_maintained_app`, `fleetdm_software_custom_package` or `fleetdm_software_app_store_app` without a `pre_install_query` of its own, the next plan will show that query as drift and clear it, turning the behaviour off again. Until the installer resources learn to leave Fleet's managed query alone, either keep the installer outside Terraform or expect to reconcile the two on every apply.
 - `platform` (List of String) List of platforms this policy applies to (`darwin`, `linux`, `windows`, `chrome`). Empty list means all platforms. Must be omitted when `type = "patch"` — Fleet (4.84+) derives the effective platform from the patch target and rejects an explicit `platform`.
 
 **Fleet API limitation:** once set to a non-empty list, `platform` cannot be cleared via the API. The provider will plan a destroy+recreate when a previously-set list is changed back to an empty list — subset shrinks and value swaps (e.g. `["darwin","linux"]` → `["darwin"]`, `["darwin"]` → `["linux"]`) stay in-place.
 - `query` (String) The SQL query that defines the policy. The policy passes if the query returns results. Required when `type = "dynamic"` (the default). Must be omitted when `type = "patch"` — Fleet generates the query automatically for patch policies.
-- `resolution` (String) Instructions for resolving a failing policy check.
+- `resolution` (String) Instructions for resolving a failing policy check. Fleet generates them for `type = "patch"` policies, so leaving this unset on a patch policy adopts Fleet's text rather than an empty string.
 
 **Fleet API limitation:** once set to a non-empty value, `resolution` cannot be cleared via the API. Setting it to `""` after the fact will appear as drift on every plan and never converge — destroy and recreate the policy if you need to remove the resolution.
 - `script_id` (Number) ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._

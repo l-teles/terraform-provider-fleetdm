@@ -158,6 +158,26 @@ func refreshOptionalInt64(prior types.Int64, apiValue *int) types.Int64 {
 	return types.Int64Value(int64(*apiValue))
 }
 
+// optionalInt64Ptr converts an optional types.Int64 to a *int64, keeping the
+// value 64-bit end to end. Prefer it over optionalIntPtr for new fields: a
+// narrowing int64 -> int conversion is flagged by CodeQL and can truncate.
+func optionalInt64Ptr(val types.Int64) *int64 {
+	if val.IsNull() || val.IsUnknown() {
+		return nil
+	}
+	v := val.ValueInt64()
+	return &v
+}
+
+// refreshOptionalInt64Ptr is refreshOptionalInt64 for an API field already
+// typed as *int64, so no numeric conversion is needed.
+func refreshOptionalInt64Ptr(prior types.Int64, apiValue *int64) types.Int64 {
+	if prior.IsNull() || apiValue == nil {
+		return prior
+	}
+	return types.Int64Value(*apiValue)
+}
+
 // refreshOptionalFloat64 refreshes a float attribute only if it was already set.
 func refreshOptionalFloat64(prior types.Float64, apiValue *float64) types.Float64 {
 	if prior.IsNull() || apiValue == nil {

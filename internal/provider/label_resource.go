@@ -80,13 +80,20 @@ func (r *LabelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				},
 			},
 			"name": schema.StringAttribute{
-				Required:            true,
-				MarkdownDescription: "The name of the label.",
+				Required: true,
+				MarkdownDescription: "The name of the label. At most 255 characters — Fleet's API surfaces a longer value as a raw MySQL " +
+					"`Data too long` error, so the limit is enforced at plan time.",
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+				},
 			},
 			"description": schema.StringAttribute{
 				Optional:            true,
 				Computed:            true,
-				MarkdownDescription: "A description of the label.",
+				MarkdownDescription: "A description of the label. At most 255 characters.",
+				Validators: []validator.String{
+					stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+				},
 			},
 			"query": schema.StringAttribute{
 				Optional: true,
@@ -159,7 +166,8 @@ func (r *LabelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"platform": schema.StringAttribute{
 				Optional: true,
 				Computed: true,
-				MarkdownDescription: "Restricts this label to a specific platform (darwin, windows, linux, chrome). If not specified, the label applies to all platforms. " +
+				MarkdownDescription: "Restricts this label to a specific platform. Fleet accepts `darwin`, `windows` and `linux` (`linux` matches any distribution and requires Fleet 4.91.0 or later); " +
+					"any other value, including `chrome`, is rejected with `has invalid platform`. If not specified, the label applies to all platforms. " +
 					"Cannot be combined with `criteria` — Fleet rejects a platform on a host vitals label.",
 				PlanModifiers: []planmodifier.String{
 					// UseStateForUnknown must come first. Without it this

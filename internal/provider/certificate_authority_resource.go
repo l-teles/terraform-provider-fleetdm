@@ -284,6 +284,7 @@ func caNameAttribute(caType string) schema.StringAttribute {
 		Required: true,
 		Validators: []validator.String{
 			stringvalidator.LengthAtLeast(1),
+			stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
 			fleetNormalizedValidator{},
 		},
 	}

@@ -95,15 +95,15 @@ resource "fleetdm_label" "quarantine" {
 
 ### Required
 
-- `name` (String) The name of the label.
+- `name` (String) The name of the label. At most 255 characters — Fleet's API surfaces a longer value as a raw MySQL `Data too long` error, so the limit is enforced at plan time.
 
 ### Optional
 
 - `criteria` (Attributes) Defines a **host vitals** label: membership follows a host attribute instead of a SQL query. Mutually exclusive with `query`.
 
 Fleet cannot change a label's criteria after creation — its modify-label endpoint has no field for it and silently ignores one — so any change here replaces the label. (see [below for nested schema](#nestedatt--criteria))
-- `description` (String) A description of the label.
-- `platform` (String) Restricts this label to a specific platform (darwin, windows, linux, chrome). If not specified, the label applies to all platforms. Cannot be combined with `criteria` — Fleet rejects a platform on a host vitals label.
+- `description` (String) A description of the label. At most 255 characters.
+- `platform` (String) Restricts this label to a specific platform. Fleet accepts `darwin`, `windows` and `linux` (`linux` matches any distribution and requires Fleet 4.91.0 or later); any other value, including `chrome`, is rejected with `has invalid platform`. If not specified, the label applies to all platforms. Cannot be combined with `criteria` — Fleet rejects a platform on a host vitals label.
 - `query` (String) The SQL query that defines which hosts belong to this label. Hosts are automatically added to the label based on query results. Mutually exclusive with `criteria`; omit both for a manual label.
 
 ### Read-Only

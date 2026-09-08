@@ -86,6 +86,7 @@ resource "fleetdm_configuration" "main" {
 - `scripts_disabled` (Boolean) Whether scripts are disabled.
 - `server_url` (String) The Fleet server URL. Changing this requires enrolled hosts to re-enroll.
 - `transparency_url` (String) URL shown in Fleet Desktop transparency modal.
+- `windows_automatic_enrollment_default_fleet` (String) Name of the fleet that hosts enrolling through user-driven Windows MDM enrollment (Windows Autopilot, Entra join) are assigned to. The fleet is assigned before the Autopilot Enrollment Status Page runs, so that fleet's software, scripts and configuration profiles apply during out-of-box setup. This is a fleet **name**, which is what Fleet's API accepts here — reference `fleetdm_fleet.example.name` rather than its `id`. Fleet rejects a name that does not exist; set to `""` for no default, leaving new hosts unassigned. Requires Fleet Premium and Fleet 4.91.0 or later.
 
 ### Read-Only
 

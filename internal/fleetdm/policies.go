@@ -59,6 +59,7 @@ type Policy struct {
 	CalendarEventsEnabled        bool                           `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled     bool                           `json:"conditional_access_enabled"`
 	ContinuousAutomationsEnabled bool                           `json:"continuous_automations_enabled"`
+	PatchWhenClosed              bool                           `json:"patch_when_closed"`
 	FleetMaintained              bool                           `json:"fleet_maintained"`
 	HostCountUpdatedAt           *string                        `json:"host_count_updated_at"`
 	CreatedAt                    string                         `json:"created_at,omitempty"`
@@ -106,6 +107,7 @@ type CreatePolicyRequest struct {
 	SoftwareTitleID              *int     `json:"software_title_id,omitempty"`
 	ScriptID                     *int     `json:"script_id,omitempty"`
 	ContinuousAutomationsEnabled bool     `json:"continuous_automations_enabled,omitempty"`
+	PatchWhenClosed              bool     `json:"patch_when_closed,omitempty"`
 	LabelsIncludeAny             []string `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny             []string `json:"labels_exclude_any,omitempty"`
 	LabelsIncludeAll             []string `json:"labels_include_all,omitempty"`
@@ -155,6 +157,7 @@ type UpdatePolicyRequest struct {
 	ConditionalAccessEnabled       *bool    `json:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled *bool    `json:"conditional_access_bypass_enabled"`
 	ContinuousAutomationsEnabled   *bool    `json:"continuous_automations_enabled"`
+	PatchWhenClosed                *bool    `json:"patch_when_closed"`
 	LabelsIncludeAny               []string `json:"labels_include_any"`
 	LabelsExcludeAny               []string `json:"labels_exclude_any"`
 	LabelsIncludeAll               []string `json:"labels_include_all"`

@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
@@ -75,6 +76,7 @@ const webhookURLSecurityNote = " Use https: the payloads carry host identifiers,
 type fleetWebhookSettingsModel struct {
 	FailingPoliciesWebhook *fleetFailingPoliciesWebhookModel `tfsdk:"failing_policies_webhook"`
 	HostStatusWebhook      *fleetHostStatusWebhookModel      `tfsdk:"host_status_webhook"`
+	HostActivitiesWebhook  *fleetHostActivitiesWebhookModel  `tfsdk:"host_activities_webhook"`
 }
 
 type fleetFailingPoliciesWebhookModel struct {
@@ -96,16 +98,28 @@ type fleetMDMModel struct {
 	WindowsRequireBitlockerPIN types.Bool   `tfsdk:"windows_require_bitlocker_pin"`
 	NameTemplate               types.String `tfsdk:"name_template"`
 
+	WindowsSettings *fleetWindowsSettingsModel `tfsdk:"windows_settings"`
+
 	MacOSUpdates   *fleetAppleOSUpdatesModel `tfsdk:"macos_updates"`
 	IOSUpdates     *fleetAppleOSUpdatesModel `tfsdk:"ios_updates"`
 	IPadOSUpdates  *fleetAppleOSUpdatesModel `tfsdk:"ipados_updates"`
 	WindowsUpdates *fleetWindowsUpdatesModel `tfsdk:"windows_updates"`
 }
 
+type fleetHostActivitiesWebhookModel struct {
+	Enable         types.Bool   `tfsdk:"enable_host_activities_webhook"`
+	DestinationURL types.String `tfsdk:"destination_url"`
+}
+
 type fleetAppleOSUpdatesModel struct {
 	MinimumVersion types.String `tfsdk:"minimum_version"`
 	Deadline       types.String `tfsdk:"deadline"`
+	DeadlineDays   types.Int64  `tfsdk:"deadline_days"`
 	UpdateNewHosts types.Bool   `tfsdk:"update_new_hosts"`
+}
+
+type fleetWindowsSettingsModel struct {
+	EnableManagedLocalAccount types.Bool `tfsdk:"enable_managed_local_account"`
 }
 
 type fleetWindowsUpdatesModel struct {
@@ -124,7 +138,8 @@ type fleetGoogleCalendarModel struct {
 }
 
 type fleetFeaturesModel struct {
-	HistoricalData *fleetHistoricalDataModel `tfsdk:"historical_data"`
+	EnableSoftwareInventory types.Bool                `tfsdk:"enable_software_inventory"`
+	HistoricalData          *fleetHistoricalDataModel `tfsdk:"historical_data"`
 }
 
 type fleetHistoricalDataModel struct {
@@ -204,7 +219,122 @@ func fleetWebhookSettingsAttribute() schema.Attribute {
 					},
 				},
 			},
+			"host_activities_webhook": schema.SingleNestedAttribute{
+				Description: "Sends a webhook whenever an activity linked to one of the fleet's hosts is created. Requires Fleet 4.91.0 or later. " +
+					"Sent to Fleet in full: attributes you omit are written as their zero values.",
+				MarkdownDescription: "Sends a webhook whenever an activity linked to one of the fleet's hosts is created. Requires Fleet 4.91.0 or later. " +
+					"Sent to Fleet in full: attributes you omit are written as their zero values.",
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"enable_host_activities_webhook": schema.BoolAttribute{
+						Description:         "Whether the host activities webhook is enabled.",
+						MarkdownDescription: "Whether the host activities webhook is enabled.",
+						Optional:            true,
+					},
+					"destination_url": schema.StringAttribute{
+						Description:         "URL the webhook payload is sent to." + webhookURLSecurityNote,
+						MarkdownDescription: "URL the webhook payload is sent to." + webhookURLSecurityNote,
+						Optional:            true,
+						Validators:          webhookURLValidators(),
+					},
+				},
+			},
 		},
+	}
+}
+
+// appleOSUpdateLatestVersion is Fleet's sentinel minimum_version meaning "track
+// whatever version Apple currently publishes for each host's hardware".
+const appleOSUpdateLatestVersion = "latest"
+
+// appleOSUpdatesConsistentValidator enforces Fleet's mutually exclusive pairing
+// of the two ways to express an Apple OS update deadline. Fleet accepts an
+// exact minimum_version with a fixed `deadline` date, or minimum_version
+// "latest" with a `deadline_days` offset, and rejects every other combination
+// with a 422. Checking it here turns a failed apply into a plan-time error.
+//
+// This block previously declared minimum_version as AlsoRequires(deadline),
+// which made "latest" impossible to express: Terraform demanded a deadline that
+// Fleet then rejected for being set at all.
+type appleOSUpdatesConsistentValidator struct{}
+
+func (appleOSUpdatesConsistentValidator) Description(_ context.Context) string {
+	return `minimum_version "latest" requires deadline_days and rejects deadline; an exact minimum_version requires deadline and rejects deadline_days`
+}
+
+func (v appleOSUpdatesConsistentValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (appleOSUpdatesConsistentValidator) ValidateObject(ctx context.Context, req validator.ObjectRequest, resp *validator.ObjectResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	var cfg fleetAppleOSUpdatesModel
+	resp.Diagnostics.Append(req.ConfigValue.As(ctx, &cfg, basetypes.ObjectAsOptions{})...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// An unknown value may still resolve to anything at apply time, so defer
+	// to Fleet's own check rather than guessing.
+	if cfg.MinimumVersion.IsUnknown() || cfg.Deadline.IsUnknown() || cfg.DeadlineDays.IsUnknown() {
+		return
+	}
+
+	// Fleet distinguishes a key being present from it carrying a value: it
+	// rejects minimum_version "" with deadline absent ("deadline is required
+	// when minimum_version is provided") but accepts both as "" together,
+	// which is how the requirement is cleared.
+	deadlinePresent := !cfg.Deadline.IsNull()
+	deadlineSet := deadlinePresent && cfg.Deadline.ValueString() != ""
+	deadlineDaysSet := !cfg.DeadlineDays.IsNull()
+	minimumVersionPresent := !cfg.MinimumVersion.IsNull()
+	minimumVersion := cfg.MinimumVersion.ValueString()
+
+	if minimumVersionPresent && minimumVersion == appleOSUpdateLatestVersion {
+		if deadlineSet {
+			resp.Diagnostics.AddAttributeError(
+				req.Path.AtName("deadline"),
+				"Conflicting attribute",
+				`deadline cannot be set when minimum_version is "latest" — in that mode Fleet derives each host's deadline from its target version's release date. Use deadline_days instead.`,
+			)
+		}
+		if !deadlineDaysSet {
+			resp.Diagnostics.AddAttributeError(
+				req.Path.AtName("deadline_days"),
+				"Missing required value",
+				`deadline_days is required when minimum_version is "latest".`,
+			)
+		}
+		return
+	}
+
+	if deadlineDaysSet {
+		resp.Diagnostics.AddAttributeError(
+			req.Path.AtName("deadline_days"),
+			"Conflicting attribute",
+			`deadline_days can only be set when minimum_version is "latest". Use deadline to enforce an exact version by a fixed date.`,
+		)
+	}
+
+	// Reciprocal of deadline's AlsoRequires(minimum_version). Two levels: the
+	// key has to be there at all, and an exact version additionally needs a
+	// real date. Clearing the requirement with both set to "" stays allowed.
+	switch {
+	case minimumVersionPresent && !deadlinePresent:
+		resp.Diagnostics.AddAttributeError(
+			req.Path.AtName("deadline"),
+			"Missing required value",
+			`deadline is required when minimum_version is set. Set both to "" to clear the requirement.`,
+		)
+	case minimumVersion != "" && !deadlineSet:
+		resp.Diagnostics.AddAttributeError(
+			req.Path.AtName("deadline"),
+			"Missing required value",
+			"deadline is required when minimum_version names an exact version.",
+		)
 	}
 }
 
@@ -215,24 +345,29 @@ func fleetMDMAttribute() schema.Attribute {
 
 	appleUpdates := func(platform string) schema.Attribute {
 		desc := "Minimum " + platform + " version enforced on this fleet's hosts. " +
-			"Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example \"26.6.1\", not \"26.6\"). " +
+			"Give an exact version Apple still publishes (for example \"26.6.1\", not \"26.6\") together with deadline, which Fleet validates against Apple's Software Lookup Service. " +
+			"Alternatively set minimum_version to \"latest\" together with deadline_days to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date. " +
 			"Set both minimum_version and deadline to \"\" to clear the requirement."
+		mdDesc := "Minimum " + platform + " version enforced on this fleet's hosts.\n\n" +
+			"Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. " +
+			"Alternatively set `minimum_version` to `\"latest\"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). " +
+			"Set both `minimum_version` and `deadline` to `\"\"` to clear the requirement."
 		return schema.SingleNestedAttribute{
 			Description:         desc,
-			MarkdownDescription: desc,
+			MarkdownDescription: mdDesc,
 			Optional:            true,
+			Validators: []validator.Object{
+				appleOSUpdatesConsistentValidator{},
+			},
 			Attributes: map[string]schema.Attribute{
 				"minimum_version": schema.StringAttribute{
-					Description:         "Required minimum OS version, for example \"26.6.1\". Must be set together with deadline.",
-					MarkdownDescription: "Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.",
+					Description:         "Required minimum OS version, for example \"26.6.1\", or \"latest\" to track Apple's newest release. Set it with deadline, or with deadline_days when it is \"latest\".",
+					MarkdownDescription: "Required minimum OS version, for example `26.6.1`, or `\"latest\"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `\"latest\"`.",
 					Optional:            true,
-					Validators: []validator.String{
-						stringvalidator.AlsoRequires(siblingAttribute("deadline")),
-					},
 				},
 				"deadline": schema.StringAttribute{
-					Description:         "Date by which the update must be installed, as YYYY-MM-DD. Must be set together with minimum_version.",
-					MarkdownDescription: "Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.",
+					Description:         "Date by which the update must be installed, as YYYY-MM-DD. Set it together with an exact minimum_version; Fleet rejects it when minimum_version is \"latest\".",
+					MarkdownDescription: "Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `\"latest\"`.",
 					Optional:            true,
 					Validators: []validator.String{
 						stringvalidator.AlsoRequires(siblingAttribute("minimum_version")),
@@ -240,6 +375,14 @@ func fleetMDMAttribute() schema.Attribute {
 							osUpdateDeadlineRegex,
 							`must be a date in YYYY-MM-DD form, or "" to clear it`,
 						),
+					},
+				},
+				"deadline_days": schema.Int64Attribute{
+					Description:         "Days after a version's release date before the update is enforced. Only valid when minimum_version is \"latest\", where it replaces deadline. Requires Fleet 4.91.0 or later.",
+					MarkdownDescription: "Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `\"latest\"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.",
+					Optional:            true,
+					Validators: []validator.Int64{
+						int64validator.AtLeast(1),
 					},
 				},
 				"update_new_hosts": schema.BoolAttribute{
@@ -270,6 +413,20 @@ func fleetMDMAttribute() schema.Attribute {
 				Description:         "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example \"$FLEET_VAR_HOST_HARDWARE_SERIAL\". Set to \"\" to clear it.",
 				MarkdownDescription: "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it.",
 				Optional:            true,
+			},
+			"windows_settings": schema.SingleNestedAttribute{
+				Description: "Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. " +
+					"Requires Fleet 4.91.0 or later.",
+				MarkdownDescription: "Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. " +
+					"Requires Fleet 4.91.0 or later.",
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"enable_managed_local_account": schema.BoolAttribute{
+						Description:         "Whether fleetd creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires fleetd 1.60.0 or later on the host.",
+						MarkdownDescription: "Whether `fleetd` creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires `fleetd` 1.60.0 or later on the host.",
+						Optional:            true,
+					},
+				},
 			},
 			"macos_updates":  appleUpdates("macOS"),
 			"ios_updates":    appleUpdates("iOS"),
@@ -353,6 +510,11 @@ func fleetFeaturesAttribute() schema.Attribute {
 		MarkdownDescription: desc,
 		Optional:            true,
 		Attributes: map[string]schema.Attribute{
+			"enable_software_inventory": schema.BoolAttribute{
+				Description:         "Whether Fleet collects a software inventory for this fleet's hosts. Requires Fleet 4.91.0 or later; omit the attribute to leave the stored value alone.",
+				MarkdownDescription: "Whether Fleet collects a software inventory for this fleet's hosts. Requires Fleet 4.91.0 or later; omit the attribute to leave the stored value alone.",
+				Optional:            true,
+			},
 			"historical_data": schema.SingleNestedAttribute{
 				Description:         "Which historical datasets Fleet collects for this fleet. Each sub-attribute is applied independently.",
 				MarkdownDescription: "Which historical datasets Fleet collects for this fleet. Each sub-attribute is applied independently.",
@@ -409,6 +571,13 @@ func buildWebhookSettings(ctx context.Context, m *fleetWebhookSettingsModel, dia
 		}
 	}
 
+	if ha := m.HostActivitiesWebhook; ha != nil {
+		out.HostActivitiesWebhook = &fleetdm.HostActivitiesWebhookSettings{
+			Enable:         ha.Enable.ValueBool(),
+			DestinationURL: ha.DestinationURL.ValueString(),
+		}
+	}
+
 	return out
 }
 
@@ -429,6 +598,11 @@ func buildMDMSettings(enableDiskEncryption types.Bool, m *fleetMDMModel) *fleetd
 	out.EnableRecoveryLockPassword = optionalBoolPtr(m.EnableRecoveryLockPassword)
 	out.WindowsRequireBitlockerPIN = optionalBoolPtr(m.WindowsRequireBitlockerPIN)
 	out.NameTemplate = optionalStringPtr(m.NameTemplate)
+	if ws := m.WindowsSettings; ws != nil {
+		out.WindowsSettings = &fleetdm.WindowsMDMSettings{
+			EnableManagedLocalAccount: optionalBoolPtr(ws.EnableManagedLocalAccount),
+		}
+	}
 	out.MacOSUpdates = buildAppleOSUpdates(m.MacOSUpdates)
 	out.IOSUpdates = buildAppleOSUpdates(m.IOSUpdates)
 	out.IPadOSUpdates = buildAppleOSUpdates(m.IPadOSUpdates)
@@ -451,6 +625,10 @@ func buildAppleOSUpdates(m *fleetAppleOSUpdatesModel) *fleetdm.AppleOSUpdates {
 		MinimumVersion: optionalStringPtr(m.MinimumVersion),
 		Deadline:       optionalStringPtr(m.Deadline),
 		UpdateNewHosts: optionalBoolPtr(m.UpdateNewHosts),
+		// Left nil when unset: Fleet rejects deadline_days 0 alongside an exact
+		// minimum_version, and omitting the key is how a fleet migrates off
+		// "latest" (Fleet clears the stored value).
+		DeadlineDays: optionalInt64Ptr(m.DeadlineDays),
 	}
 }
 
@@ -480,7 +658,9 @@ func buildFeatures(m *fleetFeaturesModel) *fleetdm.TeamFeatures {
 		return nil
 	}
 
-	out := &fleetdm.TeamFeatures{}
+	out := &fleetdm.TeamFeatures{
+		EnableSoftwareInventory: optionalBoolPtr(m.EnableSoftwareInventory),
+	}
 	if hd := m.HistoricalData; hd != nil {
 		out.HistoricalData = &fleetdm.HistoricalDataSettings{
 			Uptime:          optionalBoolPtr(hd.Uptime),
@@ -535,6 +715,17 @@ func refreshWebhookSettings(ctx context.Context, m *fleetWebhookSettingsModel, a
 			hs.DaysCount = refreshOptionalInt64(hs.DaysCount, &a.DaysCount)
 		}
 	}
+
+	// Like host_status_webhook, Fleet reports an unconfigured host activities
+	// webhook as an explicit null, so a nil here is real information.
+	if ha := m.HostActivitiesWebhook; ha != nil {
+		if a := api.HostActivitiesWebhook; a == nil {
+			m.HostActivitiesWebhook = nil
+		} else {
+			ha.Enable = refreshOptionalBool(ha.Enable, &a.Enable)
+			ha.DestinationURL = refreshOptionalString(ha.DestinationURL, &a.DestinationURL)
+		}
+	}
 }
 
 // refreshMDM refreshes the mdm block in place. Fleet always reports the OS
@@ -548,6 +739,20 @@ func refreshMDM(m *fleetMDMModel, api *fleetdm.TeamMDMSettings) {
 	m.EnableRecoveryLockPassword = refreshOptionalBool(m.EnableRecoveryLockPassword, api.EnableRecoveryLockPassword)
 	m.WindowsRequireBitlockerPIN = refreshOptionalBool(m.WindowsRequireBitlockerPIN, api.WindowsRequireBitlockerPIN)
 	m.NameTemplate = refreshOptionalString(m.NameTemplate, api.NameTemplate)
+
+	// Fleet 4.91 always reports windows_settings, so a nil here means the server
+	// did not understand the key -- an older Fleet ignores it silently. Drop the
+	// block rather than leaving the planned value in state: this toggles a local
+	// admin account, and quietly reporting success for a setting that was never
+	// applied is worse than a failed apply. Same convention as
+	// host_activities_webhook above.
+	if ws := m.WindowsSettings; ws != nil {
+		if a := api.WindowsSettings; a == nil {
+			m.WindowsSettings = nil
+		} else {
+			ws.EnableManagedLocalAccount = refreshOptionalBool(ws.EnableManagedLocalAccount, a.EnableManagedLocalAccount)
+		}
+	}
 
 	refreshAppleOSUpdates(m.MacOSUpdates, api.MacOSUpdates)
 	refreshAppleOSUpdates(m.IOSUpdates, api.IOSUpdates)
@@ -565,6 +770,7 @@ func refreshAppleOSUpdates(m *fleetAppleOSUpdatesModel, api *fleetdm.AppleOSUpda
 	}
 	m.MinimumVersion = refreshOptionalString(m.MinimumVersion, api.MinimumVersion)
 	m.Deadline = refreshOptionalString(m.Deadline, api.Deadline)
+	m.DeadlineDays = refreshOptionalInt64Ptr(m.DeadlineDays, api.DeadlineDays)
 	m.UpdateNewHosts = refreshOptionalBool(m.UpdateNewHosts, api.UpdateNewHosts)
 }
 
@@ -593,6 +799,8 @@ func refreshFeatures(m *fleetFeaturesModel, api *fleetdm.TeamFeatures) {
 	if m == nil || api == nil {
 		return
 	}
+
+	m.EnableSoftwareInventory = refreshOptionalBool(m.EnableSoftwareInventory, api.EnableSoftwareInventory)
 
 	if hd, a := m.HistoricalData, api.HistoricalData; hd != nil && a != nil {
 		hd.Uptime = refreshOptionalBool(hd.Uptime, a.Uptime)

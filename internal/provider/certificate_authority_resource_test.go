@@ -1224,3 +1224,26 @@ func TestFleetNormalizedValidatorNFC(t *testing.T) {
 		})
 	}
 }
+
+// TestAccCertificateAuthorityResource_nameLength pins the 255-character cap
+// Fleet enforces on a certificate authority name ("CA name cannot be longer
+// than 255 characters").
+func TestAccCertificateAuthorityResource_nameLength(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fakeFleetProviderConfig("http://127.0.0.1:1") + fmt.Sprintf(`
+resource "fleetdm_certificate_authority" "test" {
+  custom_scep_proxy = {
+    name      = %[1]q
+    url       = "https://scep.example.test/scep"
+    challenge = "challenge-value"
+  }
+}
+`, strings.Repeat("c", 256)),
+				ExpectError: regexp.MustCompile(`(?s)at\s+most\s+255`),
+			},
+		},
+	})
+}

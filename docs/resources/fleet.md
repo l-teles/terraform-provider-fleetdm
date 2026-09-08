@@ -118,7 +118,7 @@ resource "fleetdm_fleet" "managed_laptops" {
 
 ### Required
 
-- `name` (String) The name of the fleet.
+- `name` (String) The name of the fleet. At most 255 characters.
 
 ### Optional
 
@@ -144,6 +144,7 @@ resource "fleetdm_fleet" "managed_laptops" {
 
 Optional:
 
+- `enable_software_inventory` (Boolean) Whether Fleet collects a software inventory for this fleet's hosts. Requires Fleet 4.91.0 or later; omit the attribute to leave the stored value alone.
 - `historical_data` (Attributes) Which historical datasets Fleet collects for this fleet. Each sub-attribute is applied independently. (see [below for nested schema](#nestedatt--features--historical_data))
 
 <a id="nestedatt--features--historical_data"></a>
@@ -180,11 +181,18 @@ Optional:
 Optional:
 
 - `enable_recovery_lock_password` (Boolean) Whether Fleet escrows a recovery lock password for the fleet's Apple silicon hosts. Requires MDM to be turned on in Fleet.
-- `ios_updates` (Attributes) Minimum iOS version enforced on this fleet's hosts. Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example "26.6.1", not "26.6"). Set both minimum_version and deadline to "" to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ios_updates))
-- `ipados_updates` (Attributes) Minimum iPadOS version enforced on this fleet's hosts. Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example "26.6.1", not "26.6"). Set both minimum_version and deadline to "" to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ipados_updates))
-- `macos_updates` (Attributes) Minimum macOS version enforced on this fleet's hosts. Fleet validates minimum_version against Apple's Software Lookup Service, so it must be a version Apple still publishes and must be given exactly (for example "26.6.1", not "26.6"). Set both minimum_version and deadline to "" to clear the requirement. (see [below for nested schema](#nestedatt--mdm--macos_updates))
+- `ios_updates` (Attributes) Minimum iOS version enforced on this fleet's hosts.
+
+Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ios_updates))
+- `ipados_updates` (Attributes) Minimum iPadOS version enforced on this fleet's hosts.
+
+Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ipados_updates))
+- `macos_updates` (Attributes) Minimum macOS version enforced on this fleet's hosts.
+
+Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--macos_updates))
 - `name_template` (String) Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it.
 - `windows_require_bitlocker_pin` (Boolean) Whether a BitLocker PIN is required before Fleet considers a Windows host compliant.
+- `windows_settings` (Attributes) Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. Requires Fleet 4.91.0 or later. (see [below for nested schema](#nestedatt--mdm--windows_settings))
 - `windows_updates` (Attributes) Windows update enforcement for this fleet. Set both attributes to `0` to clear it. (see [below for nested schema](#nestedatt--mdm--windows_updates))
 
 <a id="nestedatt--mdm--ios_updates"></a>
@@ -192,8 +200,9 @@ Optional:
 
 Optional:
 
-- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.
-- `minimum_version` (String) Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `"latest"`.
+- `deadline_days` (Number) Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `"latest"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`, or `"latest"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `"latest"`.
 - `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
 
 
@@ -202,8 +211,9 @@ Optional:
 
 Optional:
 
-- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.
-- `minimum_version` (String) Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `"latest"`.
+- `deadline_days` (Number) Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `"latest"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`, or `"latest"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `"latest"`.
 - `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
 
 
@@ -212,9 +222,18 @@ Optional:
 
 Optional:
 
-- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Must be set together with `minimum_version`.
-- `minimum_version` (String) Required minimum OS version, for example `26.6.1`. Must be set together with `deadline`.
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `"latest"`.
+- `deadline_days` (Number) Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `"latest"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`, or `"latest"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `"latest"`.
 - `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--windows_settings"></a>
+### Nested Schema for `mdm.windows_settings`
+
+Optional:
+
+- `enable_managed_local_account` (Boolean) Whether `fleetd` creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires `fleetd` 1.60.0 or later on the host.
 
 
 <a id="nestedatt--mdm--windows_updates"></a>
@@ -233,6 +252,7 @@ Optional:
 Optional:
 
 - `failing_policies_webhook` (Attributes) Sends a webhook when a host starts failing a policy. Sent to Fleet in full: attributes you omit are written as their zero values. (see [below for nested schema](#nestedatt--webhook_settings--failing_policies_webhook))
+- `host_activities_webhook` (Attributes) Sends a webhook whenever an activity linked to one of the fleet's hosts is created. Requires Fleet 4.91.0 or later. Sent to Fleet in full: attributes you omit are written as their zero values. (see [below for nested schema](#nestedatt--webhook_settings--host_activities_webhook))
 - `host_status_webhook` (Attributes) Sends a webhook when too many of the fleet's hosts stop reporting in. Sent to Fleet in full: attributes you omit are written as their zero values. (see [below for nested schema](#nestedatt--webhook_settings--host_status_webhook))
 
 <a id="nestedatt--webhook_settings--failing_policies_webhook"></a>
@@ -244,6 +264,15 @@ Optional:
 - `enable_failing_policies_webhook` (Boolean) Whether the failing policies webhook is enabled.
 - `host_batch_size` (Number) Maximum number of hosts per webhook request. `0` sends them all in one request.
 - `policy_ids` (Set of Number) Policy IDs the webhook fires for. Omit to fire for all of the fleet's policies.
+
+
+<a id="nestedatt--webhook_settings--host_activities_webhook"></a>
+### Nested Schema for `webhook_settings.host_activities_webhook`
+
+Optional:
+
+- `destination_url` (String) URL the webhook payload is sent to. Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http.
+- `enable_host_activities_webhook` (Boolean) Whether the host activities webhook is enabled.
 
 
 <a id="nestedatt--webhook_settings--host_status_webhook"></a>

@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -328,4 +329,26 @@ resource "fleetdm_user" "test" {
 %[3]s
 }
 `, name, email, endpoints)
+}
+
+// TestAccUserResource_nameLength pins the 255-character cap on a user's name.
+// Fleet's API returns a raw MySQL "Data too long" error past that, so the
+// limit is enforced at plan time to produce an actionable message.
+func TestAccUserResource_nameLength(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fakeFleetProviderConfig("http://127.0.0.1:1") + fmt.Sprintf(`
+resource "fleetdm_user" "test" {
+  name        = %[1]q
+  email       = "len-test@example.com"
+  password    = "TestPassword1234!"
+  global_role = "observer"
+}
+`, strings.Repeat("n", 256)),
+				ExpectError: regexp.MustCompile(`(?s)at\s+most\s+255`),
+			},
+		},
+	})
 }
