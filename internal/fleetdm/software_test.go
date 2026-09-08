@@ -628,7 +628,7 @@ func TestClient_PatchSoftwarePackage_WithBinary(t *testing.T) {
 		DisplayName:       "Mozilla Firefox",
 		InstallScript:     strPtr("msiexec /i install.msi /quiet"),
 		UninstallScript:   strPtr("msiexec /x {GUID}"),
-		PreInstallQuery:   "SELECT 1 FROM os_version",
+		PreInstallQuery:   strPtr("SELECT 1 FROM os_version"),
 		PostInstallScript: "echo done",
 		SelfService:       true,
 		Categories:        &wantCategories,
@@ -1870,14 +1870,18 @@ func TestClient_PatchSoftwarePackage_OmitsNilScripts(t *testing.T) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("failed to parse multipart form: %v", err)
 		}
-		for _, field := range []string{"install_script", "uninstall_script"} {
+		// pre_install_query joined the nil-omit group in Fleet 4.91, which
+		// introduced the first Fleet-generated pre-install query: a patch
+		// policy's patch_when_closed makes Fleet write a managed query onto the
+		// installer, and sending "" would wipe it.
+		for _, field := range []string{"install_script", "uninstall_script", "pre_install_query"} {
 			if _, present := r.MultipartForm.Value[field]; present {
 				t.Errorf("expected %s absent for a nil pointer, got: %q", field, r.FormValue(field))
 			}
 		}
-		// The fields with no Fleet-generated default keep their always-send
-		// shape, so an unrelated update still applies them verbatim.
-		for _, field := range []string{"pre_install_query", "post_install_script", "self_service"} {
+		// post_install_script has no Fleet-generated default, so it keeps its
+		// always-send shape and an unrelated update applies it verbatim.
+		for _, field := range []string{"post_install_script", "self_service"} {
 			if _, present := r.MultipartForm.Value[field]; !present {
 				t.Errorf("expected %s to be sent unconditionally", field)
 			}

@@ -1063,7 +1063,13 @@ func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fle
 	if pkg.UninstallScript != "" {
 		state.UninstallScript = types.StringValue(pkg.UninstallScript)
 	}
-	if pkg.PreInstallQuery != "" {
+	// pre_install_query follows the same ownership rule as the scripts above.
+	// Since Fleet 4.91 it can carry a Fleet-generated value -- turning on a
+	// patch policy's patch_when_closed makes Fleet write a managed query here --
+	// so absorbing it into state on a title whose HCL omits the attribute would
+	// start a fight Terraform wins by wiping the query, silently switching that
+	// behaviour back off.
+	if !state.PreInstallQuery.IsNull() {
 		state.PreInstallQuery = types.StringValue(pkg.PreInstallQuery)
 	}
 	if pkg.PostInstallScript != "" {
@@ -1319,7 +1325,7 @@ func (r *softwarePackageResource) updatePackageOrFMA(ctx context.Context, titleI
 		TeamID:            teamID,
 		InstallScript:     &installScript,
 		UninstallScript:   &uninstallScript,
-		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
+		PreInstallQuery:   optionalStringPtr(plan.PreInstallQuery),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
 		DisplayName:       plan.DisplayName.ValueString(),
@@ -1418,7 +1424,7 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 		DisplayName:       plan.DisplayName.ValueString(),
 		InstallScript:     &installScript,
 		UninstallScript:   &uninstallScript,
-		PreInstallQuery:   plan.PreInstallQuery.ValueString(),
+		PreInstallQuery:   optionalStringPtr(plan.PreInstallQuery),
 		PostInstallScript: plan.PostInstallScript.ValueString(),
 		SelfService:       plan.SelfService.ValueBool(),
 	}

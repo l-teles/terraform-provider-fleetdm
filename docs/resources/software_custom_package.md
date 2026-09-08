@@ -148,7 +148,7 @@ Fleet decides which file types it accepts from the extension; as of Fleet 4.90 t
 - `package_sha256` (String) The SHA256 hash of the package in Fleet. Computed at plan time from the local file (package_path) or S3 object (package_s3), or read from Fleet's API. Can be set explicitly to avoid drift on import.
 - `platform` (String) The platform the software targets (`darwin`, `windows`, `linux`, `ios`, `ipados`).
 - `post_install_script` (String) Script to run after installation. Optional.
-- `pre_install_query` (String) An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.
+- `pre_install_query` (String) An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional: when omitted, the query stays under Fleet's control and Terraform neither stores nor reverts it. Fleet writes a managed query here when a patch policy targeting this title sets patch_when_closed, so leaving the attribute out is what lets that keep working. Set this attribute to take ownership of the query; remove it to hand ownership back to Fleet without clearing the query that is in place.
 - `self_service` (Boolean) Whether the software is available for self-service installation by end users. Defaults to false.
 - `team_id` (Number) The ID of the team this software belongs to. Required for Fleet Premium.
 - `uninstall_script` (String) Script to run during uninstallation. When omitted, Fleet generates a default uninstall command for the package type and returns it (Computed), so omitting it adopts Fleet's default without a perpetual plan diff.
