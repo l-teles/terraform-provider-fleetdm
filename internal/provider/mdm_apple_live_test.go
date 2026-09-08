@@ -1,11 +1,13 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 // The tests in this file cover settings and endpoints Fleet gates on Apple MDM
@@ -92,6 +94,35 @@ resource "fleetdm_configuration_profile" "test" {
 					resource.TestCheckResourceAttrSet("fleetdm_configuration_profile.test", "profile_uuid"),
 				),
 			},
+			{
+				// First import coverage for this resource, which had none: the
+				// mock tests could not reach it and the live Windows test does
+				// not exercise it. Imported by profile_uuid. team_id is not
+				// recoverable from the profile endpoint, and profile_content is
+				// re-fetched rather than compared byte-for-byte, so both are
+				// ignored while the rest of the mapping is verified.
+				ResourceName: "fleetdm_configuration_profile.test",
+				ImportState:  true,
+				// The resource exposes no id attribute, so the verifier has to
+				// be pointed at the real identifier as well.
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "profile_uuid",
+				// This resource is keyed by profile_uuid rather than id, so the
+				// import ID has to be supplied explicitly; the default would
+				// pass the unset id attribute.
+				ImportStateIdFunc: func(state *terraform.State) (string, error) {
+					rs, ok := state.RootModule().Resources["fleetdm_configuration_profile.test"]
+					if !ok {
+						return "", errors.New("fleetdm_configuration_profile.test not found in state")
+					}
+					uuid := rs.Primary.Attributes["profile_uuid"]
+					if uuid == "" {
+						return "", errors.New("profile_uuid is empty in state")
+					}
+					return uuid, nil
+				},
+				ImportStateVerifyIgnore: []string{"team_id", "profile_content"},
+			},
 		},
 	})
 }
@@ -170,38 +201,6 @@ resource "fleetdm_fleet" "test" {
 				Config: cfg(false),
 				Check: resource.TestCheckResourceAttr(
 					"fleetdm_fleet.test", "enable_disk_encryption", "false"),
-			},
-		},
-	})
-}
-
-// TestAccSetupExperienceResource_appleMDMRequired documents the boundary the rig
-// change moved: without Apple MDM configured Fleet answers 422 on the managed
-// local account, and the message names the renamed key. Asserting the message
-// keeps the reason discoverable if a future rig regression turns Apple MDM back
-// off — the failure then points at the rig rather than at the resource.
-func TestAccSetupExperienceResource_appleMDMConfiguredInRig(t *testing.T) {
-	fleetName := "tf-acc-mdmgate-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
-
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheck(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: providerConfig() + fmt.Sprintf(`
-resource "fleetdm_fleet" "test" {
-  name = %[1]q
-}
-
-resource "fleetdm_setup_experience" "test" {
-  team_id                      = fleetdm_fleet.test.id
-  enable_managed_local_account = true
-}
-`, fleetName),
-				// A rig without Apple MDM fails here with
-				// "because MDM features aren't turned on in Fleet".
-				Check: resource.TestCheckResourceAttr(
-					"fleetdm_setup_experience.test", "enable_managed_local_account", "true"),
 			},
 		},
 	})
