@@ -1325,20 +1325,25 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 					f.mu.Unlock()
 				},
 				Config: cfg(false),
-				Check: func(_ *terraform.State) error {
-					f.mu.Lock()
-					defer f.mu.Unlock()
-					if f.patchSelfService != "false" {
-						return fmt.Errorf("expected the self_service change to be sent, got %q", f.patchSelfService)
-					}
-					if f.patchPreInstallQuerySeen {
-						return fmt.Errorf("pre_install_query must be omitted from the PATCH when Fleet owns it, got %q", f.patchPreInstallQuery)
-					}
-					if f.titlePreInstallQuery != fleetOwned {
-						return fmt.Errorf("Fleet's managed query was overwritten: %q", f.titlePreInstallQuery)
-					}
-					return nil
-				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					// The only step where Fleet actually holds a query, so the
+					// only one that can catch a Read absorbing it into state.
+					resource.TestCheckNoResourceAttr("fleetdm_software_fleet_maintained_app.test", "pre_install_query"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.patchSelfService != "false" {
+							return fmt.Errorf("expected the self_service change to be sent, got %q", f.patchSelfService)
+						}
+						if f.patchPreInstallQuerySeen {
+							return fmt.Errorf("pre_install_query must be omitted from the PATCH when Fleet owns it, got %q", f.patchPreInstallQuery)
+						}
+						if f.titlePreInstallQuery != fleetOwned {
+							return fmt.Errorf("Fleet's managed query was overwritten: %q", f.titlePreInstallQuery)
+						}
+						return nil
+					},
+				),
 			},
 			{
 				// The Fleet-owned query must not have leaked into state either,
@@ -1391,6 +1396,9 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 						defer f.mu.Unlock()
 						if !f.patchPreInstallQuerySeen {
 							return errors.New("pre_install_query must be sent when Terraform owns it")
+						}
+						if f.patchPreInstallQuery != "SELECT 1 FROM os_version WHERE major >= 26;" {
+							return fmt.Errorf("wrong pre_install_query on the wire: %q", f.patchPreInstallQuery)
 						}
 						return nil
 					},

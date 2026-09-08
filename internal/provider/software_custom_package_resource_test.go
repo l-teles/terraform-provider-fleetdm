@@ -935,6 +935,7 @@ resource "fleetdm_software_custom_package" "py" {
 // clear a query this resource owns.
 func TestAccSoftwareCustomPackageResource_preInstallQueryOwnership(t *testing.T) {
 	const fleetOwned = "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM apps WHERE bundle_identifier = 'com.example.app');"
+	const declaredQuery = "SELECT 1 FROM os_version;"
 
 	tmpDir := t.TempDir()
 	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
@@ -980,31 +981,41 @@ resource "fleetdm_software_custom_package" "test" {
 					f.mu.Unlock()
 				},
 				Config: cfg(false, ""),
-				Check: func(_ *terraform.State) error {
-					f.mu.Lock()
-					defer f.mu.Unlock()
-					if f.patchSelfService != "false" {
-						return fmt.Errorf("expected the self_service change to be sent, got %q", f.patchSelfService)
-					}
-					if f.patchPreInstallQuerySeen {
-						return fmt.Errorf("pre_install_query must be omitted when Fleet owns it, got %q", f.patchPreInstallQuery)
-					}
-					if f.titlePreInstallQuery != fleetOwned {
-						return fmt.Errorf("Fleet's managed query was overwritten: %q", f.titlePreInstallQuery)
-					}
-					return nil
-				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					// Asserted here, not just in the first step: this is the
+					// only point at which Fleet actually holds a query, so it
+					// is the only place a Read that absorbs a Fleet-owned value
+					// into state would show up.
+					resource.TestCheckNoResourceAttr("fleetdm_software_custom_package.test", "pre_install_query"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.patchSelfService != "false" {
+							return fmt.Errorf("expected the self_service change to be sent, got %q", f.patchSelfService)
+						}
+						if f.patchPreInstallQuerySeen {
+							return fmt.Errorf("pre_install_query must be omitted when Fleet owns it, got %q", f.patchPreInstallQuery)
+						}
+						if f.titlePreInstallQuery != fleetOwned {
+							return fmt.Errorf("Fleet's managed query was overwritten: %q", f.titlePreInstallQuery)
+						}
+						return nil
+					},
+				),
 			},
 			{
 				// Declaring it takes ownership; the value goes on the wire.
-				Config: cfg(false, `  pre_install_query = "SELECT 1 FROM os_version;"`),
+				Config: cfg(false, fmt.Sprintf("  pre_install_query = %q", declaredQuery)),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "pre_install_query", "SELECT 1 FROM os_version;"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "pre_install_query", declaredQuery),
 					func(_ *terraform.State) error {
 						f.mu.Lock()
 						defer f.mu.Unlock()
 						if !f.patchPreInstallQuerySeen {
 							return errors.New("pre_install_query must be sent once Terraform owns it")
+						}
+						if f.patchPreInstallQuery != declaredQuery {
+							return fmt.Errorf("wrong pre_install_query on the wire: got %q, want %q", f.patchPreInstallQuery, declaredQuery)
 						}
 						return nil
 					},
