@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
@@ -310,4 +311,100 @@ resource "fleetdm_setup_experience" "test" {
   manual_agent_install           = true
 }
 `, serverURL, teamID)
+}
+
+// TestAccSetupExperienceResource_managedLocalAccount covers the managed local
+// admin account settings Fleet 4.91 added. They are gated on Apple MDM being
+// configured — Fleet answers 422 otherwise — which the test rig now satisfies
+// with self-signed APNs material, so this runs live rather than against a mock.
+func TestAccSetupExperienceResource_managedLocalAccount(t *testing.T) {
+	fleetName := "tf-acc-mla-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	cfg := func(enabled bool, accountType string) string {
+		typeLine := ""
+		if accountType != "" {
+			typeLine = fmt.Sprintf("  end_user_local_account_type  = %q", accountType)
+		}
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+}
+
+resource "fleetdm_setup_experience" "test" {
+  team_id                      = fleetdm_fleet.test.id
+  enable_managed_local_account = %[2]t
+%[3]s
+}
+`, fleetName, enabled, typeLine)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true, "admin"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_setup_experience.test", "enable_managed_local_account", "true"),
+					resource.TestCheckResourceAttr("fleetdm_setup_experience.test", "end_user_local_account_type", "admin"),
+				),
+			},
+			{
+				Config:   cfg(true, "admin"),
+				PlanOnly: true,
+			},
+			{
+				Config: cfg(true, "standard"),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_setup_experience.test", "end_user_local_account_type", "standard"),
+			},
+			{
+				Config: cfg(true, "none"),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_setup_experience.test", "end_user_local_account_type", "none"),
+			},
+			{
+				// Turning the account off requires letting the type go back to
+				// Fleet's default: it refuses "standard"/"none" while disabled.
+				Config: cfg(false, "admin"),
+				Check: resource.TestCheckResourceAttr(
+					"fleetdm_setup_experience.test", "enable_managed_local_account", "false"),
+			},
+		},
+	})
+}
+
+// TestAccSetupExperienceResource_managedLocalAccountValidators pins the two
+// plan-time rules that mirror Fleet's 422s: the account type is a fixed set,
+// and "standard"/"none" require the account to be enabled.
+func TestAccSetupExperienceResource_managedLocalAccountValidators(t *testing.T) {
+	cfg := func(body string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_setup_experience" "test" {
+  team_id = 1
+%s
+}
+`, body)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cfg(`  end_user_local_account_type = "root"`),
+				ExpectError: regexp.MustCompile(`(?s)value\s+must\s+be\s+one\s+of`),
+			},
+			{
+				Config: cfg(`  enable_managed_local_account = false
+  end_user_local_account_type  = "standard"`),
+				ExpectError: regexp.MustCompile(`(?s)enable_managed_local_account\s+must\s+be\s+true`),
+			},
+			{
+				Config: cfg(`  enable_managed_local_account = false
+  end_user_local_account_type  = "none"`),
+				ExpectError: regexp.MustCompile(`(?s)enable_managed_local_account\s+must\s+be\s+true`),
+			},
+		},
+	})
 }

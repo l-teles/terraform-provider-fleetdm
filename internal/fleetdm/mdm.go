@@ -439,6 +439,11 @@ type SetupExperience struct {
 	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
 	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
 	ManualAgentInstall        *bool `json:"manual_agent_install,omitempty"`
+	// EnableManagedLocalAccount and EndUserLocalAccountType are the managed
+	// local admin account settings (Fleet 4.91+, Premium). Fleet only accepts
+	// them once Apple MDM is configured; without it the PATCH answers 422.
+	EnableManagedLocalAccount *bool   `json:"enable_managed_local_account,omitempty"`
+	EndUserLocalAccountType   *string `json:"end_user_local_account_type,omitempty"`
 }
 
 // renamedSetupExperience is the same object under the names Fleet 4.90
@@ -452,6 +457,11 @@ type renamedSetupExperience struct {
 	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
 	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
 	ManualAgentInstall        *bool `json:"macos_manual_agent_install,omitempty"`
+	// Fleet renames only the enable flag here (see the renameto tag on
+	// MacOSSetup.EnableManagedLocalAccount); end_user_local_account_type keeps
+	// its name under both spellings.
+	EnableManagedLocalAccount *bool   `json:"enable_create_local_admin_account,omitempty"`
+	EndUserLocalAccountType   *string `json:"end_user_local_account_type,omitempty"`
 }
 
 func (s renamedSetupExperience) toSetupExperience() *SetupExperience {
@@ -462,6 +472,8 @@ func (s renamedSetupExperience) toSetupExperience() *SetupExperience {
 		RequireAllSoftwareMacOS:   s.RequireAllSoftwareMacOS,
 		RequireAllSoftwareWindows: s.RequireAllSoftwareWindows,
 		ManualAgentInstall:        s.ManualAgentInstall,
+		EnableManagedLocalAccount: s.EnableManagedLocalAccount,
+		EndUserLocalAccountType:   s.EndUserLocalAccountType,
 	}
 }
 
@@ -515,6 +527,15 @@ type UpdateSetupExperienceRequest struct {
 	RequireAllSoftwareMacOS   *bool `json:"require_all_software_macos,omitempty"`
 	RequireAllSoftwareWindows *bool `json:"require_all_software_windows,omitempty"`
 	ManualAgentInstall        *bool `json:"manual_agent_install,omitempty"`
+	// EnableManagedLocalAccount and EndUserLocalAccountType are sent under
+	// their legacy names, which Fleet still accepts: its key rewriter takes
+	// either spelling and rejects a request carrying both.
+	//
+	// Fleet couples the two -- an account type of "standard" or "none" is
+	// refused while the account is disabled -- and validates the type against
+	// a fixed set, so the provider checks both at plan time.
+	EnableManagedLocalAccount *bool   `json:"enable_managed_local_account,omitempty"`
+	EndUserLocalAccountType   *string `json:"end_user_local_account_type,omitempty"`
 }
 
 // GetSetupExperience retrieves setup experience settings for a team.
