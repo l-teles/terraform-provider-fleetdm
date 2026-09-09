@@ -217,17 +217,17 @@ func TestPlatformPlanClears(t *testing.T) {
 func TestExtractLabels(t *testing.T) {
 	ctx := context.Background()
 
-	makeList := func(labels ...string) types.List {
+	makeList := func(labels ...string) unorderedStringList {
 		vals := make([]attr.Value, len(labels))
 		for i, l := range labels {
 			vals[i] = types.StringValue(l)
 		}
-		return types.ListValueMust(types.StringType, vals)
+		return unorderedStringList{ListValue: types.ListValueMust(types.StringType, vals)}
 	}
 
 	t.Run("null list does not modify target", func(t *testing.T) {
 		target := []string{"existing"}
-		diags := extractLabels(ctx, types.ListNull(types.StringType), &target)
+		diags := extractLabels(ctx, unorderedStringList{ListValue: types.ListNull(types.StringType)}, &target)
 		if diags.HasError() {
 			t.Fatalf("unexpected error: %v", diags)
 		}
@@ -238,7 +238,7 @@ func TestExtractLabels(t *testing.T) {
 
 	t.Run("unknown list does not modify target", func(t *testing.T) {
 		target := []string{"existing"}
-		diags := extractLabels(ctx, types.ListUnknown(types.StringType), &target)
+		diags := extractLabels(ctx, unorderedStringList{ListValue: types.ListUnknown(types.StringType)}, &target)
 		if diags.HasError() {
 			t.Fatalf("unexpected error: %v", diags)
 		}
@@ -249,7 +249,7 @@ func TestExtractLabels(t *testing.T) {
 
 	t.Run("empty list sets empty slice", func(t *testing.T) {
 		target := []string{"old"}
-		diags := extractLabels(ctx, types.ListValueMust(types.StringType, []attr.Value{}), &target)
+		diags := extractLabels(ctx, unorderedStringList{ListValue: types.ListValueMust(types.StringType, []attr.Value{})}, &target)
 		if diags.HasError() {
 			t.Fatalf("unexpected error: %v", diags)
 		}

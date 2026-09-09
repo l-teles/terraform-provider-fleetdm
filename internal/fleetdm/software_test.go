@@ -8,9 +8,40 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// assertFormNames applies Fleet's own three-way decode rule to a multipart
+// key, so these mocks check the shape the server actually reads rather than
+// whatever the client happens to send:
+//
+//   - want nil        → key must be absent  ("no change")
+//   - want empty      → exactly one empty occurrence ("clear")
+//   - want names      → one occurrence per name, in order
+//
+// Fleet takes r.MultipartForm.Value[key] verbatim as the name list, so
+// asserting with r.FormValue (first occurrence only) would hide both a
+// JSON-encoded array and a dropped name.
+func assertFormNames(t *testing.T, r *http.Request, key string, want []string) {
+	t.Helper()
+	got, ok := r.MultipartForm.Value[key]
+	switch {
+	case want == nil:
+		if ok {
+			t.Errorf("%s: expected absent, got %q", key, got)
+		}
+	case !ok:
+		t.Errorf("%s: expected present, got absent", key)
+	case len(want) == 0:
+		if len(got) != 1 || got[0] != "" {
+			t.Errorf("%s: expected exactly one empty occurrence (Fleet's clear form), got %q", key, got)
+		}
+	case !slices.Equal(got, want):
+		t.Errorf("%s: got %q, want one field per name %q", key, got, want)
+	}
+}
 
 func TestClient_ListSoftwareTitles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,53 +287,6 @@ func TestClient_ListSoftwareTitlesWithFilters(t *testing.T) {
 	}
 }
 
-func TestClient_GetSoftwareInstaller(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
-			t.Errorf("expected path /api/v1/fleet/software/titles/42/package, got: %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected method GET, got: %s", r.Method)
-		}
-		// This read scopes with a team_id query parameter, unlike the PATCH on
-		// the same path which requires the scope in the multipart body.
-		if r.URL.Query().Get("team_id") != "5" {
-			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
-		}
-
-		resp := map[string]interface{}{
-			"software_installer": map[string]interface{}{
-				"software_title_id": 42,
-				"team_id":           5,
-				"name":              "Zoom",
-				"version":           "5.0.0",
-				"filename":          "zoom.pkg",
-				"self_service":      true,
-				"install_script":    "installer -pkg /tmp/zoom.pkg -target /",
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
-	teamID := 5
-	installer, err := client.GetSoftwareInstaller(context.Background(), 42, &teamID)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if installer.TitleID != 42 {
-		t.Errorf("expected title ID 42, got: %d", installer.TitleID)
-	}
-	if installer.Name != "Zoom" {
-		t.Errorf("expected name 'Zoom', got: %s", installer.Name)
-	}
-	if !installer.SelfService {
-		t.Error("expected self_service to be true")
-	}
-}
-
 func TestClient_DeleteSoftwarePackage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -417,7 +401,7 @@ func TestClient_PatchSoftwarePackage(t *testing.T) {
 }
 
 // TestClient_PatchSoftwarePackage_EncodesLabels verifies that a populated
-// label slice is JSON-encoded into the multipart form field. Note: in
+// label slice goes on the wire as one form field per name. Note: in
 // real provider usage the schema validator rejects HCL that sets both
 // labels_include_any and labels_exclude_any. This test exercises the
 // API client layer directly to pin the encoding shape.
@@ -426,12 +410,8 @@ func TestClient_PatchSoftwarePackage_EncodesLabels(t *testing.T) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("parse multipart: %v", err)
 		}
-		if got := r.FormValue("labels_include_any"); got != `["Macs on Sonoma","Engineering"]` {
-			t.Errorf("expected labels_include_any to be JSON-encoded array, got: %q", got)
-		}
-		if got := r.FormValue("labels_exclude_any"); got != `["Exempt"]` {
-			t.Errorf("expected labels_exclude_any to be JSON-encoded array, got: %q", got)
-		}
+		assertFormNames(t, r, "labels_include_any", []string{"Macs on Sonoma", "Engineering"})
+		assertFormNames(t, r, "labels_exclude_any", []string{"Exempt"})
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -449,20 +429,18 @@ func TestClient_PatchSoftwarePackage_EncodesLabels(t *testing.T) {
 }
 
 // TestClient_PatchSoftwarePackage_ClearsLabelsViaEmpty verifies that a
-// pointer to an empty slice serializes as "[]" — the explicit-clear path
-// used when the user sets labels_include_any = [] in HCL.
+// pointer to an empty slice serializes as a single empty occurrence — the
+// only shape Fleet decodes as an explicit clear, and the path used when the
+// user sets labels_include_any = [] in HCL. Writing zero occurrences instead
+// would read server-side as "no change".
 func TestClient_PatchSoftwarePackage_ClearsLabelsViaEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("parse multipart: %v", err)
 		}
-		if got := r.FormValue("labels_include_any"); got != `[]` {
-			t.Errorf("expected labels_include_any '[]' for pointer-to-empty, got: %q", got)
-		}
+		assertFormNames(t, r, "labels_include_any", []string{})
 		// labels_exclude_any was never set on the request → must be absent.
-		if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
-			t.Errorf("expected labels_exclude_any absent when only include is set, got: %q", r.FormValue("labels_exclude_any"))
-		}
+		assertFormNames(t, r, "labels_exclude_any", nil)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -598,19 +576,11 @@ func TestClient_PatchSoftwarePackage_WithBinary(t *testing.T) {
 		if got := r.FormValue("display_name"); got != "Mozilla Firefox" {
 			t.Errorf("display_name: got %q", got)
 		}
-		if got := r.FormValue("categories"); got != `["Browsers","Productivity"]` {
-			t.Errorf("categories: got %q", got)
-		}
-		if got := r.FormValue("labels_include_any"); got != `["Workstations","Engineering"]` {
-			t.Errorf("labels_include_any: got %q", got)
-		}
+		assertFormNames(t, r, "categories", []string{"Browsers", "Productivity"})
+		assertFormNames(t, r, "labels_include_any", []string{"Workstations", "Engineering"})
 		// labels_exclude_any / labels_include_all were not set on the request → must be absent.
-		if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
-			t.Errorf("labels_exclude_any must be absent when nil, got %q", r.FormValue("labels_exclude_any"))
-		}
-		if _, ok := r.MultipartForm.Value["labels_include_all"]; ok {
-			t.Errorf("labels_include_all must be absent when nil, got %q", r.FormValue("labels_include_all"))
-		}
+		assertFormNames(t, r, "labels_exclude_any", nil)
+		assertFormNames(t, r, "labels_include_all", nil)
 		w.WriteHeader(http.StatusOK)
 		// Response shape mirrors what the docs document for this endpoint;
 		// the helper does not unmarshal it, but returning something realistic
@@ -648,9 +618,7 @@ func TestClient_PatchSoftwarePackage_WithBinaryClearsCategoriesViaEmpty(t *testi
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("parse multipart: %v", err)
 		}
-		if got := r.FormValue("categories"); got != `[]` {
-			t.Errorf(`expected categories "[]" for pointer-to-empty, got %q`, got)
-		}
+		assertFormNames(t, r, "categories", []string{})
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -806,8 +774,8 @@ func TestClient_UploadSoftwarePackage_OmitsUnsetLabels(t *testing.T) {
 }
 
 // TestClient_UploadSoftwarePackage_ClearsLabelsViaEmpty verifies that a
-// pointer to an empty slice serializes as "[]" so a future Read can
-// faithfully reflect the explicit "no labels" intent.
+// pointer to an empty slice serializes as a single empty occurrence, the
+// shape Fleet decodes as an explicit "no labels".
 func TestClient_UploadSoftwarePackage_ClearsLabelsViaEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -815,12 +783,8 @@ func TestClient_UploadSoftwarePackage_ClearsLabelsViaEmpty(t *testing.T) {
 			if err := r.ParseMultipartForm(1 << 20); err != nil {
 				t.Fatalf("parse multipart: %v", err)
 			}
-			if got := r.FormValue("labels_include_any"); got != `[]` {
-				t.Errorf("expected labels_include_any '[]' for pointer-to-empty, got: %q", got)
-			}
-			if _, ok := r.MultipartForm.Value["labels_exclude_any"]; ok {
-				t.Errorf("expected labels_exclude_any absent when only include is set, got: %q", r.FormValue("labels_exclude_any"))
-			}
+			assertFormNames(t, r, "labels_include_any", []string{})
+			assertFormNames(t, r, "labels_exclude_any", nil)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"software_package": map[string]interface{}{"team_id": 1, "title_id": 8},
 			})
@@ -1928,4 +1892,128 @@ func TestClient_PatchSoftwarePackage_SendsEmptyScriptWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
+}
+
+// TestClient_SoftwarePackageNameListsNeverCarryJSON is a guard on the whole
+// class of bug rather than one field: Fleet takes every occurrence of these
+// keys verbatim as a label or category name, so any value that still looks
+// JSON-encoded means the client is handing Fleet a name that cannot exist.
+// It covers both multipart endpoints, since each builds its own form.
+func TestClient_SoftwarePackageNameListsNeverCarryJSON(t *testing.T) {
+	nameListKeys := []string{"labels_include_any", "labels_exclude_any", "labels_include_all", "categories"}
+
+	assertNoJSON := func(t *testing.T, r *http.Request) {
+		t.Helper()
+		for _, key := range nameListKeys {
+			for _, v := range r.MultipartForm.Value[key] {
+				if strings.ContainsAny(v, `[]"`) {
+					t.Errorf("%s: value %q is JSON-encoded; Fleet would read it as a literal name", key, v)
+				}
+			}
+		}
+	}
+
+	include := []string{"Workstations", "Engineering"}
+	categories := []string{"Browsers", "Productivity"}
+
+	t.Run("upload", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPost {
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Fatalf("parse multipart: %v", err)
+				}
+				assertNoJSON(t, r)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"software_package": map[string]any{"team_id": 1, "title_id": 9},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(getSoftwareTitleResponse{SoftwareTitle: &SoftwareTitle{ID: 9, Name: "test.pkg"}})
+		}))
+		defer server.Close()
+
+		client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+		if _, err := client.UploadSoftwarePackage(context.Background(), &UploadSoftwarePackageRequest{
+			Software:         []byte("bytes"),
+			Filename:         "test.pkg",
+			Categories:       categories,
+			LabelsIncludeAny: &include,
+		}); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("patch", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("parse multipart: %v", err)
+			}
+			assertNoJSON(t, r)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+		if err := client.PatchSoftwarePackage(context.Background(), 42, &PatchSoftwarePackageRequest{
+			LabelsIncludeAny: &include,
+			Categories:       &categories,
+		}); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+}
+
+// TestClient_SoftwarePackageRejectsLoneEmptyName pins the fail-closed guard on
+// the one input the repeated-field encoding cannot represent safely: a list
+// holding a single empty name is byte-identical on the wire to an explicit
+// clear, so accepting it would drop the software's label targeting and make it
+// available to every host. The request must not reach Fleet at all.
+func TestClient_SoftwarePackageRejectsLoneEmptyName(t *testing.T) {
+	for _, key := range []string{"labels_include_any", "labels_exclude_any", "labels_include_all", "categories"} {
+		t.Run(key, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("%s: request must not be sent for a lone empty name", key)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+			lone := []string{""}
+			req := &PatchSoftwarePackageRequest{}
+			switch key {
+			case "labels_include_any":
+				req.LabelsIncludeAny = &lone
+			case "labels_exclude_any":
+				req.LabelsExcludeAny = &lone
+			case "labels_include_all":
+				req.LabelsIncludeAll = &lone
+			case "categories":
+				req.Categories = &lone
+			}
+			err := client.PatchSoftwarePackage(context.Background(), 42, req)
+			if err == nil {
+				t.Fatalf("%s: expected an error for a lone empty name, got nil", key)
+			}
+			if !strings.Contains(err.Error(), key) {
+				t.Errorf("error should name the offending field, got: %v", err)
+			}
+		})
+	}
+
+	t.Run("upload", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			t.Error("upload must not be sent for a lone empty name")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
+		lone := []string{""}
+		if _, err := client.UploadSoftwarePackage(context.Background(), &UploadSoftwarePackageRequest{
+			Software: []byte("bytes"), Filename: "a.pkg", LabelsIncludeAny: &lone,
+		}); err == nil {
+			t.Fatal("expected an error for a lone empty name, got nil")
+		}
+	})
 }

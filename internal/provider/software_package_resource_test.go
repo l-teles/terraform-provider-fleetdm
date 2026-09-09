@@ -1580,18 +1580,8 @@ func newFakeFleetForLabels(t *testing.T) *fakeFleetForLabels {
 			}
 			f.mu.Lock()
 			f.patchCount++
-			vals, incSeen := r.MultipartForm.Value["labels_include_any"]
-			f.patchIncludeFieldSeen = incSeen
-			f.patchIncludeLabels = nil
-			if incSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeLabels)
-			}
-			vals, excSeen := r.MultipartForm.Value["labels_exclude_any"]
-			f.patchExcludeFieldSeen = excSeen
-			f.patchExcludeLabels = nil
-			if excSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchExcludeLabels)
-			}
+			f.patchIncludeLabels, f.patchIncludeFieldSeen = decodeFormNames(r, "labels_include_any")
+			f.patchExcludeLabels, f.patchExcludeFieldSeen = decodeFormNames(r, "labels_exclude_any")
 			f.titleInstallScript = r.FormValue("install_script")
 			f.titleSelfService = r.FormValue("self_service") == "true"
 			f.mu.Unlock()
@@ -2094,4 +2084,43 @@ func TestAccSoftwarePackageResource_conflictingLabels(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccSoftwarePackageResource_rejectsEmptyLabelName pins the plan-time
+// guard on this resource too. It declares the label and category attributes
+// itself rather than sharing softwareCommonSchemaAttributes(), so the
+// validator has to be wired on separately and can silently go missing here
+// while the newer resources are covered.
+//
+// The input matters because Fleet reads these lists as repeated form fields:
+// a lone empty name is indistinguishable on the wire from an explicit clear,
+// which for a label list would drop the package's targeting and make it
+// available to every host.
+func TestAccSoftwarePackageResource_rejectsEmptyLabelName(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetForLabels(t)
+
+	for _, attr := range []string{
+		"labels_include_any",
+		"labels_exclude_any",
+		"labels_include_all",
+		"categories",
+	} {
+		t.Run(attr, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: testAccSoftwarePackageResourceConfig_labels(f.srv.URL, pkgPath,
+							fmt.Sprintf("\n  %s = [\"\"]", attr)),
+						ExpectError: regexp.MustCompile(`(?i)Invalid Attribute Value|at least 1|string length`),
+					},
+				},
+			})
+		})
+	}
 }

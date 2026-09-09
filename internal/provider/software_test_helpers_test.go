@@ -11,6 +11,28 @@ import (
 	"testing"
 )
 
+// decodeFormNames applies Fleet's own decode rule for a multipart name-list
+// key, so these fakes accept exactly what a real Fleet accepts:
+//
+//   - key absent                    → nil ("no change")
+//   - one occurrence, empty value   → empty slice ("clear")
+//   - otherwise                     → the occurrences verbatim as names
+//
+// The second return value reports whether the key was present at all, which
+// callers assert separately from its value. Decoding with json.Unmarshal
+// instead would let a JSON-encoded list pass the fake while a real Fleet
+// rejects it as one unknown name.
+func decodeFormNames(r *http.Request, key string) ([]string, bool) {
+	vals, ok := r.MultipartForm.Value[key]
+	if !ok {
+		return nil, false
+	}
+	if len(vals) == 1 && vals[0] == "" {
+		return []string{}, true
+	}
+	return vals, true
+}
+
 // fakeFleetSoftwareServer is a multipurpose Fleet API fake used by the
 // three new software-resource test files (custom_package, app_store_app,
 // fleet_maintained_app). It mocks the minimum endpoint surface each
@@ -46,6 +68,14 @@ type fakeFleetSoftwareServer struct {
 	titleAppStoreID      string
 	titlePlatform        string
 	titleSource          string // "pkg" / "app_store_app" / "fma" — drives detectSoftwareType branching
+	// storedIncludeAny is the include-any label set the fake last received,
+	// echoed back on the title GET the way Fleet does.
+	storedIncludeAny []string
+	// reverseLabelsOnRead echoes those names in reverse, standing in for
+	// Fleet returning labels in its own order (by label id) rather than the
+	// order they were sent. Lets a test prove order alone is not a diff.
+	reverseLabelsOnRead bool
+
 	// titleHashSHA256 is what the title GET reports as the stored package
 	// hash. Defaults to the hash of "FAKEPKG" (what most tests upload); tests
 	// that upload different bytes must set this to match, or the resource's
@@ -162,9 +192,11 @@ type fakeFleetSoftwareServer struct {
 	// assert on the wire shape.
 	uploadAutomaticInstall string
 	uploadDisplayName      string
-	uploadCategories       string
+	uploadCategories       []string
+	uploadCategoriesSeen   bool
 	patchDisplayName       string
-	patchCategories        string
+	patchCategories        []string
+	patchCategoriesSeen    bool
 }
 
 // newFakeFleetSoftwareServer stands up an httptest server that handles the
@@ -206,24 +238,19 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.uploadInstallScript = r.FormValue("install_script")
 			f.uploadAutomaticInstall = r.FormValue("automatic_install")
 			f.uploadDisplayName = r.FormValue("display_name")
-			f.uploadCategories = r.FormValue("categories")
+			f.uploadCategories, f.uploadCategoriesSeen = decodeFormNames(r, "categories")
 			f.titleInstallScript = f.uploadInstallScript
 			f.titleSelfService = r.FormValue("self_service") == "true"
 			if f.uploadDisplayName != "" {
 				f.titleDisplayName = f.uploadDisplayName
 			}
-			if f.uploadCategories != "" {
-				_ = json.Unmarshal([]byte(f.uploadCategories), &f.titleCategories)
+			if f.uploadCategoriesSeen {
+				f.titleCategories = f.uploadCategories
 			}
 			f.titleSource = "pkg"
-			_, f.uploadIncludeFieldSet = r.MultipartForm.Value["labels_include_any"]
-			_, f.uploadExcludeFieldSet = r.MultipartForm.Value["labels_exclude_any"]
-			incAllVals, incAllSeen := r.MultipartForm.Value["labels_include_all"]
-			f.uploadIncludeAllFieldSet = incAllSeen
-			f.uploadIncludeAllLabels = nil
-			if incAllSeen && len(incAllVals) > 0 {
-				_ = json.Unmarshal([]byte(incAllVals[0]), &f.uploadIncludeAllLabels)
-			}
+			f.storedIncludeAny, f.uploadIncludeFieldSet = decodeFormNames(r, "labels_include_any")
+			_, f.uploadExcludeFieldSet = decodeFormNames(r, "labels_exclude_any")
+			f.uploadIncludeAllLabels, f.uploadIncludeAllFieldSet = decodeFormNames(r, "labels_include_all")
 			id := f.titleID
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -358,6 +385,19 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				"install_script":    f.titleInstallScript,
 				"uninstall_script":  f.titleUninstallScript,
 				"pre_install_query": f.titlePreInstallQuery,
+			}
+			if len(f.storedIncludeAny) > 0 {
+				names := append([]string(nil), f.storedIncludeAny...)
+				if f.reverseLabelsOnRead {
+					for i, j := 0, len(names)-1; i < j; i, j = i+1, j-1 {
+						names[i], names[j] = names[j], names[i]
+					}
+				}
+				labels := make([]map[string]any, 0, len(names))
+				for i, n := range names {
+					labels = append(labels, map[string]any{"id": i + 1, "name": n})
+				}
+				pkgBody["labels_include_any"] = labels
 			}
 			// install_during_setup mirrors the setup_experience set.
 			for _, id := range f.setupExperienceSet {
@@ -513,24 +553,12 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 
 			f.mu.Lock()
 			f.patchCount++
-			vals, incSeen := r.MultipartForm.Value["labels_include_any"]
-			f.patchIncludeFieldSeen = incSeen
-			f.patchIncludeLabels = nil
-			if incSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeLabels)
+			f.patchIncludeLabels, f.patchIncludeFieldSeen = decodeFormNames(r, "labels_include_any")
+			if f.patchIncludeFieldSeen {
+				f.storedIncludeAny = f.patchIncludeLabels
 			}
-			vals, excSeen := r.MultipartForm.Value["labels_exclude_any"]
-			f.patchExcludeFieldSeen = excSeen
-			f.patchExcludeLabels = nil
-			if excSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchExcludeLabels)
-			}
-			vals, incAllSeen := r.MultipartForm.Value["labels_include_all"]
-			f.patchIncludeAllFieldSeen = incAllSeen
-			f.patchIncludeAllLabels = nil
-			if incAllSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeAllLabels)
-			}
+			f.patchExcludeLabels, f.patchExcludeFieldSeen = decodeFormNames(r, "labels_exclude_any")
+			f.patchIncludeAllLabels, f.patchIncludeAllFieldSeen = decodeFormNames(r, "labels_include_all")
 			// Presence matters as much as the value: an absent script field is
 			// "leave Fleet's script alone", while a present-and-empty one is an
 			// explicit clear. Recording both lets tests assert that a caller
@@ -553,7 +581,7 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			}
 			f.patchSelfService = r.FormValue("self_service")
 			f.patchDisplayName = r.FormValue("display_name")
-			f.patchCategories = r.FormValue("categories")
+			f.patchCategories, f.patchCategoriesSeen = decodeFormNames(r, "categories")
 			if installSeen {
 				f.titleInstallScript = f.patchInstallScript
 			}
@@ -563,8 +591,15 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			if f.patchDisplayName != "" {
 				f.titleDisplayName = f.patchDisplayName
 			}
-			if f.patchCategories != "" {
-				_ = json.Unmarshal([]byte(f.patchCategories), &f.titleCategories)
+			// decodeFormNames gives an empty (non-nil) slice for Fleet's clear
+			// form, so a clear must null the mirror rather than leave the old
+			// names in place.
+			if f.patchCategoriesSeen {
+				if len(f.patchCategories) == 0 {
+					f.titleCategories = nil
+				} else {
+					f.titleCategories = f.patchCategories
+				}
 			}
 			f.titleSelfService = f.patchSelfService == "true"
 			f.mu.Unlock()

@@ -56,24 +56,24 @@ type softwareAppStoreAppResource struct {
 // (Apple manages the install flow), no package_path / package_s3 / filename
 // (there's no installer to upload), and no SHA256.
 type softwareAppStoreAppResourceModel struct {
-	ID                       types.Int64  `tfsdk:"id"`
-	TitleID                  types.Int64  `tfsdk:"title_id"`
-	TeamID                   types.Int64  `tfsdk:"team_id"`
-	AppStoreID               types.String `tfsdk:"app_store_id"`
-	Name                     types.String `tfsdk:"name"`
-	Version                  types.String `tfsdk:"version"`
-	Platform                 types.String `tfsdk:"platform"`
-	DisplayName              types.String `tfsdk:"display_name"`
-	SelfService              types.Bool   `tfsdk:"self_service"`
-	InstallDuringSetup       types.Bool   `tfsdk:"install_during_setup"`
-	AutoUpdateEnabled        types.Bool   `tfsdk:"auto_update_enabled"`
-	AutoUpdateWindowStart    types.String `tfsdk:"auto_update_window_start"`
-	AutoUpdateWindowEnd      types.String `tfsdk:"auto_update_window_end"`
-	Configuration            types.String `tfsdk:"configuration"`
-	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
-	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
-	AutomaticInstallPolicies types.List   `tfsdk:"automatic_install_policies"`
+	ID                       types.Int64         `tfsdk:"id"`
+	TitleID                  types.Int64         `tfsdk:"title_id"`
+	TeamID                   types.Int64         `tfsdk:"team_id"`
+	AppStoreID               types.String        `tfsdk:"app_store_id"`
+	Name                     types.String        `tfsdk:"name"`
+	Version                  types.String        `tfsdk:"version"`
+	Platform                 types.String        `tfsdk:"platform"`
+	DisplayName              types.String        `tfsdk:"display_name"`
+	SelfService              types.Bool          `tfsdk:"self_service"`
+	InstallDuringSetup       types.Bool          `tfsdk:"install_during_setup"`
+	AutoUpdateEnabled        types.Bool          `tfsdk:"auto_update_enabled"`
+	AutoUpdateWindowStart    types.String        `tfsdk:"auto_update_window_start"`
+	AutoUpdateWindowEnd      types.String        `tfsdk:"auto_update_window_end"`
+	Configuration            types.String        `tfsdk:"configuration"`
+	LabelsIncludeAny         unorderedStringList `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         unorderedStringList `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll         unorderedStringList `tfsdk:"labels_include_all"`
+	AutomaticInstallPolicies types.List          `tfsdk:"automatic_install_policies"`
 }
 
 // Metadata returns the resource type name.

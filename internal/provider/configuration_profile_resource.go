@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
@@ -170,18 +171,21 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 				MarkdownDescription: "Labels that hosts must have **ALL** of to receive this profile. Updated in place on Fleet 4.90+.",
 				Optional:            true,
 				ElementType:         types.StringType,
+				Validators:          []validator.List{nonEmptyNames()},
 			},
 			"labels_include_any": schema.ListAttribute{
 				Description:         "Labels where hosts must have ANY of to receive this profile. Updated in place on Fleet 4.90+.",
 				MarkdownDescription: "Labels where hosts must have **ANY** of to receive this profile. Updated in place on Fleet 4.90+.",
 				Optional:            true,
 				ElementType:         types.StringType,
+				Validators:          []validator.List{nonEmptyNames()},
 			},
 			"labels_exclude_any": schema.ListAttribute{
 				Description:         "Labels where hosts with ANY of these will NOT receive this profile. Updated in place on Fleet 4.90+.",
 				MarkdownDescription: "Labels where hosts with **ANY** of these will **NOT** receive this profile. Updated in place on Fleet 4.90+.",
 				Optional:            true,
 				ElementType:         types.StringType,
+				Validators:          []validator.List{nonEmptyNames()},
 			},
 			"created_at": schema.StringAttribute{
 				Description:         "The timestamp when the profile was created.",

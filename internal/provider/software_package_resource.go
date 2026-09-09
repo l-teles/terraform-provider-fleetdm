@@ -67,31 +67,31 @@ type softwarePackageResource struct {
 
 // softwarePackageResourceModel maps the resource schema data.
 type softwarePackageResourceModel struct {
-	ID                       types.Int64  `tfsdk:"id"`
-	TitleID                  types.Int64  `tfsdk:"title_id"`
-	TeamID                   types.Int64  `tfsdk:"team_id"`
-	Type                     types.String `tfsdk:"type"`
-	Name                     types.String `tfsdk:"name"`
-	Version                  types.String `tfsdk:"version"`
-	DisplayName              types.String `tfsdk:"display_name"`
-	Filename                 types.String `tfsdk:"filename"`
-	PackagePath              types.String `tfsdk:"package_path"`
-	PackageS3                types.Object `tfsdk:"package_s3"`
-	PackageSHA256            types.String `tfsdk:"package_sha256"`
-	Platform                 types.String `tfsdk:"platform"`
-	InstallScript            types.String `tfsdk:"install_script"`
-	UninstallScript          types.String `tfsdk:"uninstall_script"`
-	PreInstallQuery          types.String `tfsdk:"pre_install_query"`
-	PostInstallScript        types.String `tfsdk:"post_install_script"`
-	SelfService              types.Bool   `tfsdk:"self_service"`
-	AutomaticInstall         types.Bool   `tfsdk:"automatic_install"`
-	Categories               types.List   `tfsdk:"categories"`
-	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
-	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
-	AppStoreID               types.String `tfsdk:"app_store_id"`
-	FleetMaintainedAppID     types.Int64  `tfsdk:"fleet_maintained_app_id"`
-	AutomaticInstallPolicies types.List   `tfsdk:"automatic_install_policies"`
+	ID                       types.Int64         `tfsdk:"id"`
+	TitleID                  types.Int64         `tfsdk:"title_id"`
+	TeamID                   types.Int64         `tfsdk:"team_id"`
+	Type                     types.String        `tfsdk:"type"`
+	Name                     types.String        `tfsdk:"name"`
+	Version                  types.String        `tfsdk:"version"`
+	DisplayName              types.String        `tfsdk:"display_name"`
+	Filename                 types.String        `tfsdk:"filename"`
+	PackagePath              types.String        `tfsdk:"package_path"`
+	PackageS3                types.Object        `tfsdk:"package_s3"`
+	PackageSHA256            types.String        `tfsdk:"package_sha256"`
+	Platform                 types.String        `tfsdk:"platform"`
+	InstallScript            types.String        `tfsdk:"install_script"`
+	UninstallScript          types.String        `tfsdk:"uninstall_script"`
+	PreInstallQuery          types.String        `tfsdk:"pre_install_query"`
+	PostInstallScript        types.String        `tfsdk:"post_install_script"`
+	SelfService              types.Bool          `tfsdk:"self_service"`
+	AutomaticInstall         types.Bool          `tfsdk:"automatic_install"`
+	Categories               unorderedStringList `tfsdk:"categories"`
+	LabelsIncludeAny         unorderedStringList `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         unorderedStringList `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll         unorderedStringList `tfsdk:"labels_include_all"`
+	AppStoreID               types.String        `tfsdk:"app_store_id"`
+	FleetMaintainedAppID     types.Int64         `tfsdk:"fleet_maintained_app_id"`
+	AutomaticInstallPolicies types.List          `tfsdk:"automatic_install_policies"`
 }
 
 // packageS3Model maps the nested package_s3 attribute.
@@ -264,11 +264,13 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 				Optional:    true,
 				ElementType: types.StringType,
+				CustomType:  newUnorderedStringListType(),
 				Validators: []validator.List{
 					listvalidator.ConflictsWith(path.Expressions{
 						path.MatchRoot("labels_exclude_any"),
 						path.MatchRoot("labels_include_all"),
 					}...),
+					nonEmptyNames(),
 				},
 			},
 			"labels_exclude_any": schema.ListAttribute{
@@ -277,10 +279,12 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 				Optional:    true,
 				ElementType: types.StringType,
+				CustomType:  newUnorderedStringListType(),
 				Validators: []validator.List{
 					listvalidator.ConflictsWith(path.Expressions{
 						path.MatchRoot("labels_include_all"),
 					}...),
+					nonEmptyNames(),
 				},
 			},
 			"app_store_id": schema.StringAttribute{
@@ -310,6 +314,8 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Description: "Self-service categories the software appears under on the end-user's *My device* page. Only applicable to `type = \"package\"` and `type = \"fleet_maintained\"` (VPP doesn't support categories).",
 				Optional:    true,
 				ElementType: types.StringType,
+				CustomType:  newUnorderedStringListType(),
+				Validators:  []validator.List{nonEmptyNames()},
 			},
 			"labels_include_all": schema.ListAttribute{
 				Description: "List of label names. The software will be available for hosts that match *all* of these labels. " +
@@ -317,6 +323,8 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 				Optional:    true,
 				ElementType: types.StringType,
+				CustomType:  newUnorderedStringListType(),
+				Validators:  []validator.List{nonEmptyNames()},
 			},
 			"automatic_install_policies": schema.ListNestedAttribute{
 				Description: "**Read-only.** List of Fleet policies whose `install_software` automation currently points at this title. " +
@@ -867,7 +875,7 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 }
 
 // extractLabels extracts string labels from a types.List into a []string target.
-func extractLabels(ctx context.Context, list types.List, target *[]string) diag.Diagnostics {
+func extractLabels(ctx context.Context, list unorderedStringList, target *[]string) diag.Diagnostics {
 	if list.IsNull() || list.IsUnknown() {
 		return nil
 	}
@@ -886,7 +894,7 @@ func extractLabels(ctx context.Context, list types.List, target *[]string) diag.
 // all labels"). When populated, *target points to the list of names. See
 // PatchSoftwarePackageRequest / UploadSoftwarePackageRequest doc comments
 // in internal/fleetdm/software.go for the wire-level translation.
-func extractOptionalLabels(ctx context.Context, list types.List, target **[]string) diag.Diagnostics {
+func extractOptionalLabels(ctx context.Context, list unorderedStringList, target **[]string) diag.Diagnostics {
 	if list.IsNull() || list.IsUnknown() {
 		return nil
 	}
@@ -906,15 +914,15 @@ func extractOptionalLabels(ctx context.Context, list types.List, target **[]stri
 // "absent in response" is interpreted as "preserve prior state intent",
 // which is consistent with how other Optional fields in this resource
 // (e.g. Platform) handle empty responses.
-func labelsToStringListValue(labels []fleetdm.SoftwareLabel) types.List {
+func labelsToStringListValue(labels []fleetdm.SoftwareLabel) unorderedStringList {
 	if labels == nil {
-		return types.ListNull(types.StringType)
+		return unorderedStringList{ListValue: types.ListNull(types.StringType)}
 	}
 	values := make([]attr.Value, 0, len(labels))
 	for _, l := range labels {
 		values = append(values, types.StringValue(l.Name))
 	}
-	return types.ListValueMust(types.StringType, values)
+	return unorderedStringList{ListValue: types.ListValueMust(types.StringType, values)}
 }
 
 // Read refreshes the Terraform state with the latest data.
