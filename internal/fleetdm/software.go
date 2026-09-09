@@ -496,35 +496,6 @@ func (c *Client) GetSoftwareVersion(ctx context.Context, id int, teamID *int) (*
 	return resp.Software, nil
 }
 
-// SoftwareInstaller represents a software installer/package in FleetDM.
-type SoftwareInstaller struct {
-	TitleID           int              `json:"software_title_id"`
-	TeamID            *int             `json:"team_id,omitempty"`
-	Name              string           `json:"name"`
-	Version           string           `json:"version"`
-	Filename          string           `json:"filename,omitempty"`
-	Platform          string           `json:"platform,omitempty"`
-	InstallScript     string           `json:"install_script,omitempty"`
-	UninstallScript   string           `json:"uninstall_script,omitempty"`
-	PreInstallQuery   string           `json:"pre_install_query,omitempty"`
-	PostInstallScript string           `json:"post_install_script,omitempty"`
-	SelfService       bool             `json:"self_service,omitempty"`
-	AutomaticInstall  bool             `json:"automatic_install,omitempty"`
-	LabelsIncludeAny  []SoftwareLabel  `json:"labels_include_any,omitempty"`
-	LabelsExcludeAny  []SoftwareLabel  `json:"labels_exclude_any,omitempty"`
-	UploadedAt        time.Time        `json:"uploaded_at,omitempty"`
-	Status            *InstallerStatus `json:"status,omitempty"`
-}
-
-// InstallerStatus represents the status of a software installer.
-type InstallerStatus struct {
-	Installed        int `json:"installed,omitempty"`
-	Pending          int `json:"pending,omitempty"`
-	Failed           int `json:"failed,omitempty"`
-	PendingUninstall int `json:"pending_uninstall,omitempty"`
-	FailedUninstall  int `json:"failed_uninstall,omitempty"`
-}
-
 // SoftwareLabel represents a label reference in software installers.
 // This is a simplified label struct used in software package responses.
 type SoftwareLabel struct {
@@ -686,23 +657,6 @@ func (c *Client) UploadSoftwarePackage(ctx context.Context, req *UploadSoftwareP
 	}
 
 	return c.GetSoftwareTitle(ctx, uploadResp.SoftwarePackage.TitleID, req.TeamID)
-}
-
-// GetSoftwareInstaller retrieves a software installer by title ID.
-func (c *Client) GetSoftwareInstaller(ctx context.Context, titleID int, teamID *int) (*SoftwareInstaller, error) {
-	params := make(map[string]string)
-	if teamID != nil {
-		params["team_id"] = strconv.Itoa(*teamID)
-	}
-
-	var response struct {
-		Installer SoftwareInstaller `json:"software_installer"`
-	}
-	err := c.Get(ctx, fmt.Sprintf("/software/titles/%d/package", titleID), params, &response)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get software installer for title %d: %w", titleID, err)
-	}
-	return &response.Installer, nil
 }
 
 // DeleteSoftwarePackage deletes a software package by title ID.

@@ -287,53 +287,6 @@ func TestClient_ListSoftwareTitlesWithFilters(t *testing.T) {
 	}
 }
 
-func TestClient_GetSoftwareInstaller(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/fleet/software/titles/42/package" {
-			t.Errorf("expected path /api/v1/fleet/software/titles/42/package, got: %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("expected method GET, got: %s", r.Method)
-		}
-		// This read scopes with a team_id query parameter, unlike the PATCH on
-		// the same path which requires the scope in the multipart body.
-		if r.URL.Query().Get("team_id") != "5" {
-			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
-		}
-
-		resp := map[string]interface{}{
-			"software_installer": map[string]interface{}{
-				"software_title_id": 42,
-				"team_id":           5,
-				"name":              "Zoom",
-				"version":           "5.0.0",
-				"filename":          "zoom.pkg",
-				"self_service":      true,
-				"install_script":    "installer -pkg /tmp/zoom.pkg -target /",
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
-	teamID := 5
-	installer, err := client.GetSoftwareInstaller(context.Background(), 42, &teamID)
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if installer.TitleID != 42 {
-		t.Errorf("expected title ID 42, got: %d", installer.TitleID)
-	}
-	if installer.Name != "Zoom" {
-		t.Errorf("expected name 'Zoom', got: %s", installer.Name)
-	}
-	if !installer.SelfService {
-		t.Error("expected self_service to be true")
-	}
-}
-
 func TestClient_DeleteSoftwarePackage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
