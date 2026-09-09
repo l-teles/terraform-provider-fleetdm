@@ -87,9 +87,10 @@ func (v unorderedStringList) Equal(o attr.Value) bool {
 }
 
 // ListSemanticEquals treats the two lists as equal when they hold the same
-// names, regardless of order. Duplicates are significant to the comparison —
-// they are not valid input anyway, and collapsing them here would hide a
-// genuine difference.
+// names, regardless of order. It shares sameStringMultiset with the
+// configuration-profile resource, which solves the same Fleet ordering
+// problem on its read path: duplicates stay significant, since they are not
+// valid input and collapsing them would hide a genuine difference.
 func (v unorderedStringList) ListSemanticEquals(ctx context.Context, newValuable basetypes.ListValuable) (bool, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
@@ -113,19 +114,5 @@ func (v unorderedStringList) ListSemanticEquals(ctx context.Context, newValuable
 	if diags.HasError() {
 		return false, diags
 	}
-	if len(oldNames) != len(newNames) {
-		return false, diags
-	}
-
-	counts := make(map[string]int, len(oldNames))
-	for _, n := range oldNames {
-		counts[n]++
-	}
-	for _, n := range newNames {
-		counts[n]--
-		if counts[n] < 0 {
-			return false, diags
-		}
-	}
-	return true, diags
+	return sameStringMultiset(oldNames, newNames), diags
 }
