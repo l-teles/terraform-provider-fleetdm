@@ -165,6 +165,7 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 				"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 			Optional:    true,
 			ElementType: types.StringType,
+			CustomType:  newUnorderedStringListType(),
 			Validators: []validator.List{
 				listvalidator.ConflictsWith(path.Expressions{
 					path.MatchRoot("labels_exclude_any"),
@@ -179,6 +180,7 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 				"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 			Optional:    true,
 			ElementType: types.StringType,
+			CustomType:  newUnorderedStringListType(),
 			Validators: []validator.List{
 				listvalidator.ConflictsWith(path.Expressions{
 					path.MatchRoot("labels_include_all"),
@@ -192,6 +194,7 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 				"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 			Optional:    true,
 			ElementType: types.StringType,
+			CustomType:  newUnorderedStringListType(),
 			Validators:  []validator.List{nonEmptyNames()},
 		},
 		"automatic_install_policies": schema.ListNestedAttribute{
@@ -357,6 +360,7 @@ func softwareCategoriesAttribute() schema.Attribute {
 			"To clear previously-set categories, set this attribute to `[]` explicitly; omitting it preserves Fleet's existing categories.",
 		Optional:    true,
 		ElementType: types.StringType,
+		CustomType:  newUnorderedStringListType(),
 		Validators:  []validator.List{nonEmptyNames()},
 	}
 }
@@ -365,15 +369,15 @@ func softwareCategoriesAttribute() schema.Attribute {
 // (used for categories, etc.) into a types.List of strings. nil input
 // becomes a null list; non-nil but empty becomes an empty list. Mirrors
 // labelsToStringListValue's nil/empty semantics.
-func stringSliceToStringList(items []string) types.List {
+func stringSliceToStringList(items []string) unorderedStringList {
 	if items == nil {
-		return types.ListNull(types.StringType)
+		return unorderedStringList{ListValue: types.ListNull(types.StringType)}
 	}
 	values := make([]attr.Value, 0, len(items))
 	for _, s := range items {
 		values = append(values, types.StringValue(s))
 	}
-	return types.ListValueMust(types.StringType, values)
+	return unorderedStringList{ListValue: types.ListValueMust(types.StringType, values)}
 }
 
 // automaticInstallPolicyObjectType describes one element of the

@@ -981,6 +981,60 @@ resource "fleetdm_software_custom_package" "test" {
 	}
 }
 
+// TestAccSoftwareCustomPackageResource_labelOrderIsNotADiff reproduces the
+// failure that only showed up against a real Fleet: Fleet returns label names
+// in its own order (by label id), which need not match the order written in
+// HCL. With a plain list that is a permanent diff — every plan wants to
+// rewrite the same set of labels.
+//
+// The fake echoes the labels back reversed to stand in for Fleet's ordering,
+// so the second step's empty-plan check is what proves semantic equality is
+// doing its job.
+func TestAccSoftwareCustomPackageResource_labelOrderIsNotADiff(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 91
+	f.reverseLabelsOnRead = true
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path       = %[2]q
+  filename           = "test-app.pkg"
+  install_script     = "echo install"
+  labels_include_any = ["Engineering", "Workstations", "Contractors"]
+}
+`, f.srv.URL, pkgPath)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					// State keeps the configured order, not Fleet's.
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "labels_include_any.0", "Engineering"),
+					resource.TestCheckResourceAttr("fleetdm_software_custom_package.test", "labels_include_any.2", "Contractors"),
+				),
+			},
+			{
+				// The regression: a reversed read must not plan a change.
+				Config:   cfg,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
 // assertFleetLabels asserts Fleet's OWN view of a package's label targeting —
 // all three scopes — by reading the installer back over the API. Checking all
 // three is what catches a switch between attributes that accumulates instead

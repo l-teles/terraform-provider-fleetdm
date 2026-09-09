@@ -56,27 +56,27 @@ type softwareFleetMaintainedAppResource struct {
 
 // softwareFleetMaintainedAppResourceModel maps the resource schema data.
 type softwareFleetMaintainedAppResourceModel struct {
-	ID                       types.Int64  `tfsdk:"id"`
-	TitleID                  types.Int64  `tfsdk:"title_id"`
-	TeamID                   types.Int64  `tfsdk:"team_id"`
-	FleetMaintainedAppID     types.Int64  `tfsdk:"fleet_maintained_app_id"`
-	Name                     types.String `tfsdk:"name"`
-	Version                  types.String `tfsdk:"version"`
-	PinnedVersion            types.String `tfsdk:"pinned_version"`
-	Platform                 types.String `tfsdk:"platform"`
-	DisplayName              types.String `tfsdk:"display_name"`
-	InstallScript            types.String `tfsdk:"install_script"`
-	UninstallScript          types.String `tfsdk:"uninstall_script"`
-	PreInstallQuery          types.String `tfsdk:"pre_install_query"`
-	PostInstallScript        types.String `tfsdk:"post_install_script"`
-	SelfService              types.Bool   `tfsdk:"self_service"`
-	InstallDuringSetup       types.Bool   `tfsdk:"install_during_setup"`
-	AutomaticInstallPolicy   types.Bool   `tfsdk:"automatic_install_policy"`
-	Categories               types.List   `tfsdk:"categories"`
-	LabelsIncludeAny         types.List   `tfsdk:"labels_include_any"`
-	LabelsExcludeAny         types.List   `tfsdk:"labels_exclude_any"`
-	LabelsIncludeAll         types.List   `tfsdk:"labels_include_all"`
-	AutomaticInstallPolicies types.List   `tfsdk:"automatic_install_policies"`
+	ID                       types.Int64         `tfsdk:"id"`
+	TitleID                  types.Int64         `tfsdk:"title_id"`
+	TeamID                   types.Int64         `tfsdk:"team_id"`
+	FleetMaintainedAppID     types.Int64         `tfsdk:"fleet_maintained_app_id"`
+	Name                     types.String        `tfsdk:"name"`
+	Version                  types.String        `tfsdk:"version"`
+	PinnedVersion            types.String        `tfsdk:"pinned_version"`
+	Platform                 types.String        `tfsdk:"platform"`
+	DisplayName              types.String        `tfsdk:"display_name"`
+	InstallScript            types.String        `tfsdk:"install_script"`
+	UninstallScript          types.String        `tfsdk:"uninstall_script"`
+	PreInstallQuery          types.String        `tfsdk:"pre_install_query"`
+	PostInstallScript        types.String        `tfsdk:"post_install_script"`
+	SelfService              types.Bool          `tfsdk:"self_service"`
+	InstallDuringSetup       types.Bool          `tfsdk:"install_during_setup"`
+	AutomaticInstallPolicy   types.Bool          `tfsdk:"automatic_install_policy"`
+	Categories               unorderedStringList `tfsdk:"categories"`
+	LabelsIncludeAny         unorderedStringList `tfsdk:"labels_include_any"`
+	LabelsExcludeAny         unorderedStringList `tfsdk:"labels_exclude_any"`
+	LabelsIncludeAll         unorderedStringList `tfsdk:"labels_include_all"`
+	AutomaticInstallPolicies types.List          `tfsdk:"automatic_install_policies"`
 }
 
 // Metadata returns the resource type name.

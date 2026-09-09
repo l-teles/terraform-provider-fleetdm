@@ -68,6 +68,14 @@ type fakeFleetSoftwareServer struct {
 	titleAppStoreID      string
 	titlePlatform        string
 	titleSource          string // "pkg" / "app_store_app" / "fma" — drives detectSoftwareType branching
+	// storedIncludeAny is the include-any label set the fake last received,
+	// echoed back on the title GET the way Fleet does.
+	storedIncludeAny []string
+	// reverseLabelsOnRead echoes those names in reverse, standing in for
+	// Fleet returning labels in its own order (by label id) rather than the
+	// order they were sent. Lets a test prove order alone is not a diff.
+	reverseLabelsOnRead bool
+
 	// titleHashSHA256 is what the title GET reports as the stored package
 	// hash. Defaults to the hash of "FAKEPKG" (what most tests upload); tests
 	// that upload different bytes must set this to match, or the resource's
@@ -238,14 +246,9 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				_ = json.Unmarshal([]byte(f.uploadCategories), &f.titleCategories)
 			}
 			f.titleSource = "pkg"
-			_, f.uploadIncludeFieldSet = r.MultipartForm.Value["labels_include_any"]
-			_, f.uploadExcludeFieldSet = r.MultipartForm.Value["labels_exclude_any"]
-			incAllVals, incAllSeen := r.MultipartForm.Value["labels_include_all"]
-			f.uploadIncludeAllFieldSet = incAllSeen
-			f.uploadIncludeAllLabels = nil
-			if incAllSeen && len(incAllVals) > 0 {
-				_ = json.Unmarshal([]byte(incAllVals[0]), &f.uploadIncludeAllLabels)
-			}
+			f.storedIncludeAny, f.uploadIncludeFieldSet = decodeFormNames(r, "labels_include_any")
+			_, f.uploadExcludeFieldSet = decodeFormNames(r, "labels_exclude_any")
+			f.uploadIncludeAllLabels, f.uploadIncludeAllFieldSet = decodeFormNames(r, "labels_include_all")
 			id := f.titleID
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -380,6 +383,19 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				"install_script":    f.titleInstallScript,
 				"uninstall_script":  f.titleUninstallScript,
 				"pre_install_query": f.titlePreInstallQuery,
+			}
+			if len(f.storedIncludeAny) > 0 {
+				names := append([]string(nil), f.storedIncludeAny...)
+				if f.reverseLabelsOnRead {
+					for i, j := 0, len(names)-1; i < j; i, j = i+1, j-1 {
+						names[i], names[j] = names[j], names[i]
+					}
+				}
+				labels := make([]map[string]any, 0, len(names))
+				for i, n := range names {
+					labels = append(labels, map[string]any{"id": i + 1, "name": n})
+				}
+				pkgBody["labels_include_any"] = labels
 			}
 			// install_during_setup mirrors the setup_experience set.
 			for _, id := range f.setupExperienceSet {
@@ -536,6 +552,9 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.mu.Lock()
 			f.patchCount++
 			f.patchIncludeLabels, f.patchIncludeFieldSeen = decodeFormNames(r, "labels_include_any")
+			if f.patchIncludeFieldSeen {
+				f.storedIncludeAny = f.patchIncludeLabels
+			}
 			f.patchExcludeLabels, f.patchExcludeFieldSeen = decodeFormNames(r, "labels_exclude_any")
 			f.patchIncludeAllLabels, f.patchIncludeAllFieldSeen = decodeFormNames(r, "labels_include_all")
 			// Presence matters as much as the value: an absent script field is
