@@ -2,13 +2,16 @@ package provider
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -45,6 +48,9 @@ type setupExperienceResourceModel struct {
 	RequireAllSoftwareMacOS   types.Bool  `tfsdk:"require_all_software_macos"`
 	RequireAllSoftwareWindows types.Bool  `tfsdk:"require_all_software_windows"`
 	ManualAgentInstall        types.Bool  `tfsdk:"manual_agent_install"`
+
+	EnableManagedLocalAccount types.Bool   `tfsdk:"enable_managed_local_account"`
+	EndUserLocalAccountType   types.String `tfsdk:"end_user_local_account_type"`
 }
 
 // Metadata returns the resource type name.
@@ -114,6 +120,22 @@ func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaReq
 					setupExperienceOptInNote,
 				Optional: true,
 			},
+			"enable_managed_local_account": schema.BoolAttribute{
+				Description: "Whether Fleet creates a managed local admin account on the fleet's macOS hosts during " +
+					"Setup Assistant. Requires Fleet 4.91 or later and Apple MDM turned on -- Fleet answers 422 " +
+					"otherwise." + setupExperienceOptInNote,
+				Optional: true,
+			},
+			"end_user_local_account_type": schema.StringAttribute{
+				Description: "Type of end user account created alongside the managed local admin account. One of " +
+					"\"admin\", \"standard\" or \"none\" (Fleet's default is \"admin\"). Fleet rejects " +
+					"\"standard\" and \"none\" while enable_managed_local_account is false. Requires Fleet 4.91 " +
+					"or later and Apple MDM turned on." + setupExperienceOptInNote,
+				Optional: true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("admin", "standard", "none"),
+				},
+			},
 		},
 	}
 }
@@ -130,6 +152,29 @@ func (r *setupExperienceResource) ValidateConfig(ctx context.Context, req resour
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// Fleet couples the managed local account flag to the end user account
+	// type: "standard" and "none" are refused while the account is disabled,
+	// with `enable_create_local_admin_account is required to be enabled when
+	// using %q for the end_user_local_account_type`. "admin" is accepted either
+	// way, being Fleet's own default.
+	//
+	// Only a known-false flag is a conflict: null means the attribute is
+	// unmanaged, so Fleet judges the request against whatever it has stored,
+	// and Unknown may still resolve to true.
+	if accountType := config.EndUserLocalAccountType; !accountType.IsNull() && !accountType.IsUnknown() {
+		switch accountType.ValueString() {
+		case "standard", "none":
+			flag := config.EnableManagedLocalAccount
+			if !flag.IsNull() && !flag.IsUnknown() && !flag.ValueBool() {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("enable_managed_local_account"),
+					"Invalid setup experience configuration",
+					fmt.Sprintf("enable_managed_local_account must be true when end_user_local_account_type is %q.", accountType.ValueString()),
+				)
+			}
+		}
 	}
 
 	if config.LockEndUserInfo.IsNull() || config.LockEndUserInfo.IsUnknown() || !config.LockEndUserInfo.ValueBool() {
@@ -165,6 +210,8 @@ func setupExperienceUpdateRequest(teamID int, plan setupExperienceResourceModel)
 		RequireAllSoftwareMacOS:   optionalBoolPtr(plan.RequireAllSoftwareMacOS),
 		RequireAllSoftwareWindows: optionalBoolPtr(plan.RequireAllSoftwareWindows),
 		ManualAgentInstall:        optionalBoolPtr(plan.ManualAgentInstall),
+		EnableManagedLocalAccount: optionalBoolPtr(plan.EnableManagedLocalAccount),
+		EndUserLocalAccountType:   optionalStringPtr(plan.EndUserLocalAccountType),
 	}
 }
 
@@ -175,6 +222,14 @@ func readOptionalBool(current types.Bool, remote *bool) types.Bool {
 		return current
 	}
 	return types.BoolValue(*remote)
+}
+
+// readOptionalString is readOptionalBool for a string setting.
+func readOptionalString(current types.String, remote *string) types.String {
+	if current.IsNull() || remote == nil {
+		return current
+	}
+	return types.StringValue(*remote)
 }
 
 // Create creates the resource and sets the initial Terraform state.
@@ -240,6 +295,8 @@ func (r *setupExperienceResource) Read(ctx context.Context, req resource.ReadReq
 	state.RequireAllSoftwareMacOS = readOptionalBool(state.RequireAllSoftwareMacOS, experience.RequireAllSoftwareMacOS)
 	state.RequireAllSoftwareWindows = readOptionalBool(state.RequireAllSoftwareWindows, experience.RequireAllSoftwareWindows)
 	state.ManualAgentInstall = readOptionalBool(state.ManualAgentInstall, experience.ManualAgentInstall)
+	state.EnableManagedLocalAccount = readOptionalBool(state.EnableManagedLocalAccount, experience.EnableManagedLocalAccount)
+	state.EndUserLocalAccountType = readOptionalString(state.EndUserLocalAccountType, experience.EndUserLocalAccountType)
 
 	// Set the state
 	diags = resp.State.Set(ctx, state)

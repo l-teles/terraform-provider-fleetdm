@@ -26,10 +26,12 @@ import (
 
 // fakeFleet is a stand-in for Fleet's fleets endpoints that reproduces the
 // merge semantics of v4.91.0's PATCH handler. It exists because several of the
-// new attributes cannot be exercised against a live Fleet in dev mode:
-// enable_recovery_lock_password needs MDM turned on, the Google Calendar and
-// conditional access toggles need matching global integrations, and Apple OS
-// minimum_version is validated against Apple's live Software Lookup Service.
+// new attributes cannot be exercised against a live Fleet in dev mode: the
+// Google Calendar and conditional access toggles need matching global
+// integrations, and Apple OS minimum_version is validated against Apple's live
+// Software Lookup Service. enable_recovery_lock_password used to belong on that
+// list too; the rig now turns Apple MDM on, so it has live coverage in
+// mdm_apple_live_test.go.
 //
 // Reproducing the merge rules rather than echoing the request back is the point:
 // the provider's refresh logic has to survive a server that reports a concrete

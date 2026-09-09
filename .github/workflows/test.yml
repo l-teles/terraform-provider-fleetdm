@@ -196,6 +196,34 @@ jobs:
                   FLEET_URL: http://localhost:8080
 
             # -----------------------------------------------------------------
+            # Turn Apple MDM on for the Apple-gated acceptance tests
+            # -----------------------------------------------------------------
+            # The compose stack hands Fleet self-signed APNs/SCEP material, but
+            # Fleet decides mdm.enabled_and_configured while it boots, reading an
+            # app config that does not exist until the setup step above has run.
+            # One restart after setup is what makes Apple MDM report as
+            # configured; without it the Apple-gated settings answer 422.
+            - name: Restart Fleet so Apple MDM is configured
+              run: |
+                  docker compose \
+                    -f .github/fleet-test/docker-compose.yml \
+                    restart fleet
+                  for i in $(seq 1 40); do
+                    if curl -sf http://localhost:8080/healthz -o /dev/null; then
+                      break
+                    fi
+                    sleep 3
+                  done
+                  configured=$(curl -sf http://localhost:8080/api/v1/fleet/config \
+                    -H "Authorization: Bearer ${FLEETDM_API_TOKEN}" \
+                    | python3 -c 'import sys,json; print((json.load(sys.stdin).get("mdm") or {}).get("enabled_and_configured"))')
+                  echo "mdm.enabled_and_configured=${configured}"
+                  if [ "${configured}" != "True" ]; then
+                    echo "::error::Apple MDM is not configured; the Apple-gated acceptance tests would fail on a 422."
+                    exit 1
+                  fi
+
+            # -----------------------------------------------------------------
             # Import Fleet's standard query library into the test instance
             # -----------------------------------------------------------------
             - name: Import standard query library
