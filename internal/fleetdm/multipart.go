@@ -18,8 +18,9 @@ func (c *Client) doMultipartRequest(ctx context.Context, method, endpoint, fileF
 
 // doMultipartRequestMulti is doMultipartRequest with repeated text fields:
 // each value of a key is written as its own form field. Fleet's
-// configuration-profile endpoints require this shape for label targeting
-// (comma-joined values are rejected as a single unknown label name).
+// configuration-profile and software-package endpoints require this shape for
+// label, category and target-name lists — anything packed into a single field
+// (comma-joined, or JSON-encoded) is read as one unknown name.
 func (c *Client) doMultipartRequestMulti(ctx context.Context, method, endpoint, fileField, fileName string, fileContent []byte, fields map[string][]string) ([]byte, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)

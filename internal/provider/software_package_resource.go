@@ -269,6 +269,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 						path.MatchRoot("labels_exclude_any"),
 						path.MatchRoot("labels_include_all"),
 					}...),
+					nonEmptyNames(),
 				},
 			},
 			"labels_exclude_any": schema.ListAttribute{
@@ -281,6 +282,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 					listvalidator.ConflictsWith(path.Expressions{
 						path.MatchRoot("labels_include_all"),
 					}...),
+					nonEmptyNames(),
 				},
 			},
 			"app_store_id": schema.StringAttribute{
@@ -310,6 +312,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 				Description: "Self-service categories the software appears under on the end-user's *My device* page. Only applicable to `type = \"package\"` and `type = \"fleet_maintained\"` (VPP doesn't support categories).",
 				Optional:    true,
 				ElementType: types.StringType,
+				Validators:  []validator.List{nonEmptyNames()},
 			},
 			"labels_include_all": schema.ListAttribute{
 				Description: "List of label names. The software will be available for hosts that match *all* of these labels. " +
@@ -317,6 +320,7 @@ func (r *softwarePackageResource) Schema(_ context.Context, _ resource.SchemaReq
 					"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 				Optional:    true,
 				ElementType: types.StringType,
+				Validators:  []validator.List{nonEmptyNames()},
 			},
 			"automatic_install_policies": schema.ListNestedAttribute{
 				Description: "**Read-only.** List of Fleet policies whose `install_software` automation currently points at this title. " +

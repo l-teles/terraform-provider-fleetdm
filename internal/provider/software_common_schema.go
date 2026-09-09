@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -32,6 +33,17 @@ type packageSource interface {
 	FilenameField() types.String
 }
 
+// nonEmptyNames rejects an empty string inside a label or category list.
+// Fleet reads these lists as repeated form fields, which makes a lone empty
+// name identical on the wire to an explicit clear — for a label list that
+// would quietly widen the software's targeting to every host. Clearing is
+// spelled `[]`.
+func nonEmptyNames() validator.List {
+	return listvalidator.ValueStringsAre(
+		stringvalidator.LengthAtLeast(1),
+	)
+}
+
 // softwareCommonSchemaAttributes returns the schema attributes shared by
 // fleetdm_software_custom_package, fleetdm_software_app_store_app, and
 // fleetdm_software_fleet_maintained_app. Each new resource merges this map
@@ -58,7 +70,8 @@ type packageSource interface {
 //     it.)
 //   - labels_include_any         — Optional list, ConflictsWith labels_exclude_any AND labels_include_all
 //   - labels_exclude_any         — Optional list, ConflictsWith labels_include_all
-//   - labels_include_all         — Optional list, no validators (covered by the others)
+//   - labels_include_all         — Optional list; the mutual-exclusion check
+//     lives on the other two, so this one carries only nonEmptyNames()
 //   - automatic_install_policies — Computed list of {id, name} pairs; Fleet
 //     returns the auto-install policies for the
 //     title so users can reference them without
@@ -157,6 +170,7 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 					path.MatchRoot("labels_exclude_any"),
 					path.MatchRoot("labels_include_all"),
 				}...),
+				nonEmptyNames(),
 			},
 		},
 		"labels_exclude_any": schema.ListAttribute{
@@ -169,6 +183,7 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 				listvalidator.ConflictsWith(path.Expressions{
 					path.MatchRoot("labels_include_all"),
 				}...),
+				nonEmptyNames(),
 			},
 		},
 		"labels_include_all": schema.ListAttribute{
@@ -177,6 +192,7 @@ func softwareCommonSchemaAttributes() map[string]schema.Attribute {
 				"To clear previously-set labels, set this attribute to `[]` explicitly; omitting the attribute preserves Fleet's existing labels.",
 			Optional:    true,
 			ElementType: types.StringType,
+			Validators:  []validator.List{nonEmptyNames()},
 		},
 		"automatic_install_policies": schema.ListNestedAttribute{
 			Description: "**Read-only.** List of Fleet policies whose `install_software` automation currently points at this title. " +
@@ -341,6 +357,7 @@ func softwareCategoriesAttribute() schema.Attribute {
 			"To clear previously-set categories, set this attribute to `[]` explicitly; omitting it preserves Fleet's existing categories.",
 		Optional:    true,
 		ElementType: types.StringType,
+		Validators:  []validator.List{nonEmptyNames()},
 	}
 }
 

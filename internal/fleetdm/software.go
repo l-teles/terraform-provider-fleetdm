@@ -512,6 +512,7 @@ type SoftwareInstaller struct {
 	AutomaticInstall  bool             `json:"automatic_install,omitempty"`
 	LabelsIncludeAny  []SoftwareLabel  `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny  []SoftwareLabel  `json:"labels_exclude_any,omitempty"`
+	LabelsIncludeAll  []SoftwareLabel  `json:"labels_include_all,omitempty"`
 	UploadedAt        time.Time        `json:"uploaded_at,omitempty"`
 	Status            *InstallerStatus `json:"status,omitempty"`
 }
@@ -532,14 +533,54 @@ type SoftwareLabel struct {
 	Name string `json:"name"`
 }
 
+// setFormNameList encodes a list of Fleet label or category names into the
+// repeated multipart form fields Fleet's decoder expects:
+//
+//   - nil pointer      → key absent; Fleet leaves the stored value alone
+//   - pointer to empty → one empty-valued field, Fleet's explicit "clear"
+//   - pointer to names → one field occurrence per name
+//
+// Fleet reads these keys straight out of r.MultipartForm.Value[key] and uses
+// the occurrences verbatim as names, so a JSON-encoded array arrives as one
+// bogus name: labels fail the request outright ("Label ... doesn't exist")
+// and unknown categories are dropped server-side without an error.
+//
+// The single empty value is the only clear Fleet recognises. An empty slice
+// would write zero occurrences, which is indistinguishable from an absent
+// key and so silently means "no change".
+//
+// That encoding makes a one-element list holding an empty name — []string{""}
+// — byte-identical to a clear. Rather than silently drop targeting (which for
+// a label list means the software becomes available to every host), reject any
+// empty name: a caller that means "clear" passes an empty slice. The schema
+// validators reject an empty element at plan time, but a value that is unknown
+// then and resolves to "" at apply reaches here, as does any direct API caller.
+func setFormNameList(fields map[string][]string, key string, names *[]string) error {
+	if names == nil {
+		return nil
+	}
+	if len(*names) == 0 {
+		fields[key] = []string{""}
+		return nil
+	}
+	for _, n := range *names {
+		if n == "" {
+			return fmt.Errorf("%s: an empty name is not valid, and on its own would be indistinguishable from clearing the list; pass an empty list to clear", key)
+		}
+	}
+	fields[key] = *names
+	return nil
+}
+
 // UploadSoftwarePackageRequest contains parameters for uploading a software package.
 //
 // LabelsIncludeAny / LabelsExcludeAny follow the same nil/empty/populated
-// semantics documented on PatchSoftwarePackageRequest:
+// semantics documented on PatchSoftwarePackageRequest; see setFormNameList
+// for the wire encoding:
 //
 //   - nil pointer        → field is omitted from the form entirely
-//   - pointer to empty   → field is sent as "[]"
-//   - pointer to a slice → field is sent as the JSON-encoded array
+//   - pointer to empty   → field is sent once with an empty value ("clear")
+//   - pointer to a slice → one form field per name
 //
 // Fleet's "Only one of labels_include_all, labels_include_any or
 // labels_exclude_any can be specified" rule applies to this endpoint too;
@@ -577,68 +618,61 @@ type uploadSoftwareResponse struct {
 // UploadSoftwarePackage uploads a software package to FleetDM.
 // This is a Premium feature and uses multipart/form-data.
 func (c *Client) UploadSoftwarePackage(ctx context.Context, req *UploadSoftwarePackageRequest) (*SoftwareTitle, error) {
-	fields := make(map[string]string)
+	fields := make(map[string][]string)
 	if req.TeamID != nil {
-		fields["team_id"] = strconv.Itoa(*req.TeamID)
+		fields["team_id"] = []string{strconv.Itoa(*req.TeamID)}
 	}
 	if req.InstallScript != "" {
-		fields["install_script"] = req.InstallScript
+		fields["install_script"] = []string{req.InstallScript}
 	}
 	if req.UninstallScript != "" {
-		fields["uninstall_script"] = req.UninstallScript
+		fields["uninstall_script"] = []string{req.UninstallScript}
 	}
 	if req.PreInstallQuery != "" {
-		fields["pre_install_query"] = req.PreInstallQuery
+		fields["pre_install_query"] = []string{req.PreInstallQuery}
 	}
 	if req.PostInstallScript != "" {
-		fields["post_install_script"] = req.PostInstallScript
+		fields["post_install_script"] = []string{req.PostInstallScript}
 	}
 	if req.SelfService {
-		fields["self_service"] = "true"
+		fields["self_service"] = []string{"true"}
 	}
 	if req.AutomaticInstall {
 		// Fleet's documented Add Package field name is automatic_install
 		// (policy-based auto-install). Previously this code sent the
 		// undocumented "install_during_setup" key which Fleet silently
 		// ignored — see commit history for the bug fix.
-		fields["automatic_install"] = "true"
+		fields["automatic_install"] = []string{"true"}
 	}
 	if req.DisplayName != "" {
-		fields["display_name"] = req.DisplayName
+		fields["display_name"] = []string{req.DisplayName}
 	}
+	// Categories is a plain slice here (not a pointer), so an empty list means
+	// "none given" rather than an explicit clear — there is nothing to clear on
+	// a create. Fleet's Add Package request carries no categories field at all
+	// (verified against v4.86.1, v4.91.0 and main), so the server currently
+	// ignores this; it is sent for forward compatibility. Categories only take
+	// effect through the Edit endpoint.
 	if len(req.Categories) > 0 {
-		categoriesJSON, err := json.Marshal(req.Categories)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal categories: %w", err)
+		if err := setFormNameList(fields, "categories", &req.Categories); err != nil {
+			return nil, err
 		}
-		fields["categories"] = string(categoriesJSON)
 	}
-	// Same nil/empty/populated semantics as PatchSoftwarePackage; nil
-	// pointer omits the field, pointer-to-empty sends "[]" so a future
-	// Read can refresh state with the explicit "no labels" value.
-	if req.LabelsIncludeAny != nil {
-		labelsJSON, err := json.Marshal(*req.LabelsIncludeAny)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal labels_include_any: %w", err)
+	// Same nil/empty/populated semantics as PatchSoftwarePackage.
+	for _, l := range []struct {
+		key   string
+		names *[]string
+	}{
+		{"labels_include_any", req.LabelsIncludeAny},
+		{"labels_exclude_any", req.LabelsExcludeAny},
+		{"labels_include_all", req.LabelsIncludeAll},
+	} {
+		if err := setFormNameList(fields, l.key, l.names); err != nil {
+			return nil, err
 		}
-		fields["labels_include_any"] = string(labelsJSON)
-	}
-	if req.LabelsExcludeAny != nil {
-		labelsJSON, err := json.Marshal(*req.LabelsExcludeAny)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
-		}
-		fields["labels_exclude_any"] = string(labelsJSON)
-	}
-	if req.LabelsIncludeAll != nil {
-		labelsJSON, err := json.Marshal(*req.LabelsIncludeAll)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal labels_include_all: %w", err)
-		}
-		fields["labels_include_all"] = string(labelsJSON)
 	}
 
-	respBody, err := c.doMultipartRequest(ctx, http.MethodPost, "/software/package", "software", req.Filename, req.Software, fields)
+	respBody, err := c.doMultipartRequestMulti(ctx, http.MethodPost, "/software/package", "software", req.Filename, req.Software, fields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload software package: %w", err)
 	}
@@ -698,8 +732,11 @@ func (c *Client) DeleteSoftwarePackage(ctx context.Context, titleID int, teamID 
 // in PatchSoftwarePackage:
 //
 //   - nil pointer        → field is omitted from the form entirely
-//   - pointer to empty   → field is sent as "[]"
-//   - pointer to a slice → field is sent as the JSON-encoded array
+//   - pointer to empty   → field is sent once with an empty value ("clear")
+//   - pointer to a slice → one form field per name
+//
+// See setFormNameList for why the names go on the wire as repeated fields
+// rather than a JSON array.
 //
 // Fleet's API enforces "Only one of labels_include_all, labels_include_any
 // or labels_exclude_any can be specified" on this endpoint, so the caller
@@ -809,65 +846,50 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 	// value would leave the stale value in place. The pre-install query, the
 	// script fields and the label fields use pointers instead so the caller
 	// can distinguish nil (omit) from empty (clear).
-	fields := map[string]string{
-		"fleet_id":            strconv.Itoa(tid),
-		"post_install_script": req.PostInstallScript,
-		"self_service":        strconv.FormatBool(req.SelfService),
+	fields := map[string][]string{
+		"fleet_id":            {strconv.Itoa(tid)},
+		"post_install_script": {req.PostInstallScript},
+		"self_service":        {strconv.FormatBool(req.SelfService)},
 	}
 	if req.PreInstallQuery != nil {
-		fields["pre_install_query"] = *req.PreInstallQuery
+		fields["pre_install_query"] = []string{*req.PreInstallQuery}
 	}
 	if req.InstallScript != nil {
-		fields["install_script"] = *req.InstallScript
+		fields["install_script"] = []string{*req.InstallScript}
 	}
 	if req.UninstallScript != nil {
-		fields["uninstall_script"] = *req.UninstallScript
+		fields["uninstall_script"] = []string{*req.UninstallScript}
 	}
 	if req.DisplayName != "" {
-		fields["display_name"] = req.DisplayName
+		fields["display_name"] = []string{req.DisplayName}
 	}
 
 	// A nil label pointer means "don't touch this field". Sending both
-	// labels_include_any and labels_exclude_any (even as empty arrays)
+	// labels_include_any and labels_exclude_any (even as empty lists)
 	// violates Fleet's "only one of …" invariant for this endpoint and
 	// gets rejected with HTTP 400. Empty (non-nil) is the explicit
-	// "clear labels" path: marshalling []string{} yields "[]".
-	if req.LabelsIncludeAny != nil {
-		labelsIncJSON, err := json.Marshal(*req.LabelsIncludeAny)
-		if err != nil {
-			return fmt.Errorf("failed to marshal labels_include_any: %w", err)
+	// "clear" path.
+	for _, l := range []struct {
+		key   string
+		names *[]string
+	}{
+		{"labels_include_any", req.LabelsIncludeAny},
+		{"labels_exclude_any", req.LabelsExcludeAny},
+		{"labels_include_all", req.LabelsIncludeAll},
+		{"categories", req.Categories},
+	} {
+		if err := setFormNameList(fields, l.key, l.names); err != nil {
+			return err
 		}
-		fields["labels_include_any"] = string(labelsIncJSON)
-	}
-	if req.LabelsExcludeAny != nil {
-		labelsExcJSON, err := json.Marshal(*req.LabelsExcludeAny)
-		if err != nil {
-			return fmt.Errorf("failed to marshal labels_exclude_any: %w", err)
-		}
-		fields["labels_exclude_any"] = string(labelsExcJSON)
-	}
-	if req.LabelsIncludeAll != nil {
-		labelsAllJSON, err := json.Marshal(*req.LabelsIncludeAll)
-		if err != nil {
-			return fmt.Errorf("failed to marshal labels_include_all: %w", err)
-		}
-		fields["labels_include_all"] = string(labelsAllJSON)
-	}
-	if req.Categories != nil {
-		categoriesJSON, err := json.Marshal(*req.Categories)
-		if err != nil {
-			return fmt.Errorf("failed to marshal categories: %w", err)
-		}
-		fields["categories"] = string(categoriesJSON)
 	}
 
 	if req.Software != nil {
-		if _, err := c.doMultipartRequest(ctx, http.MethodPatch, endpoint, "software", req.Filename, req.Software, fields); err != nil {
+		if _, err := c.doMultipartRequestMulti(ctx, http.MethodPatch, endpoint, "software", req.Filename, req.Software, fields); err != nil {
 			return fmt.Errorf("failed to patch software package (with binary): %w", err)
 		}
 		return nil
 	}
-	if _, err := c.doMultipartFormRequest(ctx, http.MethodPatch, endpoint, fields); err != nil {
+	if _, err := c.doMultipartFormRequestMulti(ctx, http.MethodPatch, endpoint, fields); err != nil {
 		return fmt.Errorf("failed to patch software package: %w", err)
 	}
 	return nil

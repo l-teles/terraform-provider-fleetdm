@@ -11,6 +11,28 @@ import (
 	"testing"
 )
 
+// decodeFormNames applies Fleet's own decode rule for a multipart name-list
+// key, so these fakes accept exactly what a real Fleet accepts:
+//
+//   - key absent                    → nil ("no change")
+//   - one occurrence, empty value   → empty slice ("clear")
+//   - otherwise                     → the occurrences verbatim as names
+//
+// The second return value reports whether the key was present at all, which
+// callers assert separately from its value. Decoding with json.Unmarshal
+// instead would let a JSON-encoded list pass the fake while a real Fleet
+// rejects it as one unknown name.
+func decodeFormNames(r *http.Request, key string) ([]string, bool) {
+	vals, ok := r.MultipartForm.Value[key]
+	if !ok {
+		return nil, false
+	}
+	if len(vals) == 1 && vals[0] == "" {
+		return []string{}, true
+	}
+	return vals, true
+}
+
 // fakeFleetSoftwareServer is a multipurpose Fleet API fake used by the
 // three new software-resource test files (custom_package, app_store_app,
 // fleet_maintained_app). It mocks the minimum endpoint surface each
@@ -513,24 +535,9 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 
 			f.mu.Lock()
 			f.patchCount++
-			vals, incSeen := r.MultipartForm.Value["labels_include_any"]
-			f.patchIncludeFieldSeen = incSeen
-			f.patchIncludeLabels = nil
-			if incSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeLabels)
-			}
-			vals, excSeen := r.MultipartForm.Value["labels_exclude_any"]
-			f.patchExcludeFieldSeen = excSeen
-			f.patchExcludeLabels = nil
-			if excSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchExcludeLabels)
-			}
-			vals, incAllSeen := r.MultipartForm.Value["labels_include_all"]
-			f.patchIncludeAllFieldSeen = incAllSeen
-			f.patchIncludeAllLabels = nil
-			if incAllSeen && len(vals) > 0 {
-				_ = json.Unmarshal([]byte(vals[0]), &f.patchIncludeAllLabels)
-			}
+			f.patchIncludeLabels, f.patchIncludeFieldSeen = decodeFormNames(r, "labels_include_any")
+			f.patchExcludeLabels, f.patchExcludeFieldSeen = decodeFormNames(r, "labels_exclude_any")
+			f.patchIncludeAllLabels, f.patchIncludeAllFieldSeen = decodeFormNames(r, "labels_include_all")
 			// Presence matters as much as the value: an absent script field is
 			// "leave Fleet's script alone", while a present-and-empty one is an
 			// explicit clear. Recording both lets tests assert that a caller

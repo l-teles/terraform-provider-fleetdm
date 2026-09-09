@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,6 +20,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+
+	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
 func testAccSoftwareCustomPackageConfig(serverURL, pkgPath string) string {
@@ -921,6 +926,252 @@ resource "fleetdm_software_custom_package" "py" {
 				ResourceName:      "fleetdm_software_custom_package.py",
 				ImportState:       true,
 				ImportStateVerify: false,
+			},
+		},
+	})
+}
+
+// TestAccSoftwareCustomPackageResource_rejectsEmptyLabelName pins the
+// plan-time guard on an empty name inside a label or category list. Fleet
+// reads these lists as repeated form fields, so a lone empty name is
+// indistinguishable on the wire from an explicit clear — accepting it would
+// silently drop the software's targeting and make it available to every host.
+// The plan must fail before any request is made.
+func TestAccSoftwareCustomPackageResource_rejectsEmptyLabelName(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeFleetSoftwareServer(t)
+
+	cfg := func(attrLine string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+%[3]s
+}
+`, f.srv.URL, pkgPath, attrLine)
+	}
+
+	for _, attr := range []string{
+		"labels_include_any",
+		"labels_exclude_any",
+		"labels_include_all",
+		"categories",
+	} {
+		t.Run(attr, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config:      cfg(fmt.Sprintf("  %s = [\"\"]", attr)),
+						ExpectError: regexp.MustCompile(`(?i)Invalid Attribute Value|at least 1|string length`),
+					},
+				},
+			})
+		})
+	}
+}
+
+// assertFleetLabels asserts Fleet's OWN view of a package's label targeting —
+// all three scopes — by reading the installer back over the API. Checking all
+// three is what catches a switch between attributes that accumulates instead
+// of replacing.
+//
+// Terraform state is not a usable oracle for the clear step: after a clear,
+// Fleet's GET returns no labels, labelsToStringListValue maps that to null,
+// and the Read gate declines to refresh a null attribute — so state simply
+// keeps the empty list the plan put there. A state-only check therefore
+// passes even if Fleet ignored the clear entirely, which is exactly the
+// zero-occurrence regression the encoding has to avoid.
+func assertFleetLabels(t *testing.T, titleIDAttr string, wantIncludeAny, wantExcludeAny, wantIncludeAll []string) resource.TestCheckFunc {
+	t.Helper()
+	return func(st *terraform.State) error {
+		rs, ok := st.RootModule().Resources[titleIDAttr]
+		if !ok {
+			return fmt.Errorf("resource %s not found in state", titleIDAttr)
+		}
+		titleID, err := strconv.Atoi(rs.Primary.Attributes["title_id"])
+		if err != nil {
+			return fmt.Errorf("title_id: %w", err)
+		}
+
+		verifyTLS := true
+		if v := os.Getenv("FLEETDM_VERIFY_TLS"); v == "false" || v == "0" {
+			verifyTLS = false
+		}
+		client, err := fleetdm.NewClient(fleetdm.ClientConfig{
+			ServerAddress: os.Getenv("FLEETDM_URL"),
+			APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
+			VerifyTLS:     verifyTLS,
+		})
+		if err != nil {
+			return fmt.Errorf("build fleet client: %w", err)
+		}
+
+		// 0 is Fleet's id for "No team", which is where these packages land.
+		// Fleet 4.90+ wants the scope spelled out on the package endpoints.
+		noTeam := 0
+		installer, err := client.GetSoftwareInstaller(context.Background(), titleID, &noTeam)
+		if err != nil {
+			return fmt.Errorf("get installer %d: %w", titleID, err)
+		}
+
+		names := func(labels []fleetdm.SoftwareLabel) []string {
+			out := make([]string, 0, len(labels))
+			for _, l := range labels {
+				out = append(out, l.Name)
+			}
+			slices.Sort(out)
+			return out
+		}
+		sorted := func(want []string) []string {
+			out := append([]string(nil), want...)
+			slices.Sort(out)
+			return out
+		}
+
+		for _, scope := range []struct {
+			key  string
+			got  []string
+			want []string
+		}{
+			{"labels_include_any", names(installer.LabelsIncludeAny), sorted(wantIncludeAny)},
+			{"labels_exclude_any", names(installer.LabelsExcludeAny), sorted(wantExcludeAny)},
+			{"labels_include_all", names(installer.LabelsIncludeAll), sorted(wantIncludeAll)},
+		} {
+			if !slices.Equal(scope.got, scope.want) {
+				return fmt.Errorf("Fleet's %s = %v, want %v", scope.key, scope.got, scope.want)
+			}
+		}
+		return nil
+	}
+}
+
+// TestAccSoftwareCustomPackageResource_labelTargetingLive is the live
+// counterpart to the mock label tests, and the only assertion that Fleet
+// actually accepts the label names the provider puts on the wire.
+//
+// It exists because every other software label test drives a fake server:
+// the client used to send the names as one JSON-encoded form field, which
+// each mock happily accepted while a real Fleet rejected the whole request
+// with `Label "[...]" doesn't exist`. Fleet reads these multipart keys as
+// repeated fields, so only a real server can catch that class of mistake.
+//
+// The lifecycle covers all three targeting attributes plus the explicit
+// clear (`= []`), which is a distinct wire shape from omitting the
+// attribute and has its own way of failing silently.
+//
+// Requires Fleet 4.90 or later: the package is a `.py` script installer so
+// its bytes can be arbitrary, and earlier versions reject that extension
+// with "File type not supported".
+func TestAccSoftwareCustomPackageResource_labelTargetingLive(t *testing.T) {
+	suffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	filename := fmt.Sprintf("tf-acc-%s.py", suffix)
+
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, filename)
+	contents := fmt.Sprintf("#!/usr/bin/env python3\n\"\"\"tf-acc %s\"\"\"\nprint(\"installing\")\n", suffix)
+	if err := os.WriteFile(pkgPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two labels so the multi-name case is exercised: a single name would
+	// pass even if the client joined the names into one field.
+	cfg := func(labelLine string) string {
+		return fmt.Sprintf(`
+%[1]s
+
+resource "fleetdm_label" "one" {
+  name  = "tf-acc-label-one-%[2]s"
+  query = "SELECT 1;"
+}
+
+resource "fleetdm_label" "two" {
+  name  = "tf-acc-label-two-%[2]s"
+  query = "SELECT 1;"
+}
+
+resource "fleetdm_software_custom_package" "labelled" {
+  package_path = %[3]q
+  filename     = %[4]q
+%[5]s
+}
+`, providerConfig(), suffix, pkgPath, filename, labelLine)
+	}
+
+	const res = "fleetdm_software_custom_package.labelled"
+	one := fmt.Sprintf("tf-acc-label-one-%s", suffix)
+	two := fmt.Sprintf("tf-acc-label-two-%s", suffix)
+	both := []string{one, two}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Create with two include-any labels: the shape that fails
+				// against a real Fleet when the names are JSON-encoded.
+				Config: cfg("  labels_include_any = [fleetdm_label.one.name, fleetdm_label.two.name]"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrSet(res, "title_id"),
+					resource.TestCheckResourceAttr(res, "labels_include_any.#", "2"),
+					resource.TestCheckResourceAttr(res, "labels_include_any.0", fmt.Sprintf("tf-acc-label-one-%s", suffix)),
+					resource.TestCheckResourceAttr(res, "labels_include_any.1", fmt.Sprintf("tf-acc-label-two-%s", suffix)),
+					assertFleetLabels(t, res, both, nil, nil),
+				),
+			},
+			{
+				Config:   cfg("  labels_include_any = [fleetdm_label.one.name, fleetdm_label.two.name]"),
+				PlanOnly: true,
+			},
+			{
+				// Update to a single name, via PATCH rather than the upload.
+				Config: cfg("  labels_include_any = [fleetdm_label.two.name]"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "labels_include_any.#", "1"),
+					resource.TestCheckResourceAttr(res, "labels_include_any.0", fmt.Sprintf("tf-acc-label-two-%s", suffix)),
+					assertFleetLabels(t, res, []string{two}, nil, nil),
+				),
+			},
+			{
+				// Explicit clear. Fleet only reads this as "clear" when the
+				// field arrives once with an empty value; zero occurrences
+				// would leave the label attached and report success, and
+				// Terraform state cannot tell the difference — so this step
+				// has to ask Fleet.
+				Config: cfg("  labels_include_any = []"),
+				Check:  assertFleetLabels(t, res, nil, nil, nil),
+			},
+			{
+				// Switch to exclude-any, then include-all: same encoding,
+				// different keys, and Fleet rejects more than one at a time.
+				Config: cfg("  labels_exclude_any = [fleetdm_label.one.name, fleetdm_label.two.name]"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "labels_exclude_any.#", "2"),
+					assertFleetLabels(t, res, nil, both, nil),
+				),
+			},
+			{
+				// Switching attributes without clearing the old one: Fleet
+				// stores a single scope, so the incoming include-all replaces
+				// the stored exclude-any wholesale rather than accumulating.
+				// Asserting all three scopes is what proves that — and the
+				// schema's ConflictsWith rules mean setting the old attribute
+				// to [] in the same config is not even expressible.
+				Config: cfg("  labels_include_all = [fleetdm_label.one.name, fleetdm_label.two.name]"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "labels_include_all.#", "2"),
+					assertFleetLabels(t, res, nil, nil, both),
+				),
 			},
 		},
 	})
