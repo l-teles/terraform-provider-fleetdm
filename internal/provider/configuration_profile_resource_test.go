@@ -656,3 +656,50 @@ EOT
 		},
 	})
 }
+
+// TestAccConfigurationProfileResource_rejectsEmptyLabelName pins the
+// plan-time guard on an empty label name. Fleet reads these as repeated form
+// fields and takes each occurrence verbatim, so an empty name is a request
+// for a label that cannot exist. It already fails against Fleet, but at
+// apply; catching it in the plan matches how the software resources behave
+// and keeps the diagnostic on the attribute that caused it.
+func TestAccConfigurationProfileResource_rejectsEmptyLabelName(t *testing.T) {
+	const uuid = "uuid-empty-label"
+	st := &profileMockState{}
+	server := newProfileMockServer(t, uuid, "Test Profile", "darwin", st)
+	defer server.Close()
+
+	configWith := func(labels string) string {
+		return `
+provider "fleetdm" {
+  server_address = "` + server.URL + `"
+  api_key        = "test-token"
+}
+
+resource "fleetdm_configuration_profile" "test" {
+  profile_content = <<-EOT
+` + testMobileConfig + `
+EOT
+` + labels + `
+}
+`
+	}
+
+	for _, attr := range []string{
+		"labels_include_all",
+		"labels_include_any",
+		"labels_exclude_any",
+	} {
+		t.Run(attr, func(t *testing.T) {
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config:      configWith(`  ` + attr + ` = [""]`),
+						ExpectError: regexp.MustCompile(`(?i)Invalid Attribute Value|at least 1|string length`),
+					},
+				},
+			})
+		})
+	}
+}
