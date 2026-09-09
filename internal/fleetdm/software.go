@@ -512,7 +512,6 @@ type SoftwareInstaller struct {
 	AutomaticInstall  bool             `json:"automatic_install,omitempty"`
 	LabelsIncludeAny  []SoftwareLabel  `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny  []SoftwareLabel  `json:"labels_exclude_any,omitempty"`
-	LabelsIncludeAll  []SoftwareLabel  `json:"labels_include_all,omitempty"`
 	UploadedAt        time.Time        `json:"uploaded_at,omitempty"`
 	Status            *InstallerStatus `json:"status,omitempty"`
 }

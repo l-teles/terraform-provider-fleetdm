@@ -1017,12 +1017,16 @@ func assertFleetLabels(t *testing.T, titleIDAttr string, wantIncludeAny, wantExc
 			return fmt.Errorf("build fleet client: %w", err)
 		}
 
-		// 0 is Fleet's id for "No team", which is where these packages land.
-		// Fleet 4.90+ wants the scope spelled out on the package endpoints.
-		noTeam := 0
-		installer, err := client.GetSoftwareInstaller(context.Background(), titleID, &noTeam)
+		// GET /software/titles/{id} is the metadata read the resource itself
+		// uses. The sibling /package endpoint is download-only — without
+		// alt=media it answers 422 — so it cannot serve as an oracle here.
+		title, err := client.GetSoftwareTitle(context.Background(), titleID, nil)
 		if err != nil {
-			return fmt.Errorf("get installer %d: %w", titleID, err)
+			return fmt.Errorf("get software title %d: %w", titleID, err)
+		}
+		pkg := title.SoftwarePackage
+		if pkg == nil {
+			return fmt.Errorf("software title %d has no software_package", titleID)
 		}
 
 		names := func(labels []fleetdm.SoftwareLabel) []string {
@@ -1044,9 +1048,9 @@ func assertFleetLabels(t *testing.T, titleIDAttr string, wantIncludeAny, wantExc
 			got  []string
 			want []string
 		}{
-			{"labels_include_any", names(installer.LabelsIncludeAny), sorted(wantIncludeAny)},
-			{"labels_exclude_any", names(installer.LabelsExcludeAny), sorted(wantExcludeAny)},
-			{"labels_include_all", names(installer.LabelsIncludeAll), sorted(wantIncludeAll)},
+			{"labels_include_any", names(pkg.LabelsIncludeAny), sorted(wantIncludeAny)},
+			{"labels_exclude_any", names(pkg.LabelsExcludeAny), sorted(wantExcludeAny)},
+			{"labels_include_all", names(pkg.LabelsIncludeAll), sorted(wantIncludeAll)},
 		} {
 			if !slices.Equal(scope.got, scope.want) {
 				return fmt.Errorf("Fleet's %s = %v, want %v", scope.key, scope.got, scope.want)
