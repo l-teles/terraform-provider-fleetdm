@@ -930,7 +930,7 @@ resource "fleetdm_software_fleet_maintained_app" "test" {
 						if f.patchDisplayName != "MyFMA" {
 							return fmt.Errorf("FMA follow-up PATCH display_name=%q, want MyFMA", f.patchDisplayName)
 						}
-						if f.patchCategories == "" {
+						if len(f.patchCategories) == 0 {
 							return fmt.Errorf("FMA follow-up PATCH must include categories")
 						}
 						return nil

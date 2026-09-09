@@ -691,7 +691,7 @@ resource "fleetdm_software_custom_package" "test" {
 						if f.uploadDisplayName != "MyApp" {
 							return fmt.Errorf("upload display_name=%q, want MyApp", f.uploadDisplayName)
 						}
-						if f.uploadCategories == "" {
+						if len(f.uploadCategories) == 0 {
 							return fmt.Errorf("upload form must include categories")
 						}
 						return nil
@@ -709,7 +709,7 @@ resource "fleetdm_software_custom_package" "test" {
 						if f.patchDisplayName != "MyApp Renamed" {
 							return fmt.Errorf("patch display_name=%q, want MyApp Renamed", f.patchDisplayName)
 						}
-						if f.patchCategories == "" {
+						if len(f.patchCategories) == 0 {
 							return fmt.Errorf("patch form must include categories")
 						}
 						return nil
@@ -979,6 +979,95 @@ resource "fleetdm_software_custom_package" "test" {
 			})
 		})
 	}
+}
+
+// TestAccSoftwareCustomPackageResource_categoriesRoundTrip covers categories
+// through the same three states the label attributes get: set on create,
+// changed on update, and cleared with an explicit empty list. Categories ride
+// the identical repeated-field encoding, and Fleet drops names it does not
+// recognise without erroring — so a wrong encoding here is silent, and only a
+// round-trip through the fake's mirrored state catches it.
+func TestAccSoftwareCustomPackageResource_categoriesRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	pkgPath := filepath.Join(tmpDir, "test-app.pkg")
+	if err := os.WriteFile(pkgPath, []byte("FAKEPKG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 92
+
+	cfg := func(categories string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_custom_package" "test" {
+  package_path   = %[2]q
+  filename       = "test-app.pkg"
+  install_script = "echo install"
+  self_service   = true
+%[3]s
+}
+`, f.srv.URL, pkgPath, categories)
+	}
+
+	const res = "fleetdm_software_custom_package.test"
+
+	wireCategories := func(want ...string) func(*terraform.State) error {
+		return func(_ *terraform.State) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			got := f.titleCategories
+			if len(want) == 0 {
+				if len(got) != 0 {
+					return fmt.Errorf("Fleet-side categories = %v, want none", got)
+				}
+				return nil
+			}
+			if !slices.Equal(got, want) {
+				return fmt.Errorf("Fleet-side categories = %v, want %v", got, want)
+			}
+			return nil
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Two names, so a single joined or JSON-encoded field would
+				// not survive: it would arrive as one bogus category.
+				Config: cfg(`  categories = ["Browsers", "Productivity"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "categories.#", "2"),
+					wireCategories("Browsers", "Productivity"),
+				),
+			},
+			{
+				Config:   cfg(`  categories = ["Browsers", "Productivity"]`),
+				PlanOnly: true,
+			},
+			{
+				Config: cfg(`  categories = ["Developer tools"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "categories.#", "1"),
+					wireCategories("Developer tools"),
+				),
+			},
+			{
+				// Explicit clear: one empty occurrence, which Fleet reads as
+				// "no categories" — distinct from omitting the attribute.
+				Config: cfg(`  categories = []`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "categories.#", "0"),
+					wireCategories(),
+				),
+			},
+		},
+	})
 }
 
 // TestAccSoftwareCustomPackageResource_labelOrderIsNotADiff reproduces the

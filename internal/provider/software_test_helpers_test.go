@@ -192,9 +192,11 @@ type fakeFleetSoftwareServer struct {
 	// assert on the wire shape.
 	uploadAutomaticInstall string
 	uploadDisplayName      string
-	uploadCategories       string
+	uploadCategories       []string
+	uploadCategoriesSeen   bool
 	patchDisplayName       string
-	patchCategories        string
+	patchCategories        []string
+	patchCategoriesSeen    bool
 }
 
 // newFakeFleetSoftwareServer stands up an httptest server that handles the
@@ -236,14 +238,14 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.uploadInstallScript = r.FormValue("install_script")
 			f.uploadAutomaticInstall = r.FormValue("automatic_install")
 			f.uploadDisplayName = r.FormValue("display_name")
-			f.uploadCategories = r.FormValue("categories")
+			f.uploadCategories, f.uploadCategoriesSeen = decodeFormNames(r, "categories")
 			f.titleInstallScript = f.uploadInstallScript
 			f.titleSelfService = r.FormValue("self_service") == "true"
 			if f.uploadDisplayName != "" {
 				f.titleDisplayName = f.uploadDisplayName
 			}
-			if f.uploadCategories != "" {
-				_ = json.Unmarshal([]byte(f.uploadCategories), &f.titleCategories)
+			if f.uploadCategoriesSeen {
+				f.titleCategories = f.uploadCategories
 			}
 			f.titleSource = "pkg"
 			f.storedIncludeAny, f.uploadIncludeFieldSet = decodeFormNames(r, "labels_include_any")
@@ -579,7 +581,7 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			}
 			f.patchSelfService = r.FormValue("self_service")
 			f.patchDisplayName = r.FormValue("display_name")
-			f.patchCategories = r.FormValue("categories")
+			f.patchCategories, f.patchCategoriesSeen = decodeFormNames(r, "categories")
 			if installSeen {
 				f.titleInstallScript = f.patchInstallScript
 			}
@@ -589,8 +591,15 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			if f.patchDisplayName != "" {
 				f.titleDisplayName = f.patchDisplayName
 			}
-			if f.patchCategories != "" {
-				_ = json.Unmarshal([]byte(f.patchCategories), &f.titleCategories)
+			// decodeFormNames gives an empty (non-nil) slice for Fleet's clear
+			// form, so a clear must null the mirror rather than leave the old
+			// names in place.
+			if f.patchCategoriesSeen {
+				if len(f.patchCategories) == 0 {
+					f.titleCategories = nil
+				} else {
+					f.titleCategories = f.patchCategories
+				}
 			}
 			f.titleSelfService = f.patchSelfService == "true"
 			f.mu.Unlock()
