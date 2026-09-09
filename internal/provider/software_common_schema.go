@@ -236,8 +236,12 @@ func softwareScriptAttributes() map[string]schema.Attribute {
 			},
 		},
 		"pre_install_query": schema.StringAttribute{
-			Description: "An osquery SQL query to run before installation. Installation proceeds only if the query returns results. Optional.",
-			Optional:    true,
+			Description: "An osquery SQL query to run before installation. Installation proceeds only if the query returns results. " +
+				"Optional: when omitted, the query stays under Fleet's control and Terraform neither stores nor reverts it. " +
+				"Fleet writes a managed query here when a patch policy targeting this title sets patch_when_closed, so leaving " +
+				"the attribute out is what lets that keep working. Set this attribute to take ownership of the query; remove it " +
+				"to hand ownership back to Fleet without clearing the query that is in place.",
+			Optional: true,
 		},
 		"post_install_script": schema.StringAttribute{
 			Description: "Script to run after installation. Optional.",
