@@ -40,6 +40,9 @@ type fakeFleetSoftwareServer struct {
 	// uninstall_script refreshes it on every Read and would otherwise see an
 	// empty value and plan a spurious change.
 	titleUninstallScript string
+	// titlePreInstallQuery mirrors the stored pre-install query, so a Read on a
+	// title whose query Fleet owns sees the same value Fleet would echo.
+	titlePreInstallQuery string
 	titleAppStoreID      string
 	titlePlatform        string
 	titleSource          string // "pkg" / "app_store_app" / "fma" — drives detectSoftwareType branching
@@ -69,6 +72,12 @@ type fakeFleetSoftwareServer struct {
 	patchInstallScript       string
 	patchInstallScriptSeen   bool
 	patchUninstallScriptSeen bool
+	// patchPreInstallQuerySeen mirrors the script fields: since Fleet 4.91 the
+	// pre-install query can be Fleet-generated (a patch policy's
+	// patch_when_closed writes a managed query), so a caller that does not
+	// manage it must leave the field out of the PATCH entirely.
+	patchPreInstallQuerySeen bool
+	patchPreInstallQuery     string
 	// patchFleetID is the mandatory scope Fleet reads out of the PATCH form.
 	patchFleetID     string
 	patchSelfService string
@@ -300,6 +309,7 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				TeamID               int      `json:"team_id"`
 				InstallScript        string   `json:"install_script"`
 				UninstallScript      string   `json:"uninstall_script"`
+				PreInstallQuery      string   `json:"pre_install_query"`
 				SelfService          bool     `json:"self_service"`
 				AutomaticInstall     bool     `json:"automatic_install"`
 				LabelsIncludeAll     []string `json:"labels_include_all"`
@@ -315,6 +325,7 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.fmaTeamID = body.TeamID
 			f.titleInstallScript = body.InstallScript
 			f.titleUninstallScript = body.UninstallScript
+			f.titlePreInstallQuery = body.PreInstallQuery
 			f.titleSelfService = body.SelfService
 			f.titleSource = "fma"
 			id := f.titleID
@@ -340,12 +351,13 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				payload["categories"] = f.titleCategories
 			}
 			pkgBody := map[string]any{
-				"title_id":         f.titleID,
-				"platform":         "darwin",
-				"hash_sha256":      f.titleHashSHA256,
-				"self_service":     f.titleSelfService,
-				"install_script":   f.titleInstallScript,
-				"uninstall_script": f.titleUninstallScript,
+				"title_id":          f.titleID,
+				"platform":          "darwin",
+				"hash_sha256":       f.titleHashSHA256,
+				"self_service":      f.titleSelfService,
+				"install_script":    f.titleInstallScript,
+				"uninstall_script":  f.titleUninstallScript,
+				"pre_install_query": f.titlePreInstallQuery,
 			}
 			// install_during_setup mirrors the setup_experience set.
 			for _, id := range f.setupExperienceSet {
@@ -530,6 +542,15 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 				f.patchInstallScript = installVals[0]
 			}
 			_, f.patchUninstallScriptSeen = r.MultipartForm.Value["uninstall_script"]
+			preVals, preSeen := r.MultipartForm.Value["pre_install_query"]
+			f.patchPreInstallQuerySeen = preSeen
+			f.patchPreInstallQuery = ""
+			if preSeen && len(preVals) > 0 {
+				f.patchPreInstallQuery = preVals[0]
+			}
+			if preSeen {
+				f.titlePreInstallQuery = f.patchPreInstallQuery
+			}
 			f.patchSelfService = r.FormValue("self_service")
 			f.patchDisplayName = r.FormValue("display_name")
 			f.patchCategories = r.FormValue("categories")

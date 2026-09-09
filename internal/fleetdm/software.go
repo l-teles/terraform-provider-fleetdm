@@ -725,12 +725,19 @@ type PatchSoftwarePackageRequest struct {
 	//
 	// Fleet's PATCH decoder only reads a script out of the form when the
 	// field is present, so omission is a genuine "no change" rather than a
-	// clear. PreInstallQuery / PostInstallScript stay plain strings because
-	// they have no Fleet-generated default: for those, the empty string is
-	// the caller's way of clearing the value.
+	// clear.
+	//
+	// PreInstallQuery follows the same convention as of Fleet 4.91, which
+	// introduced the first Fleet-generated pre-install query: turning on a
+	// patch policy's patch_when_closed makes Fleet write a managed query onto
+	// the installer. Sending "" for an unmanaged field would wipe it and
+	// silently switch that behaviour back off.
+	//
+	// PostInstallScript stays a plain string because Fleet generates no
+	// default for it: there, the empty string is the caller's way of clearing.
 	InstallScript     *string `json:"install_script"`
 	UninstallScript   *string `json:"uninstall_script"`
-	PreInstallQuery   string  `json:"pre_install_query"`
+	PreInstallQuery   *string `json:"pre_install_query"`
 	PostInstallScript string  `json:"post_install_script"`
 	SelfService       bool    `json:"self_service"`
 	// DisplayName, when non-empty, overrides the title's display name.
@@ -796,17 +803,19 @@ func (c *Client) PatchSoftwarePackage(ctx context.Context, titleID int, req *Pat
 		tid = *req.TeamID
 	}
 
-	// pre_install_query, post_install_script and self_service are sent
-	// unconditionally — empty strings included — because PATCH semantics here
-	// are "set to exactly this", not "merge": for those fields, omitting one
-	// that previously had a value would leave the stale value in place. The
-	// script and label fields use pointers instead so the caller can
-	// distinguish nil (omit) from empty (clear).
+	// post_install_script and self_service are sent unconditionally — empty
+	// strings included — because PATCH semantics here are "set to exactly
+	// this", not "merge": for those fields, omitting one that previously had a
+	// value would leave the stale value in place. The pre-install query, the
+	// script fields and the label fields use pointers instead so the caller
+	// can distinguish nil (omit) from empty (clear).
 	fields := map[string]string{
 		"fleet_id":            strconv.Itoa(tid),
-		"pre_install_query":   req.PreInstallQuery,
 		"post_install_script": req.PostInstallScript,
 		"self_service":        strconv.FormatBool(req.SelfService),
+	}
+	if req.PreInstallQuery != nil {
+		fields["pre_install_query"] = *req.PreInstallQuery
 	}
 	if req.InstallScript != nil {
 		fields["install_script"] = *req.InstallScript

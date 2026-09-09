@@ -1278,3 +1278,174 @@ func TestAccSoftwareFleetMaintainedAppResource_pinnedVersionCaretValidation(t *t
 		})
 	}
 }
+
+// TestAccSoftwareFleetMaintainedAppResource_omittedPreInstallQuerySurvivesUnrelatedUpdate
+// is the pre_install_query counterpart of
+// _omittedScriptSurvivesUnrelatedUpdate. It became necessary in Fleet 4.91,
+// which introduced the first Fleet-generated pre-install query: turning on a
+// patch policy's patch_when_closed makes Fleet write a managed query onto the
+// installer, so a title whose HCL omits the attribute must not have that query
+// sent back — an unrelated metadata update would otherwise clear it and
+// silently switch the behaviour off.
+func TestAccSoftwareFleetMaintainedAppResource_omittedPreInstallQuerySurvivesUnrelatedUpdate(t *testing.T) {
+	const fleetOwned = "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM apps WHERE bundle_identifier = 'org.mozilla.firefox');"
+
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 513
+	f.titleName = "Firefox"
+
+	cfg := func(selfService bool) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "test" {
+  fleet_maintained_app_id = 1
+  self_service            = %[2]t
+}
+`, f.srv.URL, selfService)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true),
+				Check:  resource.TestCheckNoResourceAttr("fleetdm_software_fleet_maintained_app.test", "pre_install_query"),
+			},
+			{
+				// Fleet now has a managed query Terraform never saw, and the
+				// config changes an unrelated attribute.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.titlePreInstallQuery = fleetOwned
+					f.patchPreInstallQuerySeen = false
+					f.mu.Unlock()
+				},
+				Config: cfg(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					// The only step where Fleet actually holds a query, so the
+					// only one that can catch a Read absorbing it into state.
+					resource.TestCheckNoResourceAttr("fleetdm_software_fleet_maintained_app.test", "pre_install_query"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if f.patchSelfService != "false" {
+							return fmt.Errorf("expected the self_service change to be sent, got %q", f.patchSelfService)
+						}
+						if f.patchPreInstallQuerySeen {
+							return fmt.Errorf("pre_install_query must be omitted from the PATCH when Fleet owns it, got %q", f.patchPreInstallQuery)
+						}
+						if f.titlePreInstallQuery != fleetOwned {
+							return fmt.Errorf("Fleet's managed query was overwritten: %q", f.titlePreInstallQuery)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// The Fleet-owned query must not have leaked into state either,
+				// or the next plan would show it as drift and try to manage it.
+				Config:   cfg(false),
+				PlanOnly: true,
+				Check:    resource.TestCheckNoResourceAttr("fleetdm_software_fleet_maintained_app.test", "pre_install_query"),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareFleetMaintainedAppResource_declaredPreInstallQueryIsManaged is
+// the other half: a declared query stays Terraform's, is sent on update, and an
+// out-of-band edit is reverted.
+func TestAccSoftwareFleetMaintainedAppResource_declaredPreInstallQueryIsManaged(t *testing.T) {
+	f := newFakeFleetSoftwareServer(t)
+	f.titleID = 514
+	f.titleName = "Firefox"
+
+	cfg := func(query string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_software_fleet_maintained_app" "test" {
+  fleet_maintained_app_id = 1
+  pre_install_query       = %[2]q
+}
+`, f.srv.URL, query)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("SELECT 1 FROM os_version WHERE major >= 15;"),
+				Check: resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test",
+					"pre_install_query", "SELECT 1 FROM os_version WHERE major >= 15;"),
+			},
+			{
+				Config: cfg("SELECT 1 FROM os_version WHERE major >= 26;"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test",
+						"pre_install_query", "SELECT 1 FROM os_version WHERE major >= 26;"),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if !f.patchPreInstallQuerySeen {
+							return errors.New("pre_install_query must be sent when Terraform owns it")
+						}
+						if f.patchPreInstallQuery != "SELECT 1 FROM os_version WHERE major >= 26;" {
+							return fmt.Errorf("wrong pre_install_query on the wire: %q", f.patchPreInstallQuery)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// An explicit "" is the clear path and must still reach the
+				// wire: nil means "leave Fleet's query alone", so only a
+				// present-and-empty field clears a query Terraform owns. This
+				// is the distinction the pointer exists to express.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.patchPreInstallQuerySeen = false
+					f.patchPreInstallQuery = "unset"
+					f.mu.Unlock()
+				},
+				Config: cfg(""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_software_fleet_maintained_app.test", "pre_install_query", ""),
+					func(_ *terraform.State) error {
+						f.mu.Lock()
+						defer f.mu.Unlock()
+						if !f.patchPreInstallQuerySeen {
+							return errors.New(`an explicit "" must be sent so Fleet clears the query, not omitted`)
+						}
+						if f.patchPreInstallQuery != "" {
+							return fmt.Errorf("expected an empty pre_install_query on the wire, got %q", f.patchPreInstallQuery)
+						}
+						if f.titlePreInstallQuery != "" {
+							return fmt.Errorf("Fleet should have stored an empty query, got %q", f.titlePreInstallQuery)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// An owned query blanked out of band has to reach state, or the
+				// plan would be empty and hosts would keep no query at all.
+				PreConfig: func() {
+					f.mu.Lock()
+					f.titlePreInstallQuery = ""
+					f.mu.Unlock()
+				},
+				Config:             cfg("SELECT 1 FROM os_version WHERE major >= 26;"),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
