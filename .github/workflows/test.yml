@@ -74,7 +74,7 @@ jobs:
                   # them (Terraform >= 1.11) — an older pin here regenerates
                   # degraded docs and fails this job on any resource with a
                   # write-only attribute.
-                  terraform_version: "1.15.*"
+                  terraform_version: "1.16.*"
                   terraform_wrapper: false
             - run: go mod download
             - run: go generate ./...
