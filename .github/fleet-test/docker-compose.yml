@@ -77,7 +77,7 @@ services:
   # unlocks live configuration-profile CRUD in acceptance tests. The key must
   # be PKCS#1 ("RSA PRIVATE KEY") — Fleet's WSTEP depot rejects PKCS#8.
   mdm-certs:
-    image: alpine/openssl:3.5.7@sha256:19f8eb9004a1dbaec323eed6094e9b6bcc1dbf2697ecb5fb8d2fad4e3336a8f7
+    image: alpine/openssl:3.5.8@sha256:80b347d7b4d58e28aae515cf808ba3ce1c4a2a69a323b2cb2cb2d6d278729684
     entrypoint: /bin/sh
     command:
       - -c
