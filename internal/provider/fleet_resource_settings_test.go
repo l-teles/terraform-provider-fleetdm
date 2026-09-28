@@ -1139,6 +1139,10 @@ resource "fleetdm_fleet" "test" {
   }
 
   mdm = {
+    # Fleet 4.92 rejects a BitLocker PIN unless Windows disk encryption is on.
+    windows_settings = {
+      enable_disk_encryption = true
+    }
     windows_require_bitlocker_pin = true
     name_template                 = "tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"
     windows_updates = {
@@ -1170,6 +1174,7 @@ resource "fleetdm_fleet" "test" {
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.failing_policies_webhook.host_batch_size", "25"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_status_webhook.host_percentage", "10"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_status_webhook.days_count", "3"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "true"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_require_bitlocker_pin", "true"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.name_template", "tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_updates.deadline_days", "7"),
