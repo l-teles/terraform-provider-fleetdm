@@ -214,9 +214,10 @@ jobs:
                     fi
                     sleep 3
                   done
-                  configured=$(curl -sf http://localhost:8080/api/v1/fleet/config \
+                  curl -sf http://localhost:8080/api/v1/fleet/config \
                     -H "Authorization: Bearer ${FLEETDM_API_TOKEN}" \
-                    | python3 -c 'import sys,json; print((json.load(sys.stdin).get("mdm") or {}).get("enabled_and_configured"))')
+                    -o "${RUNNER_TEMP}/fleet-config.json"
+                  configured=$(python3 -c 'import json,os; print((json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "fleet-config.json"))).get("mdm") or {}).get("enabled_and_configured"))')
                   echo "mdm.enabled_and_configured=${configured}"
                   if [ "${configured}" != "True" ]; then
                     echo "::error::Apple MDM is not configured; the Apple-gated acceptance tests would fail on a 422."
