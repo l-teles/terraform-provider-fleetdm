@@ -11,6 +11,7 @@
 #   FLEETDM_URL         Fleet server address (default: http://localhost:8080)
 #   FLEETDM_API_TOKEN   API token obtained from setup-fleet.sh
 #   FLEETCTL_VERSION    fleetctl version to install, e.g. v4.92.1 (default: latest)
+#   FLEETCTL_INSTALL_DIR where the fleetctl binary goes (default: ~/.fleetctl)
 
 set -euo pipefail
 
@@ -23,22 +24,64 @@ STANDARD_QUERY_LIBRARY_URL="https://raw.githubusercontent.com/fleetdm/fleet/main
 # ---------------------------------------------------------------------------
 # 1. Install fleetctl
 # ---------------------------------------------------------------------------
-# Retried because GitHub release downloads occasionally return 5xx.
+# Downloads the release tarball and verifies it against the release's
+# checksums.txt, so no third-party install script is executed. Each download
+# is retried because GitHub release downloads occasionally return 5xx.
+FLEETCTL_INSTALL_DIR="${FLEETCTL_INSTALL_DIR:-$HOME/.fleetctl}"
+GITHUB_RELEASES="https://github.com/fleetdm/fleet/releases"
+
+fetch() {
+  local url="$1" out="$2" attempt
+  for attempt in 1 2 3; do
+    if curl -sSfL --retry 0 "$url" -o "$out"; then
+      return 0
+    fi
+    if [[ "$attempt" -eq 3 ]]; then
+      echo "download failed after ${attempt} attempts: ${url}" >&2
+      return 1
+    fi
+    echo "download attempt ${attempt} failed for ${url}; retrying..." >&2
+    sleep $((attempt * 10))
+  done
+}
+
+install_fleetctl() {
+  local version="$1" arch os archive tmp expected actual sha256
+  if [[ "$version" == "latest" ]]; then
+    # The /latest URL redirects to the newest non-prerelease tag.
+    version="$(curl -sSfI "${GITHUB_RELEASES}/latest" | grep -i '^location:' | grep -o 'fleet-v[0-9][^[:space:]]*' | sed 's/^fleet-v//')"
+    [[ -n "$version" ]] || { echo "could not resolve the latest fleetctl version" >&2; return 1; }
+  fi
+  version="${version#v}"
+  case "$(uname -m)" in
+    arm64 | aarch64) arch="arm64" ;;
+    *) arch="amd64" ;;
+  esac
+  case "$(uname -s)" in
+    Linux*) os="linux_${arch}"; sha256="sha256sum" ;;
+    Darwin*) os="macos"; sha256="shasum -a 256" ;;
+    *) echo "unsupported operating system: $(uname -s)" >&2; return 1 ;;
+  esac
+  archive="fleetctl_v${version}_${os}"
+  tmp="$(mktemp -d)"
+  fetch "${GITHUB_RELEASES}/download/fleet-v${version}/${archive}.tar.gz" "${tmp}/${archive}.tar.gz" || return 1
+  fetch "${GITHUB_RELEASES}/download/fleet-v${version}/checksums.txt" "${tmp}/checksums.txt" || return 1
+  expected="$(grep " ${archive}.tar.gz\$" "${tmp}/checksums.txt" | cut -d' ' -f1)"
+  actual="$($sha256 "${tmp}/${archive}.tar.gz" | cut -d' ' -f1)"
+  if [[ -z "$expected" || "$expected" != "$actual" ]]; then
+    echo "checksum mismatch for ${archive}.tar.gz (expected '${expected}', got '${actual}')" >&2
+    return 1
+  fi
+  tar -xzf "${tmp}/${archive}.tar.gz" -C "$tmp" --strip-components=1 "${archive}/fleetctl"
+  mkdir -p "$FLEETCTL_INSTALL_DIR"
+  install -m 0755 "${tmp}/fleetctl" "${FLEETCTL_INSTALL_DIR}/fleetctl"
+  rm -rf "$tmp"
+  echo "fleetctl $("${FLEETCTL_INSTALL_DIR}/fleetctl" --version | head -1 | sed 's/^fleetctl - version //') installed in ${FLEETCTL_INSTALL_DIR}" >&2
+}
+
 echo "Installing fleetctl ${FLEETCTL_VERSION}..." >&2
-for attempt in 1 2 3; do
-  if curl -sSfL https://fleetdm.com/resources/install-fleetctl.sh | FLEETCTL_VERSION="$FLEETCTL_VERSION" bash; then
-    break
-  fi
-  if [[ "$attempt" -eq 3 ]]; then
-    echo "fleetctl install failed after ${attempt} attempts." >&2
-    exit 1
-  fi
-  echo "fleetctl install attempt ${attempt} failed; retrying..." >&2
-  sleep $((attempt * 10))
-done
-# The install script places the binary in ~/.fleetctl/ which is not in PATH by default.
-export PATH="$HOME/.fleetctl:$PATH"
-echo "fleetctl installed." >&2
+install_fleetctl "$FLEETCTL_VERSION"
+export PATH="${FLEETCTL_INSTALL_DIR}:$PATH"
 
 # ---------------------------------------------------------------------------
 # 2. Configure fleetctl with server address and API token
