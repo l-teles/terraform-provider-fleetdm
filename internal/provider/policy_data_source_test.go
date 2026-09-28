@@ -34,6 +34,39 @@ func TestAccPolicyDataSource_basic(t *testing.T) {
 	})
 }
 
+// TestAccPolicyDataSource_packageAndProfileMock checks the Fleet 4.92
+// install_software.software_package_id and resend_configuration_profile echoes.
+func TestAccPolicyDataSource_packageAndProfileMock(t *testing.T) {
+	f := newFakePolicyAutomationServer(t)
+	f.titleID, f.packageID, f.profileUUID = 12, 503, "w-profile-1"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+data "fleetdm_policy" "test" {
+  id      = 42
+  team_id = 7
+}
+`, f.srv.URL),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.fleetdm_policy.test", "install_software.software_title_id", "12"),
+					resource.TestCheckResourceAttr("data.fleetdm_policy.test", "install_software.software_package_id", "503"),
+					resource.TestCheckResourceAttr("data.fleetdm_policy.test", "profile_uuid", "w-profile-1"),
+					resource.TestCheckResourceAttr("data.fleetdm_policy.test", "resend_configuration_profile.profile_uuid", "w-profile-1"),
+					resource.TestCheckResourceAttr("data.fleetdm_policy.test", "resend_configuration_profile.name", "Profile w-profile-1"),
+				),
+			},
+		},
+	})
+}
+
 // TestAccPolicyDataSource_labelScopingAndContinuousAutomations verifies the
 // Fleet 4.90 fields surface through the data source. Uses a team policy
 // because continuous_automations_enabled is team-only, and keeps the include

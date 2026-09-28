@@ -37,6 +37,7 @@ type PolicyDataSourceModel struct {
 	PatchSoftwareTitleID         types.Int64  `tfsdk:"patch_software_title_id"`
 	SoftwareTitleID              types.Int64  `tfsdk:"software_title_id"`
 	ScriptID                     types.Int64  `tfsdk:"script_id"`
+	ProfileUUID                  types.String `tfsdk:"profile_uuid"`
 	LabelsIncludeAny             types.Set    `tfsdk:"labels_include_any"`
 	LabelsExcludeAny             types.Set    `tfsdk:"labels_exclude_any"`
 	LabelsIncludeAll             types.Set    `tfsdk:"labels_include_all"`
@@ -56,6 +57,7 @@ type PolicyDataSourceModel struct {
 	InstallSoftware              types.Object `tfsdk:"install_software"`
 	RunScript                    types.Object `tfsdk:"run_script"`
 	PatchSoftware                types.Object `tfsdk:"patch_software"`
+	ResendConfigurationProfile   types.Object `tfsdk:"resend_configuration_profile"`
 }
 
 func (d *PolicyDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -190,6 +192,10 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 				Attributes: map[string]schema.Attribute{
 					"name":              schema.StringAttribute{Computed: true},
 					"software_title_id": schema.Int64Attribute{Computed: true},
+					"software_package_id": schema.Int64Attribute{
+						Computed:            true,
+						MarkdownDescription: "ID of the package Fleet installs. Null for App Store (VPP) apps and on Fleet versions before 4.92.",
+					},
 				},
 			},
 			"run_script": schema.SingleNestedAttribute{
@@ -198,6 +204,18 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 				Attributes: map[string]schema.Attribute{
 					"name": schema.StringAttribute{Computed: true},
 					"id":   schema.Int64Attribute{Computed: true},
+				},
+			},
+			"profile_uuid": schema.StringAttribute{
+				Computed:            true,
+				MarkdownDescription: "UUID of the configuration profile resent to hosts that fail the policy. _Fleet Premium 4.92+, team policies only._",
+			},
+			"resend_configuration_profile": schema.SingleNestedAttribute{
+				Computed:            true,
+				MarkdownDescription: "Echo of the resend-configuration-profile automation attached to this policy (Fleet 4.92+).",
+				Attributes: map[string]schema.Attribute{
+					"profile_uuid": schema.StringAttribute{Computed: true},
+					"name":         schema.StringAttribute{Computed: true},
 				},
 			},
 			"patch_software": schema.SingleNestedAttribute{
@@ -266,6 +284,7 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 
 	data.SoftwareTitleID, data.InstallSoftware = mapInstallSoftware(policy.InstallSoftware, &resp.Diagnostics)
 	data.ScriptID, data.RunScript = mapRunScript(policy.RunScript, &resp.Diagnostics)
+	data.ProfileUUID, data.ResendConfigurationProfile = mapResendProfile(policy.ResendConfigurationProfile, &resp.Diagnostics)
 	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

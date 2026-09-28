@@ -81,7 +81,9 @@ output "compliance_rate" {
 - `patch_software` (Attributes) Echo of the patch-software target for `type = "patch"` policies. (see [below for nested schema](#nestedatt--patch_software))
 - `patch_software_title_id` (Number) ID of the Fleet-maintained software title for `type = "patch"` policies.
 - `platform` (List of String) List of platforms this policy applies to (darwin, linux, windows, chrome). Empty list means all platforms.
+- `profile_uuid` (String) UUID of the configuration profile resent to hosts that fail the policy. _Fleet Premium 4.92+, team policies only._
 - `query` (String) The SQL query that defines the policy. For patch policies, this is the query Fleet generates from the linked software title.
+- `resend_configuration_profile` (Attributes) Echo of the resend-configuration-profile automation attached to this policy (Fleet 4.92+). (see [below for nested schema](#nestedatt--resend_configuration_profile))
 - `resolution` (String) Instructions for resolving a failing policy.
 - `run_script` (Attributes) Echo of the run-script automation attached to this policy. (see [below for nested schema](#nestedatt--run_script))
 - `script_id` (Number) ID of the script to run if the policy fails (run-script automation).
@@ -95,6 +97,7 @@ output "compliance_rate" {
 Read-Only:
 
 - `name` (String)
+- `software_package_id` (Number) ID of the package Fleet installs. Null for App Store (VPP) apps and on Fleet versions before 4.92.
 - `software_title_id` (Number)
 
 
@@ -106,6 +109,15 @@ Read-Only:
 - `display_name` (String)
 - `name` (String)
 - `software_title_id` (Number)
+
+
+<a id="nestedatt--resend_configuration_profile"></a>
+### Nested Schema for `resend_configuration_profile`
+
+Read-Only:
+
+- `name` (String)
+- `profile_uuid` (String)
 
 
 <a id="nestedatt--run_script"></a>

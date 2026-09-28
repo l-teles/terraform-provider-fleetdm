@@ -2,11 +2,16 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -14,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
@@ -1299,4 +1305,415 @@ func addFleetMaintainedAppOutOfBand(t *testing.T, fleetName, appName, platform s
 		t.Fatalf("failed to add fleet-maintained app %q: %v", appName, err)
 	}
 	return fleet.ID, int64(title.ID)
+}
+
+// fakePolicyAutomationServer is a stateful stand-in for Fleet 4.92's team
+// policy endpoints, covering software_package_id and profile_uuid. It records
+// every create/update body so tests can assert what went on the wire.
+type fakePolicyAutomationServer struct {
+	srv *httptest.Server
+
+	mu          sync.Mutex
+	bodies      []map[string]json.RawMessage
+	description string
+	platform    string
+	titleID     int64
+	packageID   int64
+	profileUUID string
+}
+
+// fakePolicyDefaultPackageID is the package the fake resolves when a title is
+// set without a pinned package, like Fleet's first-added package.
+const fakePolicyDefaultPackageID = 501
+
+func newFakePolicyAutomationServer(t *testing.T) *fakePolicyAutomationServer {
+	t.Helper()
+	f := &fakePolicyAutomationServer{}
+	const base = "/api/v1/fleet/fleets/7/policies"
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == base && r.Method == http.MethodPost:
+			f.apply(t, r, true)
+		case r.URL.Path == base+"/42" && r.Method == http.MethodPatch:
+			f.apply(t, r, false)
+		case r.URL.Path == base+"/42" && r.Method == http.MethodGet:
+		case r.URL.Path == base+"/delete" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"deleted":[42]}`))
+			return
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"policy": f.policy()})
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// apply mirrors Fleet's handling: the title is re-resolved whenever it is
+// sent (a zero or absent package selecting the default), and an absent
+// profile_uuid leaves the profile unchanged.
+func (f *fakePolicyAutomationServer) apply(t *testing.T, r *http.Request, create bool) {
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Errorf("decode request body: %v", err)
+		return
+	}
+	f.bodies = append(f.bodies, body)
+	if raw, ok := body["description"]; ok {
+		_ = json.Unmarshal(raw, &f.description)
+	}
+	if raw, ok := body["platform"]; ok {
+		_ = json.Unmarshal(raw, &f.platform)
+	}
+	if raw, ok := body["software_title_id"]; ok || create {
+		var title, pkg int64
+		_ = json.Unmarshal(raw, &title)
+		_ = json.Unmarshal(body["software_package_id"], &pkg)
+		f.titleID, f.packageID = title, 0
+		if title != 0 {
+			f.packageID = fakePolicyDefaultPackageID
+			if pkg != 0 {
+				f.packageID = pkg
+			}
+		}
+	}
+	if raw, ok := body["profile_uuid"]; ok {
+		_ = json.Unmarshal(raw, &f.profileUUID)
+	}
+}
+
+func (f *fakePolicyAutomationServer) policy() map[string]any {
+	p := map[string]any{
+		"id":          42,
+		"name":        "tf-mock-policy",
+		"query":       "SELECT 1;",
+		"description": f.description,
+		"platform":    f.platform,
+		"team_id":     7,
+		"type":        "dynamic",
+	}
+	if f.titleID != 0 {
+		p["install_software"] = map[string]any{
+			"name":                "Mock App",
+			"software_title_id":   f.titleID,
+			"software_package_id": f.packageID,
+		}
+	}
+	if f.profileUUID != "" {
+		p["resend_configuration_profile"] = map[string]any{
+			"profile_uuid": f.profileUUID,
+			"name":         "Profile " + f.profileUUID,
+		}
+	}
+	return p
+}
+
+// expectLastBody asserts the most recent create/update body carries each key
+// with the given raw JSON value, or lacks the key when the value is "".
+func (f *fakePolicyAutomationServer) expectLastBody(want map[string]string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.bodies) == 0 {
+			return fmt.Errorf("no create/update request recorded")
+		}
+		body := f.bodies[len(f.bodies)-1]
+		for key, value := range want {
+			raw, ok := body[key]
+			switch {
+			case value == "" && ok:
+				return fmt.Errorf("expected %s to be absent from the request, got %s", key, raw)
+			case value != "" && string(raw) != value:
+				return fmt.Errorf("expected %s=%s in the request, got %q", key, value, raw)
+			}
+		}
+		return nil
+	}
+}
+
+func testAccPolicyAutomationMockConfig(serverURL, description, automation string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_policy" "test" {
+  name              = "tf-mock-policy"
+  query             = "SELECT 1;"
+  description       = %[2]q
+  team_id           = 7
+  platform          = ["darwin"]
+  software_title_id = 12
+%[3]s}
+`, serverURL, description, automation)
+}
+
+// TestAccPolicyResource_packageAndProfileMock walks software_package_id and
+// profile_uuid through set, unrelated update, change and removal against a
+// mock Fleet, asserting the wire body at each step.
+func TestAccPolicyResource_packageAndProfileMock(t *testing.T) {
+	f := newFakePolicyAutomationServer(t)
+	pinned := func(pkg int, profile string) string {
+		return fmt.Sprintf("  software_package_id = %d\n  profile_uuid        = %q\n", pkg, profile)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccPolicyAutomationMockConfig(f.srv.URL, "one", pinned(502, "a-profile-1")),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					f.expectLastBody(map[string]string{"software_package_id": "502", "profile_uuid": `"a-profile-1"`}),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "software_package_id", "502"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "install_software.software_package_id", "502"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "profile_uuid", "a-profile-1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "resend_configuration_profile.profile_uuid", "a-profile-1"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "resend_configuration_profile.name", "Profile a-profile-1"),
+				),
+			},
+			{
+				Config:   testAccPolicyAutomationMockConfig(f.srv.URL, "one", pinned(502, "a-profile-1")),
+				PlanOnly: true,
+			},
+			{
+				// Import cannot tell a pinned package from Fleet's default, so
+				// software_package_id is not adopted.
+				ResourceName:            "fleetdm_policy.test",
+				ImportState:             true,
+				ImportStateId:           "7:42",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"software_package_id"},
+			},
+			{
+				// An unrelated change must still send the pin, or Fleet would
+				// fall back to the default package.
+				Config: testAccPolicyAutomationMockConfig(f.srv.URL, "two", pinned(502, "a-profile-1")),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					f.expectLastBody(map[string]string{"software_package_id": "502", "profile_uuid": `"a-profile-1"`}),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "install_software.software_package_id", "502"),
+				),
+			},
+			{
+				Config: testAccPolicyAutomationMockConfig(f.srv.URL, "two", pinned(503, "a-profile-2")),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					f.expectLastBody(map[string]string{"software_package_id": "503", "profile_uuid": `"a-profile-2"`}),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "software_package_id", "503"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "resend_configuration_profile.profile_uuid", "a-profile-2"),
+				),
+			},
+			{
+				Config: testAccPolicyAutomationMockConfig(f.srv.URL, "two", ""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					f.expectLastBody(map[string]string{"software_package_id": "0", "profile_uuid": `""`}),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "software_package_id"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "install_software.software_package_id", strconv.Itoa(fakePolicyDefaultPackageID)),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "profile_uuid"),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "resend_configuration_profile.profile_uuid"),
+				),
+			},
+			{
+				Config:   testAccPolicyAutomationMockConfig(f.srv.URL, "two", ""),
+				PlanOnly: true,
+			},
+			{
+				// With nothing to clear, neither key goes on the wire.
+				Config: testAccPolicyAutomationMockConfig(f.srv.URL, "three", ""),
+				Check:  f.expectLastBody(map[string]string{"software_package_id": "", "profile_uuid": ""}),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_packageAndProfileValidators pins the plan-time checks
+// on software_package_id and profile_uuid. No request reaches the server.
+func TestAccPolicyResource_packageAndProfileValidators(t *testing.T) {
+	cfg := func(body string) string {
+		return `
+provider "fleetdm" {
+  server_address = "http://127.0.0.1:1"
+  api_key        = "test-token"
+}
+
+resource "fleetdm_policy" "test" {
+  name  = "tf-mock-policy"
+  query = "SELECT 1;"
+` + body + `}
+`
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cfg("  team_id = 7\n  platform = [\"linux\"]\n  profile_uuid = \"a-profile\"\n"),
+				ExpectError: regexp.MustCompile(`(?s)profile_uuid\s+is\s+only\s+supported\s+on\s+policies\s+whose\s+platform\s+includes`),
+			},
+			{
+				Config:      cfg("  team_id = 7\n  platform = [\"linux\", \"chrome\"]\n  profile_uuid = \"w-profile\"\n"),
+				ExpectError: regexp.MustCompile(`(?s)Unsupported\s+platform`),
+			},
+			{
+				Config:      cfg("  profile_uuid = \"a-profile\"\n"),
+				ExpectError: regexp.MustCompile(`(?s)profile_uuid\s+is\s+only\s+supported\s+on\s+team\s+policies`),
+			},
+			{
+				Config:      cfg("  team_id = 7\n  profile_uuid = \"\"\n"),
+				ExpectError: regexp.MustCompile(`(?s)string\s+length\s+must\s+be\s+at\s+least\s+1`),
+			},
+			{
+				Config:      cfg("  team_id = 7\n  software_package_id = 5\n"),
+				ExpectError: regexp.MustCompile(`(?s)Attribute\s+"software_title_id"\s+must\s+be\s+specified\s+when\s+"software_package_id"\s+is\s+specified`),
+			},
+			{
+				Config:      cfg("  team_id = 7\n  software_title_id = 12\n  software_package_id = 0\n"),
+				ExpectError: regexp.MustCompile(`(?s)must\s+be\s+at\s+least\s+1`),
+			},
+			{
+				Config:      cfg("  software_title_id = 12\n  software_package_id = 5\n"),
+				ExpectError: regexp.MustCompile(`(?s)software_package_id\s+is\s+only\s+supported\s+on\s+team\s+policies`),
+			},
+		},
+	})
+}
+
+// TestPolicyPlatformsCanResendProfile mirrors Fleet's PolicyVerifyResendProfile
+// platform rule.
+func TestPolicyPlatformsCanResendProfile(t *testing.T) {
+	list := func(elems ...attr.Value) types.List {
+		return types.ListValueMust(types.StringType, elems)
+	}
+	cases := []struct {
+		name string
+		in   types.List
+		want bool
+	}{
+		{"null", types.ListNull(types.StringType), true},
+		{"unknown", types.ListUnknown(types.StringType), true},
+		{"empty means all platforms", list(), true},
+		{"darwin", list(types.StringValue("darwin")), true},
+		{"windows among others", list(types.StringValue("linux"), types.StringValue("windows")), true},
+		{"linux only", list(types.StringValue("linux")), false},
+		{"linux and chrome", list(types.StringValue("linux"), types.StringValue("chrome")), false},
+		{"unknown element defers", list(types.StringValue("linux"), types.StringUnknown()), true},
+	}
+	for _, tc := range cases {
+		if got := policyPlatformsCanResendProfile(tc.in); got != tc.want {
+			t.Errorf("%s: want %t, got %t", tc.name, tc.want, got)
+		}
+	}
+}
+
+// skipPolicyResendProfileBeforeFleet492 skips a live test when the server
+// predates Fleet 4.92, which ignores profile_uuid and never echoes it. An
+// unparsable version runs the test rather than hiding it.
+func skipPolicyResendProfileBeforeFleet492(t *testing.T) {
+	t.Helper()
+	client, err := fleetdm.NewClient(fleetdm.ClientConfig{
+		ServerAddress: os.Getenv("FLEETDM_URL"),
+		APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
+		VerifyTLS:     os.Getenv("FLEETDM_VERIFY_TLS") != "false" && os.Getenv("FLEETDM_VERIFY_TLS") != "0",
+	})
+	if err != nil {
+		t.Fatalf("failed to build fleet client: %v", err)
+	}
+	info, err := client.GetVersion(context.Background())
+	if err != nil {
+		t.Fatalf("failed to read the Fleet version: %v", err)
+	}
+	parts := strings.SplitN(strings.TrimPrefix(info.Version, "v"), ".", 3)
+	if len(parts) < 2 {
+		return
+	}
+	major, errMajor := strconv.Atoi(parts[0])
+	minor, errMinor := strconv.Atoi(parts[1])
+	if errMajor != nil || errMinor != nil {
+		return
+	}
+	if major < 4 || (major == 4 && minor < 92) {
+		t.Skipf("profile_uuid needs Fleet 4.92+, server reports %s", info.Version)
+	}
+}
+
+// TestAccPolicyResource_profileUUIDLive attaches a team Apple configuration
+// profile to a policy's resend automation against a live Fleet, then clears it.
+func TestAccPolicyResource_profileUUIDLive(t *testing.T) {
+	suffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	fleetName := "tf-acc-resend-" + suffix
+	policyName := "tf-acc-test-resend-" + suffix
+	profileName := "TF Acc Resend " + suffix
+
+	cfg := func(withProfile bool) string {
+		profileLine := ""
+		if withProfile {
+			profileLine = "  profile_uuid = fleetdm_configuration_profile.test.profile_uuid\n"
+		}
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+}
+
+resource "fleetdm_configuration_profile" "test" {
+  team_id         = fleetdm_fleet.test.id
+  profile_content = %[2]q
+}
+
+resource "fleetdm_policy" "test" {
+  name     = %[3]q
+  query    = "SELECT 1;"
+  team_id  = fleetdm_fleet.test.id
+  platform = ["darwin"]
+%[4]s}
+`, fleetName, appleLiveMobileConfig("com.example.tfacc.resend."+suffix, profileName), policyName, profileLine)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			skipPolicyResendProfileBeforeFleet492(t)
+		},
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttrPair("fleetdm_policy.test", "profile_uuid", "fleetdm_configuration_profile.test", "profile_uuid"),
+					resource.TestCheckResourceAttrPair("fleetdm_policy.test", "resend_configuration_profile.profile_uuid", "fleetdm_configuration_profile.test", "profile_uuid"),
+					resource.TestCheckResourceAttr("fleetdm_policy.test", "resend_configuration_profile.name", profileName),
+				),
+			},
+			{
+				Config:   cfg(true),
+				PlanOnly: true,
+			},
+			{
+				ResourceName:      "fleetdm_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				ImportStateIdFunc: func(s *terraform.State) (string, error) {
+					rs, ok := s.RootModule().Resources["fleetdm_policy.test"]
+					if !ok {
+						return "", fmt.Errorf("fleetdm_policy.test not found in state")
+					}
+					return rs.Primary.Attributes["team_id"] + ":" + rs.Primary.Attributes["id"], nil
+				},
+			},
+			{
+				Config: cfg(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "profile_uuid"),
+					resource.TestCheckNoResourceAttr("fleetdm_policy.test", "resend_configuration_profile.profile_uuid"),
+				),
+			},
+			{
+				Config:   cfg(false),
+				PlanOnly: true,
+			},
+		},
+	})
 }
