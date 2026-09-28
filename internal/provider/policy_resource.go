@@ -726,8 +726,19 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
-	checkFleet492AutomationsEchoed(planned, data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	var echo diag.Diagnostics
+	checkFleet492AutomationsEchoed(planned, data, &echo)
+	if echo.HasError() {
+		// Nothing is in state yet, so the policy Fleet just created would be
+		// orphaned and a retry would create a second one. Remove it.
+		if err := r.client.DeletePolicy(ctx, policy.ID, optionalIntPtr(data.TeamID)); err != nil {
+			echo.AddError("Error Cleaning Up FleetDM Policy",
+				fmt.Sprintf("Policy %d was created but its automation was not applied, and deleting it again failed: %s. Delete it in Fleet or import it.", policy.ID, err))
+		}
+		resp.Diagnostics.Append(echo...)
 		return
 	}
 

@@ -1323,6 +1323,8 @@ type fakePolicyAutomationServer struct {
 	// pre492 makes the fake behave like an older Fleet: the two 4.92 keys are
 	// ignored on write and never echoed.
 	pre492 bool
+	// deleted counts the delete requests the fake received.
+	deleted int
 }
 
 // fakePolicyDefaultPackageID is the package the fake resolves when a title is
@@ -1344,6 +1346,7 @@ func newFakePolicyAutomationServer(t *testing.T) *fakePolicyAutomationServer {
 			f.apply(t, r, false)
 		case r.URL.Path == base+"/42" && r.Method == http.MethodGet:
 		case r.URL.Path == base+"/delete" && r.Method == http.MethodPost:
+			f.deleted++
 			_, _ = w.Write([]byte(`{"deleted":[42]}`))
 			return
 		default:
@@ -1461,10 +1464,18 @@ resource "fleetdm_policy" "test" {
 
 // TestAccPolicyResource_automationsNotEchoedMock pins a package and a profile
 // against a fake that ignores both, as a Fleet before 4.92 does, and expects
-// the named errors instead of a generic inconsistent result.
+// the named errors instead of a generic inconsistent result. Each failed
+// create must also delete the policy Fleet made, or a retry would duplicate it.
 func TestAccPolicyResource_automationsNotEchoedMock(t *testing.T) {
 	f := newFakePolicyAutomationServer(t)
 	f.pre492 = true
+	t.Cleanup(func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.deleted != 2 {
+			t.Errorf("expected both failed creates to delete the policy, got %d delete requests", f.deleted)
+		}
+	})
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
