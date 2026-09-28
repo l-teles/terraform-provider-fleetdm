@@ -222,7 +222,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional: true,
 				MarkdownDescription: "UUID of the configuration profile to resend to hosts that fail the policy, typically `fleetdm_configuration_profile.<name>.profile_uuid`. " +
 					"Fleet accepts Apple configuration profiles and Windows profiles, but not Apple declarations (DDM). The policy's `platform` must include `darwin` or `windows`, or be empty (all platforms). " +
-					"Set to `null` to clear the automation. _Available in Fleet Premium 4.92+, team policies only._",
+					"Set to `null` to clear the automation. A profile attached outside Terraform is read into state and cleared on the next apply unless it is set here. _Available in Fleet Premium 4.92+, team policies only._",
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
 				},

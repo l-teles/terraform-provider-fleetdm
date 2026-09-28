@@ -142,11 +142,11 @@ func fleetSchemaAttributes() map[string]schema.Attribute {
 		"enable_disk_encryption": schema.BoolAttribute{
 			Description: "Whether disk encryption is enforced for hosts in this fleet. Deprecated: prefer mdm.macos_settings, mdm.windows_settings and mdm.linux_settings. " +
 				"On Fleet 4.92 and later this reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. " +
-				"It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. Conflicts with the per-platform disk encryption attributes.",
+				"It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. An explicit false shows no drift while only some platforms are enabled in Fleet, yet every apply still turns all four off. Conflicts with the per-platform disk encryption attributes.",
 			MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.\n\n" +
 				"~> **Deprecated:** prefer `mdm.macos_settings`, `mdm.windows_settings` and `mdm.linux_settings`. " +
 				"On Fleet 4.92 and later this attribute reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. " +
-				"It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. It conflicts with the per-platform disk encryption attributes.",
+				"It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. An explicit `false` shows no drift while only some platforms are enabled in Fleet, yet every apply still turns all four off. It conflicts with the per-platform disk encryption attributes.",
 			DeprecationMessage: "Use the per-platform settings mdm.macos_settings.enable_disk_encryption, mdm.macos_settings.enable_escrow_disk_encryption_key, mdm.windows_settings.enable_disk_encryption and mdm.linux_settings.enable_escrow_disk_encryption_key instead (requires Fleet 4.92.0 or later).",
 			Optional:           true,
 			Computed:           true,

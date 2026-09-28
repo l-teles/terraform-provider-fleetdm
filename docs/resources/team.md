@@ -40,9 +40,21 @@ resource "fleetdm_team" "secure_workstations" {
   name        = "Secure Workstations"
   description = "Workstations with enhanced security"
 
-  enable_disk_encryption = true
-  host_expiry_enabled    = true
-  host_expiry_window     = 14
+  host_expiry_enabled = true
+  host_expiry_window  = 14
+
+  mdm = {
+    macos_settings = {
+      enable_disk_encryption            = true
+      enable_escrow_disk_encryption_key = true
+    }
+    windows_settings = {
+      enable_disk_encryption = true
+    }
+    linux_settings = {
+      enable_escrow_disk_encryption_key = true
+    }
+  }
 }
 ```
 
@@ -58,7 +70,7 @@ resource "fleetdm_team" "secure_workstations" {
 - `description` (String) A description of the fleet.
 - `enable_disk_encryption` (Boolean, Deprecated) Whether disk encryption is enforced for hosts in this fleet.
 
-~> **Deprecated:** prefer `mdm.macos_settings`, `mdm.windows_settings` and `mdm.linux_settings`. On Fleet 4.92 and later this attribute reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. It conflicts with the per-platform disk encryption attributes.
+~> **Deprecated:** prefer `mdm.macos_settings`, `mdm.windows_settings` and `mdm.linux_settings`. On Fleet 4.92 and later this attribute reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. An explicit `false` shows no drift while only some platforms are enabled in Fleet, yet every apply still turns all four off. It conflicts with the per-platform disk encryption attributes.
 - `features` (Attributes) Feature settings for this fleet. Only historical_data is writable through the fleet API; enable_host_users, enable_software_inventory and additional_queries can only be set per-fleet through Fleet's GitOps fleet spec, so they are not exposed here. (see [below for nested schema](#nestedatt--features))
 - `host_expiry_enabled` (Boolean) Whether host expiry is enabled for this fleet.
 - `host_expiry_window` (Number) The number of days after which hosts are considered expired.

@@ -47,10 +47,6 @@ func webhookURLValidators() []validator.String {
 	}
 }
 
-// webhookURLSecurityNote is appended to every webhook destination description.
-// Webhook payloads carry host identifiers, and a webhook URL is often a
-// capability URL whose path is the only thing authenticating the caller, so
-// both the payload and the URL itself want transport encryption.
 // perPlatformDiskEncryptionPaths are the four settings the deprecated flat
 // enable_disk_encryption fans out to. Fleet rejects a request that changes
 // both to disagreeing values, so the provider refuses the combination.
@@ -68,6 +64,10 @@ func perPlatformDiskEncryptionPaths() []path.Expression {
 // carry disk encryption keys.
 const diskEncryptionGateNote = " Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. Conflicts with the deprecated top-level enable_disk_encryption."
 
+// webhookURLSecurityNote is appended to every webhook destination description.
+// Webhook payloads carry host identifiers, and a webhook URL is often a
+// capability URL whose path is the only thing authenticating the caller, so
+// both the payload and the URL itself want transport encryption.
 const webhookURLSecurityNote = " Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http."
 
 // This file holds the nested settings blocks of fleetdm_fleet: webhook_settings,

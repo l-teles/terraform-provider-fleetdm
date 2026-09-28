@@ -18,7 +18,19 @@ resource "fleetdm_team" "secure_workstations" {
   name        = "Secure Workstations"
   description = "Workstations with enhanced security"
 
-  enable_disk_encryption = true
-  host_expiry_enabled    = true
-  host_expiry_window     = 14
+  host_expiry_enabled = true
+  host_expiry_window  = 14
+
+  mdm = {
+    macos_settings = {
+      enable_disk_encryption            = true
+      enable_escrow_disk_encryption_key = true
+    }
+    windows_settings = {
+      enable_disk_encryption = true
+    }
+    linux_settings = {
+      enable_escrow_disk_encryption_key = true
+    }
+  }
 }

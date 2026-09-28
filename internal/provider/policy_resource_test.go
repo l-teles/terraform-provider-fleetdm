@@ -1609,10 +1609,10 @@ func TestPolicyPlatformsCanResendProfile(t *testing.T) {
 	}
 }
 
-// skipPolicyResendProfileBeforeFleet492 skips a live test when the server
-// predates Fleet 4.92, which ignores profile_uuid and never echoes it. An
-// unparsable version runs the test rather than hiding it.
-func skipPolicyResendProfileBeforeFleet492(t *testing.T) {
+// skipBeforeFleet492 skips a live test when the server predates Fleet 4.92,
+// which ignores the 4.92 keys and never echoes them. An unparsable version
+// runs the test rather than hiding it.
+func skipBeforeFleet492(t *testing.T) {
 	t.Helper()
 	client, err := fleetdm.NewClient(fleetdm.ClientConfig{
 		ServerAddress: os.Getenv("FLEETDM_URL"),
@@ -1675,7 +1675,7 @@ resource "fleetdm_policy" "test" {
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
-			skipPolicyResendProfileBeforeFleet492(t)
+			skipBeforeFleet492(t)
 		},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
