@@ -1320,6 +1320,9 @@ type fakePolicyAutomationServer struct {
 	titleID     int64
 	packageID   int64
 	profileUUID string
+	// pre492 makes the fake behave like an older Fleet: the two 4.92 keys are
+	// ignored on write and never echoed.
+	pre492 bool
 }
 
 // fakePolicyDefaultPackageID is the package the fake resolves when a title is
@@ -1377,12 +1380,12 @@ func (f *fakePolicyAutomationServer) apply(t *testing.T, r *http.Request, create
 		f.titleID, f.packageID = title, 0
 		if title != 0 {
 			f.packageID = fakePolicyDefaultPackageID
-			if pkg != 0 {
+			if pkg != 0 && !f.pre492 {
 				f.packageID = pkg
 			}
 		}
 	}
-	if raw, ok := body["profile_uuid"]; ok {
+	if raw, ok := body["profile_uuid"]; ok && !f.pre492 {
 		_ = json.Unmarshal(raw, &f.profileUUID)
 	}
 }
@@ -1399,9 +1402,11 @@ func (f *fakePolicyAutomationServer) policy() map[string]any {
 	}
 	if f.titleID != 0 {
 		p["install_software"] = map[string]any{
-			"name":                "Mock App",
-			"software_title_id":   f.titleID,
-			"software_package_id": f.packageID,
+			"name":              "Mock App",
+			"software_title_id": f.titleID,
+		}
+		if !f.pre492 {
+			p["install_software"].(map[string]any)["software_package_id"] = f.packageID
 		}
 	}
 	if f.profileUUID != "" {
@@ -1452,6 +1457,28 @@ resource "fleetdm_policy" "test" {
   software_title_id = 12
 %[3]s}
 `, serverURL, description, automation)
+}
+
+// TestAccPolicyResource_automationsNotEchoedMock pins a package and a profile
+// against a fake that ignores both, as a Fleet before 4.92 does, and expects
+// the named errors instead of a generic inconsistent result.
+func TestAccPolicyResource_automationsNotEchoedMock(t *testing.T) {
+	f := newFakePolicyAutomationServer(t)
+	f.pre492 = true
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccPolicyAutomationMockConfig(f.srv.URL, "one", "  software_package_id = 502\n"),
+				ExpectError: regexp.MustCompile(`(?s)Software\s+package\s+pin\s+was\s+not\s+applied.*Fleet\s+4\.92\.0`),
+			},
+			{
+				Config:      testAccPolicyAutomationMockConfig(f.srv.URL, "one", "  profile_uuid = \"a-profile-1\"\n"),
+				ExpectError: regexp.MustCompile(`(?s)Configuration\s+profile\s+resend\s+was\s+not\s+applied.*Fleet\s+4\.92\.0`),
+			},
+		},
+	})
 }
 
 // TestAccPolicyResource_packageAndProfileMock walks software_package_id and

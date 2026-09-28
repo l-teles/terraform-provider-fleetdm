@@ -724,7 +724,9 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		policy = updated
 	}
 
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
+	checkFleet492AutomationsEchoed(planned, data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -783,7 +785,9 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
+	checkFleet492AutomationsEchoed(planned, data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -1074,6 +1078,24 @@ func mapSoftwarePackageID(current types.Int64, s *fleetdm.PolicyAutomationSoftwa
 		return types.Int64Null()
 	}
 	return types.Int64PointerValue(s.SoftwarePackageID)
+}
+
+// checkFleet492AutomationsEchoed turns a silently ignored software_package_id
+// or profile_uuid into a named error. A Fleet before 4.92 drops both keys
+// without echoing them, and a VPP title has no package to pin, so the state
+// would otherwise disagree with the plan and Terraform would only report a
+// generic inconsistent result.
+func checkFleet492AutomationsEchoed(planned policyPriorAutomations, got PolicyResourceModel, diags *diag.Diagnostics) {
+	if !planned.SoftwarePackageID.IsNull() && !planned.SoftwarePackageID.IsUnknown() && got.SoftwarePackageID.IsNull() {
+		diags.AddAttributeError(path.Root("software_package_id"),
+			"Software package pin was not applied",
+			"Fleet accepted the policy but did not report a pinned package. This needs Fleet 4.92.0 or later and a software title backed by a package (App Store apps cannot be pinned). Remove software_package_id or upgrade Fleet.")
+	}
+	if !planned.ProfileUUID.IsNull() && !planned.ProfileUUID.IsUnknown() && got.ProfileUUID.IsNull() {
+		diags.AddAttributeError(path.Root("profile_uuid"),
+			"Configuration profile resend was not applied",
+			"Fleet accepted the policy but did not report a profile to resend. This needs Fleet 4.92.0 or later. Remove profile_uuid or upgrade Fleet.")
+	}
 }
 
 // mapResendProfile extracts the flat profile_uuid from the nested
