@@ -9,6 +9,12 @@
   },
   "packageRules": [
     {
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "enabled": true,
+      "description": "Renovate skips `// indirect` Go modules unless told otherwise, so a security fix in a transitive module (grpc GO-2026-6443, reached through terraform-plugin-go) never produced a PR and only surfaced as a govulncheck failure on main. Enabling them also lets Renovate's vulnerability-alert PRs, which bypass minimumReleaseAge and grouping, act on them."
+    },
+    {
       "matchDatasources": ["docker"],
       "matchPackageNames": ["mysql"],
       "allowedVersions": "<9",
