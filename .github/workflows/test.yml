@@ -132,7 +132,7 @@ jobs:
                     - "1.14.*"
                     - "1.15.*"
                 fleet_tag:
-                    - "v4.91.0"
+                    - "v4.92.1"
                 include:
                     # Canary: latest Fleet release on one Terraform version, so a
                     # breaking Fleet update is visible but isolated from the pinned
@@ -233,6 +233,7 @@ jobs:
               env:
                   FLEETDM_URL: ${{ env.FLEETDM_URL }}
                   FLEETDM_API_TOKEN: ${{ env.FLEETDM_API_TOKEN }}
+                  FLEETCTL_VERSION: ${{ matrix.fleet_tag }}
 
             - name: Show Fleet container logs on failure
               if: failure()

@@ -10,19 +10,32 @@
 # Environment variables:
 #   FLEETDM_URL         Fleet server address (default: http://localhost:8080)
 #   FLEETDM_API_TOKEN   API token obtained from setup-fleet.sh
+#   FLEETCTL_VERSION    fleetctl version to install, e.g. v4.92.1 (default: latest)
 
 set -euo pipefail
 
 FLEET_URL="${FLEETDM_URL:-http://localhost:8080}"
 API_TOKEN="${FLEETDM_API_TOKEN}"
+FLEETCTL_VERSION="${FLEETCTL_VERSION:-latest}"
 
 STANDARD_QUERY_LIBRARY_URL="https://raw.githubusercontent.com/fleetdm/fleet/main/docs/01-Using-Fleet/standard-query-library/standard-query-library.yml"
 
 # ---------------------------------------------------------------------------
 # 1. Install fleetctl
 # ---------------------------------------------------------------------------
-echo "Installing fleetctl..." >&2
-curl -sSL https://fleetdm.com/resources/install-fleetctl.sh | bash
+# Retried because GitHub release downloads occasionally return 5xx.
+echo "Installing fleetctl ${FLEETCTL_VERSION}..." >&2
+for attempt in 1 2 3; do
+  if curl -sSfL https://fleetdm.com/resources/install-fleetctl.sh | FLEETCTL_VERSION="$FLEETCTL_VERSION" bash; then
+    break
+  fi
+  if [[ "$attempt" -eq 3 ]]; then
+    echo "fleetctl install failed after ${attempt} attempts." >&2
+    exit 1
+  fi
+  echo "fleetctl install attempt ${attempt} failed; retrying..." >&2
+  sleep $((attempt * 10))
+done
 # The install script places the binary in ~/.fleetctl/ which is not in PATH by default.
 export PATH="$HOME/.fleetctl:$PATH"
 echo "fleetctl installed." >&2
