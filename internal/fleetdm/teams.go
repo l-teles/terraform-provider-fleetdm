@@ -76,8 +76,13 @@ type TeamWebhookSettings struct {
 // (a pointer to the zero value), which is also the only way to clear
 // name_template or the OS update settings.
 type TeamMDMSettings struct {
-	EnableDiskEncryption       *bool   `json:"enable_disk_encryption,omitempty"`
-	EnableRecoveryLockPassword *bool   `json:"enable_recovery_lock_password,omitempty"`
+	// EnableDiskEncryption is deprecated by Fleet 4.92 in favour of the
+	// per-platform keys. Fleet reports it as the AND of the four per-platform
+	// settings, and applies it to all four when it is sent.
+	EnableDiskEncryption       *bool `json:"enable_disk_encryption,omitempty"`
+	EnableRecoveryLockPassword *bool `json:"enable_recovery_lock_password,omitempty"`
+	// WindowsRequireBitlockerPIN is Fleet's deprecated alias for
+	// WindowsSettings.RequireBitlockerPIN.
 	WindowsRequireBitlockerPIN *bool   `json:"windows_require_bitlocker_pin,omitempty"`
 	NameTemplate               *string `json:"name_template,omitempty"`
 
@@ -86,12 +91,29 @@ type TeamMDMSettings struct {
 	IPadOSUpdates  *AppleOSUpdates `json:"ipados_updates,omitempty"`
 	WindowsUpdates *WindowsUpdates `json:"windows_updates,omitempty"`
 
-	// macos_settings is read-only from this client's perspective, and
-	// windows_settings carries only enable_managed_local_account: Fleet's team
-	// PATCH payload does not accept configuration profiles through either
-	// (those are managed by the fleetdm_configuration_profile resource).
+	// Fleet's team PATCH payload does not accept configuration profiles
+	// through these blocks (the fleetdm_configuration_profile resource manages
+	// them), so CustomSettings is only ever decoded, never sent.
 	MacOSSettings   *MacOSMDMSettings   `json:"macos_settings,omitempty"`
 	WindowsSettings *WindowsMDMSettings `json:"windows_settings,omitempty"`
+	LinuxSettings   *LinuxMDMSettings   `json:"linux_settings,omitempty"`
+
+	// AppleSettings is the renamed spelling of macos_settings that Fleet serves
+	// alongside it in responses. It is response-only and never populated on a
+	// request; read macOS settings through MacOS().
+	AppleSettings *MacOSMDMSettings `json:"apple_settings,omitempty"`
+}
+
+// MacOS returns the macOS settings from a response, preferring the
+// macos_settings spelling and falling back to apple_settings.
+func (m *TeamMDMSettings) MacOS() *MacOSMDMSettings {
+	if m == nil {
+		return nil
+	}
+	if m.MacOSSettings != nil {
+		return m.MacOSSettings
+	}
+	return m.AppleSettings
 }
 
 // AppleOSUpdates represents the OS update settings for an Apple platform. The
@@ -156,19 +178,40 @@ type HistoricalDataSettings struct {
 	Vulnerabilities *bool `json:"vulnerabilities,omitempty"`
 }
 
-// MacOSMDMSettings represents macOS MDM settings.
+// MacOSMDMSettings represents macOS MDM settings. CustomSettings stays
+// omitted so a PATCH never touches configuration profiles.
 type MacOSMDMSettings struct {
 	CustomSettings []CustomSetting `json:"custom_settings,omitempty"`
+	// EnableDiskEncryption enforces FileVault on the fleet's macOS hosts
+	// (Fleet 4.92+).
+	EnableDiskEncryption *bool `json:"enable_disk_encryption,omitempty"`
+	// EnableEscrowDiskEncryptionKey makes Fleet escrow the FileVault recovery
+	// key, independently of whether Fleet enforces FileVault (Fleet 4.92+).
+	EnableEscrowDiskEncryptionKey *bool `json:"enable_escrow_disk_encryption_key,omitempty"`
 }
 
-// WindowsMDMSettings represents Windows MDM settings.
+// WindowsMDMSettings represents Windows MDM settings. CustomSettings stays
+// omitted so a PATCH never touches configuration profiles.
 type WindowsMDMSettings struct {
 	CustomSettings []CustomSetting `json:"custom_settings,omitempty"`
 	// EnableManagedLocalAccount turns on the managed local admin account that
 	// fleetd creates on Windows hosts during enrollment (Fleet 4.91+, requires
-	// fleetd 1.60.0+). It is the only writable key in this block; CustomSettings
-	// stays omitted so a PATCH never touches configuration profiles.
+	// fleetd 1.60.0+).
 	EnableManagedLocalAccount *bool `json:"enable_managed_local_account,omitempty"`
+	// EnableDiskEncryption enforces BitLocker on the fleet's Windows hosts
+	// (Fleet 4.92+).
+	EnableDiskEncryption *bool `json:"enable_disk_encryption,omitempty"`
+	// RequireBitlockerPIN is the canonical home of the deprecated top-level
+	// windows_require_bitlocker_pin key (Fleet 4.92+). Fleet refuses true
+	// unless Windows disk encryption is enabled.
+	RequireBitlockerPIN *bool `json:"require_bitlocker_pin,omitempty"`
+}
+
+// LinuxMDMSettings represents Linux MDM settings (Fleet 4.92+).
+type LinuxMDMSettings struct {
+	// EnableEscrowDiskEncryptionKey makes Fleet escrow the LUKS passphrase of
+	// the fleet's Linux hosts.
+	EnableEscrowDiskEncryptionKey *bool `json:"enable_escrow_disk_encryption_key,omitempty"`
 }
 
 // CustomSetting represents a custom configuration profile setting.

@@ -51,6 +51,23 @@ func webhookURLValidators() []validator.String {
 // Webhook payloads carry host identifiers, and a webhook URL is often a
 // capability URL whose path is the only thing authenticating the caller, so
 // both the payload and the URL itself want transport encryption.
+// perPlatformDiskEncryptionPaths are the four settings the deprecated flat
+// enable_disk_encryption fans out to. Fleet rejects a request that changes
+// both to disagreeing values, so the provider refuses the combination.
+func perPlatformDiskEncryptionPaths() []path.Expression {
+	mdm := path.MatchRoot("mdm")
+	return []path.Expression{
+		mdm.AtName("macos_settings").AtName("enable_disk_encryption"),
+		mdm.AtName("macos_settings").AtName("enable_escrow_disk_encryption_key"),
+		mdm.AtName("windows_settings").AtName("enable_disk_encryption"),
+		mdm.AtName("linux_settings").AtName("enable_escrow_disk_encryption_key"),
+	}
+}
+
+// diskEncryptionGateNote is appended to the per-platform settings blocks that
+// carry disk encryption keys.
+const diskEncryptionGateNote = " Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. Conflicts with the deprecated top-level enable_disk_encryption."
+
 const webhookURLSecurityNote = " Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http."
 
 // This file holds the nested settings blocks of fleetdm_fleet: webhook_settings,
@@ -98,7 +115,9 @@ type fleetMDMModel struct {
 	WindowsRequireBitlockerPIN types.Bool   `tfsdk:"windows_require_bitlocker_pin"`
 	NameTemplate               types.String `tfsdk:"name_template"`
 
+	MacOSSettings   *fleetMacOSSettingsModel   `tfsdk:"macos_settings"`
 	WindowsSettings *fleetWindowsSettingsModel `tfsdk:"windows_settings"`
+	LinuxSettings   *fleetLinuxSettingsModel   `tfsdk:"linux_settings"`
 
 	MacOSUpdates   *fleetAppleOSUpdatesModel `tfsdk:"macos_updates"`
 	IOSUpdates     *fleetAppleOSUpdatesModel `tfsdk:"ios_updates"`
@@ -118,8 +137,19 @@ type fleetAppleOSUpdatesModel struct {
 	UpdateNewHosts types.Bool   `tfsdk:"update_new_hosts"`
 }
 
+type fleetMacOSSettingsModel struct {
+	EnableDiskEncryption          types.Bool `tfsdk:"enable_disk_encryption"`
+	EnableEscrowDiskEncryptionKey types.Bool `tfsdk:"enable_escrow_disk_encryption_key"`
+}
+
 type fleetWindowsSettingsModel struct {
 	EnableManagedLocalAccount types.Bool `tfsdk:"enable_managed_local_account"`
+	EnableDiskEncryption      types.Bool `tfsdk:"enable_disk_encryption"`
+	RequireBitlockerPIN       types.Bool `tfsdk:"require_bitlocker_pin"`
+}
+
+type fleetLinuxSettingsModel struct {
+	EnableEscrowDiskEncryptionKey types.Bool `tfsdk:"enable_escrow_disk_encryption_key"`
 }
 
 type fleetWindowsUpdatesModel struct {
@@ -405,25 +435,70 @@ func fleetMDMAttribute() schema.Attribute {
 				Optional:            true,
 			},
 			"windows_require_bitlocker_pin": schema.BoolAttribute{
-				Description:         "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant.",
-				MarkdownDescription: "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant.",
+				Description:         "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Deprecated: use windows_settings.require_bitlocker_pin, which Fleet 4.92 made the canonical key. Conflicts with it.",
+				MarkdownDescription: "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. **Deprecated:** use `windows_settings.require_bitlocker_pin`, which Fleet 4.92 made the canonical key. Conflicts with it.",
+				DeprecationMessage:  "Use mdm.windows_settings.require_bitlocker_pin instead (requires Fleet 4.92.0 or later). Fleet keeps the two keys in sync, so moving the value across is a no-op on the server.",
 				Optional:            true,
+				Validators: []validator.Bool{
+					boolvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("windows_settings").AtName("require_bitlocker_pin")),
+				},
 			},
 			"name_template": schema.StringAttribute{
 				Description:         "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example \"$FLEET_VAR_HOST_HARDWARE_SERIAL\". Set to \"\" to clear it.",
 				MarkdownDescription: "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it.",
 				Optional:            true,
 			},
+			"macos_settings": schema.SingleNestedAttribute{
+				Description: "macOS-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. " +
+					"Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
+				MarkdownDescription: "macOS-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. " +
+					"Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"enable_disk_encryption": schema.BoolAttribute{
+						Description:         "Whether Fleet enforces FileVault on this fleet's macOS hosts.",
+						MarkdownDescription: "Whether Fleet enforces FileVault on this fleet's macOS hosts.",
+						Optional:            true,
+					},
+					"enable_escrow_disk_encryption_key": schema.BoolAttribute{
+						Description:         "Whether Fleet escrows the FileVault recovery key of this fleet's macOS hosts, independently of whether Fleet enforces FileVault.",
+						MarkdownDescription: "Whether Fleet escrows the FileVault recovery key of this fleet's macOS hosts, independently of whether Fleet enforces FileVault.",
+						Optional:            true,
+					},
+				},
+			},
 			"windows_settings": schema.SingleNestedAttribute{
 				Description: "Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. " +
-					"Requires Fleet 4.91.0 or later.",
+					"Requires Fleet 4.91.0 or later; enable_disk_encryption and require_bitlocker_pin require Fleet 4.92.0 or later." + diskEncryptionGateNote,
 				MarkdownDescription: "Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. " +
-					"Requires Fleet 4.91.0 or later.",
+					"Requires Fleet 4.91.0 or later; `enable_disk_encryption` and `require_bitlocker_pin` require Fleet 4.92.0 or later." + diskEncryptionGateNote,
 				Optional: true,
 				Attributes: map[string]schema.Attribute{
 					"enable_managed_local_account": schema.BoolAttribute{
 						Description:         "Whether fleetd creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires fleetd 1.60.0 or later on the host.",
 						MarkdownDescription: "Whether `fleetd` creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires `fleetd` 1.60.0 or later on the host.",
+						Optional:            true,
+					},
+					"enable_disk_encryption": schema.BoolAttribute{
+						Description:         "Whether Fleet enforces BitLocker on this fleet's Windows hosts.",
+						MarkdownDescription: "Whether Fleet enforces BitLocker on this fleet's Windows hosts.",
+						Optional:            true,
+					},
+					"require_bitlocker_pin": schema.BoolAttribute{
+						Description:         "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Fleet only accepts true while Windows disk encryption is enabled for the fleet. Replaces the deprecated mdm.windows_require_bitlocker_pin.",
+						MarkdownDescription: "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Fleet only accepts `true` while Windows disk encryption is enabled for the fleet. Replaces the deprecated `mdm.windows_require_bitlocker_pin`.",
+						Optional:            true,
+					},
+				},
+			},
+			"linux_settings": schema.SingleNestedAttribute{
+				Description:         "Linux-specific MDM settings for this fleet. Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
+				MarkdownDescription: "Linux-specific MDM settings for this fleet. Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
+				Optional:            true,
+				Attributes: map[string]schema.Attribute{
+					"enable_escrow_disk_encryption_key": schema.BoolAttribute{
+						Description:         "Whether Fleet escrows the LUKS passphrase of this fleet's Linux hosts.",
+						MarkdownDescription: "Whether Fleet escrows the LUKS passphrase of this fleet's Linux hosts.",
 						Optional:            true,
 					},
 				},
@@ -584,6 +659,11 @@ func buildWebhookSettings(ctx context.Context, m *fleetWebhookSettingsModel, dia
 // buildMDMSettings merges the legacy top-level enable_disk_encryption attribute
 // with the mdm block. Fleet only accepts one `mdm` object per request, so both
 // sources have to end up in the same payload. Returns nil when neither is set.
+//
+// enableDiskEncryption must come from the configuration, not the plan: the
+// attribute is Computed, so the plan carries the prior or an unknown value
+// even when the practitioner never set it, and Fleet fans a sent value out to
+// every per-platform setting.
 func buildMDMSettings(enableDiskEncryption types.Bool, m *fleetMDMModel) *fleetdm.TeamMDMSettings {
 	diskEncryption := optionalBoolPtr(enableDiskEncryption)
 	if diskEncryption == nil && m == nil {
@@ -598,9 +678,22 @@ func buildMDMSettings(enableDiskEncryption types.Bool, m *fleetMDMModel) *fleetd
 	out.EnableRecoveryLockPassword = optionalBoolPtr(m.EnableRecoveryLockPassword)
 	out.WindowsRequireBitlockerPIN = optionalBoolPtr(m.WindowsRequireBitlockerPIN)
 	out.NameTemplate = optionalStringPtr(m.NameTemplate)
+	if ms := m.MacOSSettings; ms != nil {
+		out.MacOSSettings = &fleetdm.MacOSMDMSettings{
+			EnableDiskEncryption:          optionalBoolPtr(ms.EnableDiskEncryption),
+			EnableEscrowDiskEncryptionKey: optionalBoolPtr(ms.EnableEscrowDiskEncryptionKey),
+		}
+	}
 	if ws := m.WindowsSettings; ws != nil {
 		out.WindowsSettings = &fleetdm.WindowsMDMSettings{
 			EnableManagedLocalAccount: optionalBoolPtr(ws.EnableManagedLocalAccount),
+			EnableDiskEncryption:      optionalBoolPtr(ws.EnableDiskEncryption),
+			RequireBitlockerPIN:       optionalBoolPtr(ws.RequireBitlockerPIN),
+		}
+	}
+	if ls := m.LinuxSettings; ls != nil {
+		out.LinuxSettings = &fleetdm.LinuxMDMSettings{
+			EnableEscrowDiskEncryptionKey: optionalBoolPtr(ls.EnableEscrowDiskEncryptionKey),
 		}
 	}
 	out.MacOSUpdates = buildAppleOSUpdates(m.MacOSUpdates)
@@ -751,6 +844,27 @@ func refreshMDM(m *fleetMDMModel, api *fleetdm.TeamMDMSettings) {
 			m.WindowsSettings = nil
 		} else {
 			ws.EnableManagedLocalAccount = refreshOptionalBool(ws.EnableManagedLocalAccount, a.EnableManagedLocalAccount)
+			ws.EnableDiskEncryption = refreshEchoedBool(ws.EnableDiskEncryption, a.EnableDiskEncryption)
+			ws.RequireBitlockerPIN = refreshEchoedBool(ws.RequireBitlockerPIN, a.RequireBitlockerPIN)
+		}
+	}
+
+	// Fleet 4.92 always reports macos_settings and linux_settings with every
+	// disk encryption key, so the same reasoning applies: a missing block or
+	// key means the server ignored it, which must not read back as applied.
+	if ms := m.MacOSSettings; ms != nil {
+		if a := api.MacOS(); a == nil {
+			m.MacOSSettings = nil
+		} else {
+			ms.EnableDiskEncryption = refreshEchoedBool(ms.EnableDiskEncryption, a.EnableDiskEncryption)
+			ms.EnableEscrowDiskEncryptionKey = refreshEchoedBool(ms.EnableEscrowDiskEncryptionKey, a.EnableEscrowDiskEncryptionKey)
+		}
+	}
+	if ls := m.LinuxSettings; ls != nil {
+		if a := api.LinuxSettings; a == nil {
+			m.LinuxSettings = nil
+		} else {
+			ls.EnableEscrowDiskEncryptionKey = refreshEchoedBool(ls.EnableEscrowDiskEncryptionKey, a.EnableEscrowDiskEncryptionKey)
 		}
 	}
 
@@ -762,6 +876,20 @@ func refreshMDM(m *fleetMDMModel, api *fleetdm.TeamMDMSettings) {
 		w.DeadlineDays = refreshOptionalInt64(w.DeadlineDays, a.DeadlineDays)
 		w.GracePeriodDays = refreshOptionalInt64(w.GracePeriodDays, a.GracePeriodDays)
 	}
+}
+
+// refreshEchoedBool refreshes an opt-in attribute that Fleet always echoes once
+// it understands the key. Unlike refreshOptionalBool, a missing key clears a
+// declared value, so a server too old to apply the setting shows as drift (or
+// fails the apply) instead of reporting it as applied.
+func refreshEchoedBool(prior types.Bool, apiValue *bool) types.Bool {
+	if prior.IsNull() {
+		return prior
+	}
+	if apiValue == nil {
+		return types.BoolNull()
+	}
+	return types.BoolValue(*apiValue)
 }
 
 func refreshAppleOSUpdates(m *fleetAppleOSUpdatesModel, api *fleetdm.AppleOSUpdates) {
