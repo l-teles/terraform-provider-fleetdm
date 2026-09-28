@@ -1469,13 +1469,6 @@ resource "fleetdm_policy" "test" {
 func TestAccPolicyResource_automationsNotEchoedMock(t *testing.T) {
 	f := newFakePolicyAutomationServer(t)
 	f.pre492 = true
-	t.Cleanup(func() {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if f.deleted != 2 {
-			t.Errorf("expected both failed creates to delete the policy, got %d delete requests", f.deleted)
-		}
-	})
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -1490,6 +1483,12 @@ func TestAccPolicyResource_automationsNotEchoedMock(t *testing.T) {
 			},
 		},
 	})
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deleted != 2 {
+		t.Errorf("expected both failed creates to delete the policy, got %d delete requests", f.deleted)
+	}
 }
 
 // TestAccPolicyResource_packageAndProfileMock walks software_package_id and
