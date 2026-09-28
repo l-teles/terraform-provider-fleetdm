@@ -335,6 +335,9 @@ output "api_user_token" {
 
 - `gravatar_url` (String) The Gravatar URL for the user.
 - `id` (Number) The unique identifier of the user.
+- `last_activity_at` (String) When the user last made an authenticated request with a live session (RFC3339). Null if the user has no live session. Refreshed on read; changes outside Terraform never cause a diff. Requires Fleet 4.92 or later.
+- `last_login_at` (String) When the user last logged in (RFC3339). Null if the user has never logged in. Refreshed on read; changes outside Terraform never cause a diff. Requires Fleet 4.92 or later.
+- `status` (String) The account's activity status as computed by Fleet: `active`, `inactive` (no login or session activity for 30 days) or `no_access` (no global or team role). Refreshed on read, so a change made by an apply shows up on the next refresh. Requires Fleet 4.92 or later.
 - `token` (String, Sensitive) The API token Fleet mints for API-only, non-SSO users. Fleet returns it once, when the user is created, and never again — it is therefore stored in Terraform state and cannot be recovered by re-reading the user. Null for every other user, and for users adopted through `terraform import`.
 
 <a id="nestedatt--api_endpoints"></a>

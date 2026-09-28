@@ -19,6 +19,15 @@ func NewUserDataSource() datasource.DataSource {
 	return &UserDataSource{}
 }
 
+// Descriptions of the Fleet 4.92 user activity fields, shared by the user data
+// sources.
+const (
+	userLastLoginAtDescription    = "When the user last logged in (RFC3339). Null if the user has never logged in. Requires Fleet 4.92 or later."
+	userLastActivityAtDescription = "When the user last made an authenticated request with a live session (RFC3339). Null if the user has no live session. Requires Fleet 4.92 or later."
+	userStatusDescription         = "The account's activity status as computed by Fleet: active, inactive (no login or session activity for 30 days) or no_access (no global or team role). Requires Fleet 4.92 or later."
+	userStatusMarkdownDescription = "The account's activity status as computed by Fleet: `active`, `inactive` (no login or session activity for 30 days) or `no_access` (no global or team role). Requires Fleet 4.92 or later."
+)
+
 // UserDataSource defines the data source implementation.
 type UserDataSource struct {
 	client *fleetdm.Client
@@ -36,6 +45,9 @@ type UserDataSourceModel struct {
 	ForcePasswordReset types.Bool   `tfsdk:"force_password_reset"`
 	GravatarURL        types.String `tfsdk:"gravatar_url"`
 	Teams              types.List   `tfsdk:"teams"`
+	LastLoginAt        types.String `tfsdk:"last_login_at"`
+	LastActivityAt     types.String `tfsdk:"last_activity_at"`
+	Status             types.String `tfsdk:"status"`
 }
 
 // Metadata returns the data source type name.
@@ -107,6 +119,21 @@ output "admin_email" {
 				MarkdownDescription: "The Gravatar URL for the user.",
 				Computed:            true,
 			},
+			"last_login_at": schema.StringAttribute{
+				Description:         userLastLoginAtDescription,
+				MarkdownDescription: userLastLoginAtDescription,
+				Computed:            true,
+			},
+			"last_activity_at": schema.StringAttribute{
+				Description:         userLastActivityAtDescription,
+				MarkdownDescription: userLastActivityAtDescription,
+				Computed:            true,
+			},
+			"status": schema.StringAttribute{
+				Description:         userStatusDescription,
+				MarkdownDescription: userStatusMarkdownDescription,
+				Computed:            true,
+			},
 			"teams": schema.ListNestedAttribute{
 				Description:         "Team assignments for this user.",
 				MarkdownDescription: "Team assignments for this user.",
@@ -171,6 +198,9 @@ func (ds *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	config.APIOnly = types.BoolValue(user.APIOnly)
 	config.ForcePasswordReset = types.BoolValue(user.ForcePasswordReset)
 	config.GravatarURL = types.StringValue(user.GravatarURL)
+	config.LastLoginAt = stringPtrToString(user.LastLoginAt)
+	config.LastActivityAt = stringPtrToString(user.LastActivityAt)
+	config.Status = emptyStringToNull(user.Status)
 
 	config.GlobalRole = stringPtrToString(user.GlobalRole)
 

@@ -598,6 +598,67 @@ func TestClient_GetUserParsesAPIEndpoints(t *testing.T) {
 	}
 }
 
+// TestClient_GetUserDecodesActivityFields checks the Fleet 4.92 activity
+// fields decode from a read, with null and populated timestamps.
+func TestClient_GetUserDecodesActivityFields(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             string
+		wantLastLogin    *string
+		wantLastActivity *string
+		wantStatus       string
+	}{
+		{
+			name:       "null timestamps",
+			body:       `{"user":{"id":1,"last_login_at":null,"last_activity_at":null,"status":"active"}}`,
+			wantStatus: "active",
+		},
+		{
+			name:             "populated",
+			body:             `{"user":{"id":1,"last_login_at":"2026-09-01T10:00:00Z","last_activity_at":"2026-09-02T11:30:00Z","status":"inactive"}}`,
+			wantLastLogin:    strPtr("2026-09-01T10:00:00Z"),
+			wantLastActivity: strPtr("2026-09-02T11:30:00Z"),
+			wantStatus:       "inactive",
+		},
+		{
+			name: "status omitted",
+			body: `{"user":{"id":1,"last_login_at":null,"last_activity_at":null}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+			u, err := client.GetUser(context.Background(), 1)
+			if err != nil {
+				t.Fatalf("GetUser: %v", err)
+			}
+			if !equalStrPtr(u.LastLoginAt, tt.wantLastLogin) {
+				t.Errorf("LastLoginAt = %v, want %v", u.LastLoginAt, tt.wantLastLogin)
+			}
+			if !equalStrPtr(u.LastActivityAt, tt.wantLastActivity) {
+				t.Errorf("LastActivityAt = %v, want %v", u.LastActivityAt, tt.wantLastActivity)
+			}
+			if u.Status != tt.wantStatus {
+				t.Errorf("Status = %q, want %q", u.Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func equalStrPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // Helper function
 func strPtr(s string) *string {
 	return &s

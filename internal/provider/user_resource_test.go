@@ -1,14 +1,20 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
 
 func TestAccUserResource_basic(t *testing.T) {
@@ -29,6 +35,10 @@ func TestAccUserResource_basic(t *testing.T) {
 					resource.TestCheckResourceAttrSet("fleetdm_user.test", "id"),
 					resource.TestCheckResourceAttr("fleetdm_user.test", "api_only", "false"),
 					resource.TestCheckResourceAttr("fleetdm_user.test", "sso_enabled", "false"),
+					// A never-logged-in user with a role is active: Fleet falls
+					// back to created_at for the 30-day window.
+					resource.TestCheckResourceAttr("fleetdm_user.test", "status", "active"),
+					resource.TestCheckNoResourceAttr("fleetdm_user.test", "last_login_at"),
 				),
 			},
 			// Update global role
@@ -293,6 +303,141 @@ resource "fleetdm_user" "test" {
 			},
 		},
 	})
+}
+
+// TestAccUserResource_activityFields runs against a fake Fleet that, like Fleet
+// 4.92, returns `status` only from GET and moves `last_activity_at` on its own.
+// It proves status is known after create and that an update carries the
+// activity fields from state instead of producing an inconsistent result.
+func TestAccUserResource_activityFields(t *testing.T) {
+	const (
+		lastLogin    = "2026-09-01T10:00:00Z"
+		lastActivity = "2026-09-28T12:00:00Z"
+	)
+
+	var (
+		mu       sync.Mutex
+		name     string
+		email    string
+		activity *string
+		getCalls int
+	)
+
+	userJSON := func(withStatus bool, login, act *string) map[string]interface{} {
+		u := map[string]interface{}{
+			"id":                   7,
+			"name":                 name,
+			"email":                email,
+			"global_role":          "observer",
+			"force_password_reset": true,
+			"last_login_at":        login,
+			"last_activity_at":     act,
+		}
+		if withStatus {
+			u["status"] = "active"
+		}
+		return u
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/fleet/users/admin":
+			var req map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&req)
+			name, _ = req["name"].(string)
+			email, _ = req["email"].(string)
+			json.NewEncoder(w).Encode(map[string]interface{}{"user": userJSON(false, nil, nil)})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/users/7":
+			getCalls++
+			login := lastLogin
+			json.NewEncoder(w).Encode(map[string]interface{}{"user": userJSON(true, &login, activity)})
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/fleet/users/7":
+			var req map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&req)
+			name, _ = req["name"].(string)
+			// Session activity moves between refresh and apply.
+			act := lastActivity
+			activity = &act
+			login := lastLogin
+			json.NewEncoder(w).Encode(map[string]interface{}{"user": userJSON(false, &login, activity)})
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/fleet/users/7":
+			w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config := func(n string) string {
+		return fakeFleetProviderConfig(server.URL) + fmt.Sprintf(`
+resource "fleetdm_user" "test" {
+  name        = %q
+  email       = "activity@example.com"
+  password    = "FleetTest@12345!"
+  global_role = "observer"
+}
+`, n)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			// The create echo carries no status; the follow-up GET fills it.
+			{
+				Config: config("activity-user"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_user.test", "status", "active"),
+					resource.TestCheckResourceAttr("fleetdm_user.test", "last_login_at", lastLogin),
+					resource.TestCheckNoResourceAttr("fleetdm_user.test", "last_activity_at"),
+				),
+			},
+			// The PATCH echo reports a newer last_activity_at and no status;
+			// both must come from state.
+			{
+				Config: config("activity-user-renamed"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("fleetdm_user.test", plancheck.ResourceActionUpdate),
+						plancheck.ExpectKnownValue("fleetdm_user.test", tfjsonpath.New("status"), knownvalue.StringExact("active")),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_user.test", "name", "activity-user-renamed"),
+					resource.TestCheckResourceAttr("fleetdm_user.test", "status", "active"),
+					resource.TestCheckNoResourceAttr("fleetdm_user.test", "last_activity_at"),
+				),
+			},
+			// A refresh picks up the new activity without planning a change.
+			{
+				Config: config("activity-user-renamed"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_user.test", "last_activity_at", lastActivity),
+					resource.TestCheckResourceAttr("fleetdm_user.test", "status", "active"),
+				),
+			},
+			{
+				ResourceName:            "fleetdm_user.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"password"},
+			},
+		},
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if getCalls == 0 {
+		t.Error("expected the resource to read the user back via GET")
+	}
 }
 
 func testAccUserResourceConfig(name, email, role string) string {

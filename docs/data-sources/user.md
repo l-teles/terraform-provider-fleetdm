@@ -47,9 +47,12 @@ output "admin_email" {
 - `force_password_reset` (Boolean) Whether the user must reset their password on next login.
 - `global_role` (String) The global role assigned to the user.
 - `gravatar_url` (String) The Gravatar URL for the user.
+- `last_activity_at` (String) When the user last made an authenticated request with a live session (RFC3339). Null if the user has no live session. Requires Fleet 4.92 or later.
+- `last_login_at` (String) When the user last logged in (RFC3339). Null if the user has never logged in. Requires Fleet 4.92 or later.
 - `mfa_enabled` (Boolean) Whether MFA is enabled for this user.
 - `name` (String) The full name of the user.
 - `sso_enabled` (Boolean) Whether SSO is enabled for this user.
+- `status` (String) The account's activity status as computed by Fleet: `active`, `inactive` (no login or session activity for 30 days) or `no_access` (no global or team role). Requires Fleet 4.92 or later.
 - `teams` (Attributes List) Team assignments for this user. (see [below for nested schema](#nestedatt--teams))
 
 <a id="nestedatt--teams"></a>
