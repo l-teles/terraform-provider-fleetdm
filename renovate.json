@@ -13,9 +13,16 @@
       "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchDepTypes": ["indirect"],
-      "matchUpdateTypes": ["minor", "patch", "digest"],
       "enabled": true,
-      "description": "Renovate skips `// indirect` Go modules unless told otherwise, so a security fix in a transitive module (grpc GO-2026-6443, reached through terraform-plugin-go) never produced a PR and only surfaced as a govulncheck failure on main. Enabling them also lets Renovate's vulnerability-alert PRs, which bypass minimumReleaseAge and grouping, act on them. Major updates stay off: the importing module picks the major module path, so rewriting an indirect requirement to /v2 only produces an unused line."
+      "description": "Renovate skips `// indirect` Go modules unless told otherwise, so a security fix in a transitive module (grpc GO-2026-6443, reached through terraform-plugin-go) never produced a PR and only surfaced as a govulncheck failure on main. Enabling them also lets Renovate's vulnerability-alert PRs, which bypass minimumReleaseAge and grouping, act on them. Kept free of matchUpdateTypes on purpose: rules are applied once before lookup, when the update type is unknown, so a rule that combines the two never matches and the modules stay disabled."
+    },
+    {
+      "minimumReleaseAge": "7 days",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false,
+      "description": "The importing module picks the major module path, so rewriting an indirect requirement to /v2 only produces an unused line that `go mod tidy` removes. Evaluated after lookup, once the update type is known."
     },
     {
       "minimumReleaseAge": "7 days",
