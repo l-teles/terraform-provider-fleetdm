@@ -10,6 +10,19 @@ testacc:
 test:
 	go test ./... -v $(TESTARGS) -timeout 120m
 
+# Run every native fuzz target for FUZZTIME each (`make test` only replays
+# the seed corpus).
+FUZZTIME ?= 10s
+.PHONY: fuzz
+fuzz:
+	@set -e; pkgs=$$(go list ./internal/...); for pkg in $$pkgs; do \
+		list=$$(go test -list '^Fuzz' $$pkg); \
+		for target in $$(printf '%s\n' "$$list" | grep '^Fuzz'); do \
+			echo "==> $$pkg $$target"; \
+			go test -run '^$$' -fuzz "^$$target\$$" -fuzztime $(FUZZTIME) $$pkg; \
+		done; \
+	done
+
 # Build the provider
 .PHONY: build
 build:

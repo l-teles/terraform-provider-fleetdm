@@ -110,6 +110,8 @@ jobs:
             - run: go test -v -cover -timeout=10m ./internal/...
               env:
                   TF_ACC: ""
+            - name: Fuzz every target briefly
+              run: make fuzz FUZZTIME=20s
 
     # -------------------------------------------------------------------------
     # Acceptance tests against a live Fleet instance (Docker Compose)

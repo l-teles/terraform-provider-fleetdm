@@ -31,17 +31,18 @@ jobs:
               with:
                   go-version-file: ".github/security-tools/go.mod"
                   cache: true
-            - name: Install govulncheck
-              run: cd .github/security-tools && go install golang.org/x/vuln/cmd/govulncheck
+            # Versions come from the `tool` directives (and go.sum) in
+            # .github/security-tools/go.mod, so nothing is pinned here.
             - name: Run govulncheck
-              run: govulncheck ./...
-            # The tools module only has a build-tagged tools.go, so there is no
-            # package to scan; build the tools it pins and scan those binaries.
+              run: go tool -modfile=.github/security-tools/go.mod govulncheck ./...
+            # The tools module has no packages of its own, only tool directives,
+            # so there is nothing for ./... to scan; build the tools it pins and
+            # scan those binaries.
             - name: Run govulncheck on the security tools
               run: |
                   cd .github/security-tools
                   go build -o "$RUNNER_TEMP/gosec" github.com/securego/gosec/v2/cmd/gosec
-                  govulncheck -mode=binary "$RUNNER_TEMP/gosec"
+                  go tool govulncheck -mode=binary "$RUNNER_TEMP/gosec"
 
     gosec:
         name: gosec (SAST)
@@ -61,10 +62,8 @@ jobs:
               with:
                   go-version-file: ".github/security-tools/go.mod"
                   cache: true
-            - name: Install gosec
-              run: cd .github/security-tools && go install github.com/securego/gosec/v2/cmd/gosec
             - name: Run gosec
-              run: gosec ./...
+              run: go tool -modfile=.github/security-tools/go.mod gosec ./...
 
     zizmor:
         name: zizmor (GitHub Actions security)
