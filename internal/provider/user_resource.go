@@ -54,8 +54,11 @@ type UserResourceModel struct {
 	Teams              types.List   `tfsdk:"teams"`
 
 	// Computed fields
-	GravatarURL types.String `tfsdk:"gravatar_url"`
-	Token       types.String `tfsdk:"token"`
+	GravatarURL    types.String `tfsdk:"gravatar_url"`
+	Token          types.String `tfsdk:"token"`
+	LastLoginAt    types.String `tfsdk:"last_login_at"`
+	LastActivityAt types.String `tfsdk:"last_activity_at"`
+	Status         types.String `tfsdk:"status"`
 }
 
 // UserTeamModel represents a team assignment for a user.
@@ -315,6 +318,30 @@ terraform import fleetdm_user.admin 123
 				MarkdownDescription: "The Gravatar URL for the user.",
 				Computed:            true,
 			},
+			"last_login_at": schema.StringAttribute{
+				Description:         "When the user last logged in (RFC3339). Null if the user has never logged in. Refreshed on read; changes outside Terraform never cause a diff. Requires Fleet 4.92 or later.",
+				MarkdownDescription: "When the user last logged in (RFC3339). Null if the user has never logged in. Refreshed on read; changes outside Terraform never cause a diff. Requires Fleet 4.92 or later.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"last_activity_at": schema.StringAttribute{
+				Description:         "When the user last made an authenticated request with a live session (RFC3339). Null if the user has no live session. Refreshed on read; changes outside Terraform never cause a diff. Requires Fleet 4.92 or later.",
+				MarkdownDescription: "When the user last made an authenticated request with a live session (RFC3339). Null if the user has no live session. Refreshed on read; changes outside Terraform never cause a diff. Requires Fleet 4.92 or later.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"status": schema.StringAttribute{
+				Description:         "The account's activity status as computed by Fleet: active, inactive (no login or session activity for 30 days) or no_access (no global or team role). Refreshed on read, so a change made by an apply shows up on the next refresh. Requires Fleet 4.92 or later.",
+				MarkdownDescription: "The account's activity status as computed by Fleet: `active`, `inactive` (no login or session activity for 30 days) or `no_access` (no global or team role). Refreshed on read, so a change made by an apply shows up on the next refresh. Requires Fleet 4.92 or later.",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
 		},
 	}
 }
@@ -507,6 +534,11 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 	// Map response to model
 	r.mapUserToModel(ctx, user, &plan, &resp.Diagnostics)
 
+	// Fleet omits `status` from the create echo, so read it back.
+	if user.Status == "" {
+		r.refreshActivity(ctx, user.ID, &plan, &resp.Diagnostics)
+	}
+
 	// Fleet returns the API token once, at creation, and never on read.
 	plan.Token = tokenValue(token)
 
@@ -670,7 +702,35 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// The API token is minted at creation only; carry it across the update.
 	plan.Token = state.Token
 
+	// These are planned from prior state and change outside Terraform, so the
+	// apply result must match state; Read refreshes them.
+	plan.LastLoginAt = state.LastLoginAt
+	plan.LastActivityAt = state.LastActivityAt
+	plan.Status = state.Status
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// refreshActivity reads the user back to populate `status` and the activity
+// timestamps, which only the get-user endpoint returns in full. A failure is a
+// warning: the user exists and the next refresh fills the values in.
+func (r *UserResource) refreshActivity(ctx context.Context, id int64, model *UserResourceModel, diags *diag.Diagnostics) {
+	user, err := r.client.GetUser(ctx, id)
+	if err != nil {
+		diags.AddWarning(
+			"Could Not Read FleetDM User Status",
+			"The user was saved, but reading it back for its status failed, so status is null until the next refresh. Error: "+err.Error(),
+		)
+		return
+	}
+	mapUserActivity(user, model)
+}
+
+// mapUserActivity maps the Fleet 4.92 activity fields, null when absent.
+func mapUserActivity(user *fleetdm.User, model *UserResourceModel) {
+	model.LastLoginAt = stringPtrToString(user.LastLoginAt)
+	model.LastActivityAt = stringPtrToString(user.LastActivityAt)
+	model.Status = emptyStringToNull(user.Status)
 }
 
 // Delete deletes the resource and removes the Terraform state on success.
@@ -731,6 +791,7 @@ func (r *UserResource) mapUserToModel(ctx context.Context, user *fleetdm.User, m
 	model.APIOnly = types.BoolValue(user.APIOnly)
 	model.ForcePasswordReset = types.BoolValue(user.ForcePasswordReset)
 	model.GravatarURL = types.StringValue(user.GravatarURL)
+	mapUserActivity(user, model)
 
 	model.GlobalRole = stringPtrToString(user.GlobalRole)
 

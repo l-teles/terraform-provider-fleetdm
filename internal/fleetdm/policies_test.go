@@ -1635,3 +1635,128 @@ func TestClient_SetPolicyPatchSoftwareTitleID_Reattach(t *testing.T) {
 		t.Errorf("expected patch_software_title_id=77, got: %s", rawBody["patch_software_title_id"])
 	}
 }
+
+// TestClient_PolicyPackageAndProfileWire pins the wire shape of the Fleet
+// 4.92 software_package_id and profile_uuid fields on create and update: a
+// value is sent as-is, an explicit zero value is sent to clear, and nil
+// leaves the key off the body entirely.
+func TestClient_PolicyPackageAndProfileWire(t *testing.T) {
+	cases := []struct {
+		name       string
+		packageID  *int64
+		profile    *string
+		wantKeys   map[string]string
+		absentKeys []string
+	}{
+		{
+			name:      "set",
+			packageID: new(int64(77)),
+			profile:   new("a1b2c3d4-profile"),
+			wantKeys: map[string]string{
+				"software_package_id": "77",
+				"profile_uuid":        `"a1b2c3d4-profile"`,
+			},
+		},
+		{
+			name:      "cleared",
+			packageID: new(int64(0)),
+			profile:   new(""),
+			wantKeys: map[string]string{
+				"software_package_id": "0",
+				"profile_uuid":        `""`,
+			},
+		},
+		{
+			name:       "omitted",
+			absentKeys: []string{"software_package_id", "profile_uuid"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var bodies []map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("failed to decode request body: %v", err)
+				}
+				bodies = append(bodies, body)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(CreatePolicyResponse{Policy: Policy{ID: 5, Name: "p"}})
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			ctx := context.Background()
+			if _, err := client.CreateTeamPolicy(ctx, 1, CreatePolicyRequest{
+				Name: "p", Query: "SELECT 1;", SoftwarePackageID: tc.packageID, ProfileUUID: tc.profile,
+			}); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if _, err := client.UpdateTeamPolicy(ctx, 1, 5, UpdatePolicyRequest{
+				Name: "p", Query: "SELECT 1;", SoftwarePackageID: tc.packageID, ProfileUUID: tc.profile,
+			}); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+
+			if len(bodies) != 2 {
+				t.Fatalf("expected 2 requests, got %d", len(bodies))
+			}
+			for i, body := range bodies {
+				for key, want := range tc.wantKeys {
+					if got := string(body[key]); got != want {
+						t.Errorf("request %d: expected %s=%s, got %q", i, key, want, got)
+					}
+				}
+				for _, key := range tc.absentKeys {
+					if _, ok := body[key]; ok {
+						t.Errorf("request %d: expected %s to be absent, body: %v", i, key, body)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestClient_GetTeamPolicy_PackageAndProfileEcho covers the Fleet 4.92
+// echoes: install_software.software_package_id (under either the new key or
+// the legacy software_installer_id key) and resend_configuration_profile.
+func TestClient_GetTeamPolicy_PackageAndProfileEcho(t *testing.T) {
+	cases := []struct {
+		name        string
+		install     string
+		wantPackage *int64
+	}{
+		{"new key", `{"name":"App","software_title_id":12,"software_package_id":34}`, new(int64(34))},
+		{"legacy key", `{"name":"App","software_title_id":12,"software_installer_id":35}`, new(int64(35))},
+		{"both keys prefer new", `{"name":"App","software_title_id":12,"software_package_id":34,"software_installer_id":35}`, new(int64(34))},
+		{"vpp title has no package", `{"name":"App","software_title_id":12}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"policy":{"id":1,"name":"p","team_id":1,"install_software":%s,
+				"resend_configuration_profile":{"profile_uuid":"a1b2c3d4-profile","name":"Wi-Fi"}}}`, tc.install)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			policy, err := client.GetTeamPolicy(context.Background(), 1, 1)
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if policy.InstallSoftware == nil || policy.InstallSoftware.SoftwareTitleID != 12 || policy.InstallSoftware.Name != "App" {
+				t.Fatalf("unexpected install_software: %+v", policy.InstallSoftware)
+			}
+			got := policy.InstallSoftware.SoftwarePackageID
+			if (got == nil) != (tc.wantPackage == nil) || (got != nil && *got != *tc.wantPackage) {
+				t.Errorf("software_package_id: want %v, got %v", tc.wantPackage, got)
+			}
+			if p := policy.ResendConfigurationProfile; p == nil || p.ProfileUUID != "a1b2c3d4-profile" || p.Name != "Wi-Fi" {
+				t.Errorf("unexpected resend_configuration_profile: %+v", p)
+			}
+		})
+	}
+}

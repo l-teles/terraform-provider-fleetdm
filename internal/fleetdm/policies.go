@@ -2,13 +2,44 @@ package fleetdm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
 // PolicyAutomationSoftware echoes the install_software automation attached to a policy.
+//
+// SoftwarePackageID (Fleet 4.92+) is the package of the title the policy
+// installs; nil for VPP-backed titles.
 type PolicyAutomationSoftware struct {
-	Name            string `json:"name,omitempty"`
-	SoftwareTitleID int    `json:"software_title_id"`
+	Name              string `json:"name,omitempty"`
+	SoftwareTitleID   int    `json:"software_title_id"`
+	SoftwarePackageID *int64 `json:"software_package_id,omitempty"`
+}
+
+// UnmarshalJSON also accepts the legacy `software_installer_id` key: Fleet
+// declares the field under that name with a `renameto:"software_package_id"`
+// tag, so a response may carry either key. The new name wins.
+func (s *PolicyAutomationSoftware) UnmarshalJSON(b []byte) error {
+	type plain PolicyAutomationSoftware
+	var aux struct {
+		plain
+		LegacySoftwareInstallerID *int64 `json:"software_installer_id,omitempty"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*s = PolicyAutomationSoftware(aux.plain)
+	if s.SoftwarePackageID == nil {
+		s.SoftwarePackageID = aux.LegacySoftwareInstallerID
+	}
+	return nil
+}
+
+// PolicyAutomationProfile echoes the resend_configuration_profile automation
+// attached to a policy (Fleet 4.92+).
+type PolicyAutomationProfile struct {
+	ProfileUUID string `json:"profile_uuid"`
+	Name        string `json:"name"`
 }
 
 // PolicyAutomationPatchSoftware echoes the patch_software target of a patch policy.
@@ -67,6 +98,7 @@ type Policy struct {
 	InstallSoftware              *PolicyAutomationSoftware      `json:"install_software,omitempty"`
 	RunScript                    *PolicyAutomationScript        `json:"run_script,omitempty"`
 	PatchSoftware                *PolicyAutomationPatchSoftware `json:"patch_software,omitempty"`
+	ResendConfigurationProfile   *PolicyAutomationProfile       `json:"resend_configuration_profile,omitempty"`
 }
 
 // ListPoliciesResponse represents the response from the list policies endpoint.
@@ -95,6 +127,10 @@ type GetPolicyResponse struct {
 // response echoes false), and a global PATCH carrying `true` is rejected with
 // `"All fleets" policy cannot have continuous_automations_enabled set`. Keeping
 // a false value off the wire leaves the global create body untouched.
+//
+// SoftwarePackageID and ProfileUUID (Fleet 4.92+, team policies only) are
+// omitted when nil: Fleet then installs the title's first-added package and
+// resends no profile.
 type CreatePolicyRequest struct {
 	Name                         string   `json:"name"`
 	Description                  string   `json:"description,omitempty"`
@@ -106,6 +142,8 @@ type CreatePolicyRequest struct {
 	PatchSoftwareTitleID         *int     `json:"patch_software_title_id,omitempty"`
 	SoftwareTitleID              *int     `json:"software_title_id,omitempty"`
 	ScriptID                     *int     `json:"script_id,omitempty"`
+	SoftwarePackageID            *int64   `json:"software_package_id,omitempty"`
+	ProfileUUID                  *string  `json:"profile_uuid,omitempty"`
 	ContinuousAutomationsEnabled bool     `json:"continuous_automations_enabled,omitempty"`
 	PatchWhenClosed              bool     `json:"patch_when_closed,omitempty"`
 	LabelsIncludeAny             []string `json:"labels_include_any,omitempty"`
@@ -140,6 +178,16 @@ type CreatePolicyResponse struct {
 // `omitempty` would suppress null/empty values entirely, breaking both
 // conventions.
 //
+// The Fleet 4.92 fields are the exception and do use omitempty, so servers
+// that predate them never see the keys:
+//
+//   - software_package_id: Fleet re-resolves the package whenever
+//     software_title_id is sent, which is always, so omitting it (or 0)
+//     selects the title's first-added package. Send it on every request
+//     while a package is pinned.
+//   - profile_uuid: omitting it means "no change". Send a pointer to ""
+//     to clear the profile.
+//
 // Fleet rejects a request whose labels_include_any AND labels_include_all are
 // both non-empty (likewise for the two exclude fields) with "policy can
 // include at most one of ...". Empty arrays don't count as set, so sending
@@ -153,6 +201,8 @@ type UpdatePolicyRequest struct {
 	Platform                       string   `json:"platform,omitempty"`
 	SoftwareTitleID                *int     `json:"software_title_id"`
 	ScriptID                       *int     `json:"script_id"`
+	SoftwarePackageID              *int64   `json:"software_package_id,omitempty"`
+	ProfileUUID                    *string  `json:"profile_uuid,omitempty"`
 	CalendarEventsEnabled          *bool    `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled       *bool    `json:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled *bool    `json:"conditional_access_bypass_enabled"`

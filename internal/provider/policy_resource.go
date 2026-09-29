@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -17,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -42,12 +45,17 @@ type PolicyResource struct {
 // Fleet API. Defined once so they can be reused by the data source.
 var (
 	policyInstallSoftwareAttrTypes = map[string]attr.Type{
-		"name":              types.StringType,
-		"software_title_id": types.Int64Type,
+		"name":                types.StringType,
+		"software_title_id":   types.Int64Type,
+		"software_package_id": types.Int64Type,
 	}
 	policyRunScriptAttrTypes = map[string]attr.Type{
 		"name": types.StringType,
 		"id":   types.Int64Type,
+	}
+	policyResendProfileAttrTypes = map[string]attr.Type{
+		"profile_uuid": types.StringType,
+		"name":         types.StringType,
 	}
 	policyPatchSoftwareAttrTypes = map[string]attr.Type{
 		"name":              types.StringType,
@@ -69,7 +77,9 @@ type PolicyResourceModel struct {
 	Type                           types.String `tfsdk:"type"`
 	PatchSoftwareTitleID           types.Int64  `tfsdk:"patch_software_title_id"`
 	SoftwareTitleID                types.Int64  `tfsdk:"software_title_id"`
+	SoftwarePackageID              types.Int64  `tfsdk:"software_package_id"`
 	ScriptID                       types.Int64  `tfsdk:"script_id"`
+	ProfileUUID                    types.String `tfsdk:"profile_uuid"`
 	LabelsIncludeAny               types.Set    `tfsdk:"labels_include_any"`
 	LabelsExcludeAny               types.Set    `tfsdk:"labels_exclude_any"`
 	LabelsIncludeAll               types.Set    `tfsdk:"labels_include_all"`
@@ -91,6 +101,7 @@ type PolicyResourceModel struct {
 	InstallSoftware                types.Object `tfsdk:"install_software"`
 	RunScript                      types.Object `tfsdk:"run_script"`
 	PatchSoftware                  types.Object `tfsdk:"patch_software"`
+	ResendConfigurationProfile     types.Object `tfsdk:"resend_configuration_profile"`
 }
 
 func (r *PolicyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -167,7 +178,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
-				MarkdownDescription: "The ID of the team this policy belongs to. If not specified, the policy is global. Changing this field forces the policy to be destroyed and recreated — Fleet stores team and global policies under separate endpoints, so a policy cannot be moved in-place. The team-only fields below (`type` = `\"patch\"`, `patch_software_title_id`, `software_title_id`, `script_id`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.",
+				MarkdownDescription: "The ID of the team this policy belongs to. If not specified, the policy is global. Changing this field forces the policy to be destroyed and recreated — Fleet stores team and global policies under separate endpoints, so a policy cannot be moved in-place. The team-only fields below (`type` = `\"patch\"`, `patch_software_title_id`, `software_title_id`, `software_package_id`, `script_id`, `profile_uuid`, `calendar_events_enabled`, `conditional_access_enabled`, `conditional_access_bypass_enabled`) require this to be set.",
 			},
 			"type": schema.StringAttribute{
 				Optional: true,
@@ -193,9 +204,28 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 					"Note: when a software resource is created with `automatic_install_policy = true`, Fleet mints its own policy under the hood — that policy is not managed by Terraform and should not be re-declared here. " +
 					"_Available in Fleet Premium, team policies only._",
 			},
+			"software_package_id": schema.Int64Attribute{
+				Optional: true,
+				MarkdownDescription: "ID of the package of `software_title_id` to install when the policy fails, for titles with more than one package. Requires `software_title_id`. " +
+					"When unset, Fleet installs the title's first-added package. Every apply sends the policy's full automation settings, so a package chosen outside Terraform is reset to that default unless it is set here. " +
+					"_Available in Fleet Premium 4.92+, team policies only._",
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+					int64validator.AlsoRequires(path.MatchRoot("software_title_id")),
+				},
+			},
 			"script_id": schema.Int64Attribute{
 				Optional:            true,
 				MarkdownDescription: "ID of the script to run if the policy fails. Set to `null` to clear the run-script automation. _Available in Fleet Premium, team policies only._",
+			},
+			"profile_uuid": schema.StringAttribute{
+				Optional: true,
+				MarkdownDescription: "UUID of the configuration profile to resend to hosts that fail the policy, typically `fleetdm_configuration_profile.<name>.profile_uuid`. " +
+					"Fleet accepts Apple configuration profiles and Windows profiles, but not Apple declarations (DDM). The policy's `platform` must include `darwin` or `windows`, or be empty (all platforms). " +
+					"Set to `null` to clear the automation. A profile attached outside Terraform is read into state and cleared on the next apply unless it is set here. _Available in Fleet Premium 4.92+, team policies only._",
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"labels_include_any": schema.SetAttribute{
 				Optional:            true,
@@ -295,6 +325,10 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Attributes: map[string]schema.Attribute{
 					"name":              schema.StringAttribute{Computed: true},
 					"software_title_id": schema.Int64Attribute{Computed: true},
+					"software_package_id": schema.Int64Attribute{
+						Computed:            true,
+						MarkdownDescription: "ID of the package Fleet installs, including the default one when `software_package_id` is unset. Null for App Store (VPP) apps and on Fleet versions before 4.92.",
+					},
 				},
 			},
 			"run_script": schema.SingleNestedAttribute{
@@ -303,6 +337,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Attributes: map[string]schema.Attribute{
 					"name": schema.StringAttribute{Computed: true},
 					"id":   schema.Int64Attribute{Computed: true},
+				},
+			},
+			"resend_configuration_profile": schema.SingleNestedAttribute{
+				Computed:            true,
+				MarkdownDescription: "Echo of the resend-configuration-profile automation attached to this policy. Populated by the Fleet API (4.92+); mirror of `profile_uuid` with the human-readable profile name.",
+				Attributes: map[string]schema.Attribute{
+					"profile_uuid": schema.StringAttribute{Computed: true},
+					"name":         schema.StringAttribute{Computed: true},
 				},
 			},
 			"patch_software": schema.SingleNestedAttribute{
@@ -355,8 +397,11 @@ func knownStringSetValues(set types.Set) []string {
 //     single label may appear on both sides.
 //   - When `type = "patch"`: `patch_software_title_id` and `team_id` are required.
 //   - `patch_software_title_id` is only meaningful when `type = "patch"`.
-//   - Team-only fields (`script_id`, `software_title_id`, the calendar/CA
-//     toggles, `continuous_automations_enabled`) require `team_id` to be set.
+//   - Team-only fields (`script_id`, `software_title_id`, `software_package_id`,
+//     `profile_uuid`, the calendar/CA toggles, `continuous_automations_enabled`)
+//     require `team_id` to be set.
+//   - `profile_uuid` requires a platform list that includes darwin or windows,
+//     or no platform at all.
 //
 // Catching these at plan time (instead of letting the API reject them at
 // apply time) saves users a wasted apply cycle and produces clearer errors.
@@ -559,6 +604,19 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		}
 	}
 
+	// Fleet only resends profiles to macOS and Windows hosts, so it rejects a
+	// profile_uuid on a policy whose platform list names neither (an empty
+	// list means all platforms and is accepted). Unknown elements defer to
+	// the API.
+	profileSet := !data.ProfileUUID.IsNull() && !data.ProfileUUID.IsUnknown() && data.ProfileUUID.ValueString() != ""
+	if profileSet && !isPatchType && platformConfigured && !policyPlatformsCanResendProfile(data.Platform) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("profile_uuid"),
+			"Unsupported platform",
+			"profile_uuid is only supported on policies whose platform includes \"darwin\" or \"windows\", or that target all platforms (platform empty or unset).",
+		)
+	}
+
 	// Team-only fields. Each pair: (model attribute, schema path, "set" predicate).
 	type teamOnly struct {
 		attrPath string
@@ -571,6 +629,8 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 	checks := []teamOnly{
 		{"script_id", !data.ScriptID.IsNull() && !data.ScriptID.IsUnknown()},
 		{"software_title_id", !data.SoftwareTitleID.IsNull() && !data.SoftwareTitleID.IsUnknown()},
+		{"software_package_id", !data.SoftwarePackageID.IsNull() && !data.SoftwarePackageID.IsUnknown()},
+		{"profile_uuid", !data.ProfileUUID.IsNull() && !data.ProfileUUID.IsUnknown()},
 		{"calendar_events_enabled", !data.CalendarEventsEnabled.IsNull() && !data.CalendarEventsEnabled.IsUnknown()},
 		{"conditional_access_enabled", !data.ConditionalAccessEnabled.IsNull() && !data.ConditionalAccessEnabled.IsUnknown()},
 		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
@@ -623,7 +683,9 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		Type:                         data.Type.ValueString(),
 		PatchSoftwareTitleID:         optionalIntPtr(data.PatchSoftwareTitleID),
 		SoftwareTitleID:              optionalIntPtr(data.SoftwareTitleID),
+		SoftwarePackageID:            data.SoftwarePackageID.ValueInt64Pointer(),
 		ScriptID:                     optionalIntPtr(data.ScriptID),
+		ProfileUUID:                  data.ProfileUUID.ValueStringPointer(),
 		ContinuousAutomationsEnabled: data.ContinuousAutomationsEnabled.ValueBool(),
 		PatchWhenClosed:              data.PatchWhenClosed.ValueBool(),
 		LabelsIncludeAny:             stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
@@ -649,7 +711,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 	// single apply.
 	if isTeamPolicy(data.TeamID) && policyNeedsAutomationFollowup(data) {
 		createdID := policy.ID
-		updateReq := buildPolicyUpdateRequest(ctx, data, &resp.Diagnostics)
+		updateReq := buildPolicyUpdateRequest(ctx, data, policyPriorAutomations{}, &resp.Diagnostics)
 		if resp.Diagnostics.HasError() {
 			return
 		}
@@ -662,8 +724,21 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		policy = updated
 	}
 
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	var echo diag.Diagnostics
+	checkFleet492AutomationsEchoed(planned, data, &echo)
+	if echo.HasError() {
+		// Nothing is in state yet, so the policy Fleet just created would be
+		// orphaned and a retry would create a second one. Remove it.
+		if err := r.client.DeletePolicy(ctx, policy.ID, optionalIntPtr(data.TeamID)); err != nil {
+			echo.AddError("Error Cleaning Up FleetDM Policy",
+				fmt.Sprintf("Policy %d was created but its automation was not applied, and deleting it again failed: %s. Delete it in Fleet or import it.", policy.ID, err))
+		}
+		resp.Diagnostics.Append(echo...)
 		return
 	}
 
@@ -704,7 +779,14 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	updateReq := buildPolicyUpdateRequest(ctx, data, &resp.Diagnostics)
+	var prior policyPriorAutomations
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("software_package_id"), &prior.SoftwarePackageID)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("profile_uuid"), &prior.ProfileUUID)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	updateReq := buildPolicyUpdateRequest(ctx, data, prior, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -714,7 +796,9 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
+	checkFleet492AutomationsEchoed(planned, data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -832,7 +916,9 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.HostCountUpdatedAt = stringPtrToString(policy.HostCountUpdatedAt)
 
 	data.SoftwareTitleID, data.InstallSoftware = mapInstallSoftware(policy.InstallSoftware, diags)
+	data.SoftwarePackageID = mapSoftwarePackageID(data.SoftwarePackageID, policy.InstallSoftware)
 	data.ScriptID, data.RunScript = mapRunScript(policy.RunScript, diags)
+	data.ProfileUUID, data.ResendConfigurationProfile = mapResendProfile(policy.ResendConfigurationProfile, diags)
 	data.PatchSoftwareTitleID, data.PatchSoftware = mapPatchSoftware(policy, diags)
 }
 
@@ -923,12 +1009,37 @@ func policyPlatformForRequest(ctx context.Context, data PolicyResourceModel) str
 	return platformListToString(ctx, data.Platform)
 }
 
+// policyPriorAutomations carries the prior-state values of the automation
+// fields whose clearing needs an explicit zero value on the wire. The zero
+// value (both null) means "nothing to clear", as on create.
+type policyPriorAutomations struct {
+	SoftwarePackageID types.Int64
+	ProfileUUID       types.String
+}
+
 // buildPolicyUpdateRequest builds an UpdatePolicyRequest from the planned
 // model. Fields that the API treats as "send null to clear" use pointers
-// without omitempty (see UpdatePolicyRequest doc comment). Element
-// conversion diagnostics from the label sets are appended to diags;
-// callers must check diags.HasError() before using the result.
-func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, diags *diag.Diagnostics) fleetdm.UpdatePolicyRequest {
+// without omitempty (see UpdatePolicyRequest doc comment). The omitempty
+// Fleet 4.92 fields are sent while set, and as 0 / "" only when removed from
+// a prior state that had them. Element conversion diagnostics from the label
+// sets are appended to diags; callers must check diags.HasError() before
+// using the result.
+func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, prior policyPriorAutomations, diags *diag.Diagnostics) fleetdm.UpdatePolicyRequest {
+	var packageID *int64
+	switch {
+	case !data.SoftwarePackageID.IsNull() && !data.SoftwarePackageID.IsUnknown():
+		packageID = data.SoftwarePackageID.ValueInt64Pointer()
+	case data.SoftwarePackageID.IsNull() && !prior.SoftwarePackageID.IsNull() && !prior.SoftwarePackageID.IsUnknown():
+		packageID = new(int64(0))
+	}
+	var profileUUID *string
+	switch {
+	case !data.ProfileUUID.IsNull() && !data.ProfileUUID.IsUnknown():
+		profileUUID = data.ProfileUUID.ValueStringPointer()
+	case data.ProfileUUID.IsNull() && !prior.ProfileUUID.IsNull() && !prior.ProfileUUID.IsUnknown():
+		profileUUID = new("")
+	}
+
 	return fleetdm.UpdatePolicyRequest{
 		Name:                           data.Name.ValueString(),
 		Description:                    data.Description.ValueString(),
@@ -937,7 +1048,9 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, dia
 		Resolution:                     data.Resolution.ValueString(),
 		Platform:                       policyPlatformForRequest(ctx, data),
 		SoftwareTitleID:                optionalIntPtr(data.SoftwareTitleID),
+		SoftwarePackageID:              packageID,
 		ScriptID:                       optionalIntPtr(data.ScriptID),
+		ProfileUUID:                    profileUUID,
 		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
 		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
@@ -957,11 +1070,78 @@ func mapInstallSoftware(s *fleetdm.PolicyAutomationSoftware, diags *diag.Diagnos
 		return types.Int64Null(), types.ObjectNull(policyInstallSoftwareAttrTypes)
 	}
 	obj, dd := types.ObjectValue(policyInstallSoftwareAttrTypes, map[string]attr.Value{
-		"name":              types.StringValue(s.Name),
-		"software_title_id": types.Int64Value(int64(s.SoftwareTitleID)),
+		"name":                types.StringValue(s.Name),
+		"software_title_id":   types.Int64Value(int64(s.SoftwareTitleID)),
+		"software_package_id": types.Int64PointerValue(s.SoftwarePackageID),
 	})
 	diags.Append(dd...)
 	return types.Int64Value(int64(s.SoftwareTitleID)), obj
+}
+
+// mapSoftwarePackageID returns the echoed package for a policy that pins one.
+// Fleet echoes the default package too, so an unpinned (null) value stays
+// null rather than adopting it and drifting from the config.
+func mapSoftwarePackageID(current types.Int64, s *fleetdm.PolicyAutomationSoftware) types.Int64 {
+	if current.IsNull() {
+		return current
+	}
+	if s == nil {
+		return types.Int64Null()
+	}
+	return types.Int64PointerValue(s.SoftwarePackageID)
+}
+
+// checkFleet492AutomationsEchoed turns a silently ignored software_package_id
+// or profile_uuid into a named error. A Fleet before 4.92 drops both keys
+// without echoing them, and a VPP title has no package to pin, so the state
+// would otherwise disagree with the plan and Terraform would only report a
+// generic inconsistent result.
+func checkFleet492AutomationsEchoed(planned policyPriorAutomations, got PolicyResourceModel, diags *diag.Diagnostics) {
+	if !planned.SoftwarePackageID.IsNull() && !planned.SoftwarePackageID.IsUnknown() && got.SoftwarePackageID.IsNull() {
+		diags.AddAttributeError(path.Root("software_package_id"),
+			"Software package pin was not applied",
+			"Fleet accepted the policy but did not report a pinned package. This needs Fleet 4.92.0 or later and a software title backed by a package (App Store apps cannot be pinned). Remove software_package_id or upgrade Fleet.")
+	}
+	if !planned.ProfileUUID.IsNull() && !planned.ProfileUUID.IsUnknown() && got.ProfileUUID.IsNull() {
+		diags.AddAttributeError(path.Root("profile_uuid"),
+			"Configuration profile resend was not applied",
+			"Fleet accepted the policy but did not report a profile to resend. This needs Fleet 4.92.0 or later. Remove profile_uuid or upgrade Fleet.")
+	}
+}
+
+// mapResendProfile extracts the flat profile_uuid from the nested
+// resend_configuration_profile response and builds the matching computed
+// object.
+func mapResendProfile(p *fleetdm.PolicyAutomationProfile, diags *diag.Diagnostics) (types.String, types.Object) {
+	if p == nil {
+		return types.StringNull(), types.ObjectNull(policyResendProfileAttrTypes)
+	}
+	obj, dd := types.ObjectValue(policyResendProfileAttrTypes, map[string]attr.Value{
+		"profile_uuid": types.StringValue(p.ProfileUUID),
+		"name":         types.StringValue(p.Name),
+	})
+	diags.Append(dd...)
+	return types.StringValue(p.ProfileUUID), obj
+}
+
+// policyPlatformsCanResendProfile mirrors Fleet's PolicyVerifyResendProfile:
+// true when the list is empty (all platforms), names darwin or windows, or
+// holds an unknown element that might.
+func policyPlatformsCanResendProfile(platforms types.List) bool {
+	if platforms.IsNull() || platforms.IsUnknown() || len(platforms.Elements()) == 0 {
+		return true
+	}
+	for _, elem := range platforms.Elements() {
+		str, ok := elem.(types.String)
+		if !ok || str.IsUnknown() {
+			return true
+		}
+		switch strings.TrimSpace(str.ValueString()) {
+		case "darwin", "windows":
+			return true
+		}
+	}
+	return false
 }
 
 // mapRunScript extracts the flat script_id from the nested run_script

@@ -506,3 +506,118 @@ func TestUpdateTeamRequest_WireFormat_Fleet491(t *testing.T) {
 		})
 	}
 }
+
+// TestUpdateTeamRequest_WireFormat_Fleet492DiskEncryption pins the
+// per-platform disk encryption keys Fleet 4.92 accepts. The hazard is the
+// flat enable_disk_encryption: Fleet fans a sent value out to all four
+// settings, so it must be absent unless the caller set it. Unset per-platform
+// keys must be absent too, and custom_settings and the response-only
+// apple_settings must never be sent.
+func TestUpdateTeamRequest_WireFormat_Fleet492DiskEncryption(t *testing.T) {
+	base := func(mdm *TeamMDMSettings) UpdateTeamRequest {
+		return UpdateTeamRequest{Name: "t", Description: "d", MDM: mdm}
+	}
+
+	tests := []struct {
+		name string
+		req  UpdateTeamRequest
+		want string
+	}{
+		{
+			name: "macos enable alone, no flat key",
+			req:  base(&TeamMDMSettings{MacOSSettings: &MacOSMDMSettings{EnableDiskEncryption: boolPtr(true)}}),
+			want: `{"name":"t","description":"d","mdm":{"macos_settings":{"enable_disk_encryption":true}}}`,
+		},
+		{
+			name: "macos escrow false is sent, not omitted",
+			req:  base(&TeamMDMSettings{MacOSSettings: &MacOSMDMSettings{EnableEscrowDiskEncryptionKey: boolPtr(false)}}),
+			want: `{"name":"t","description":"d","mdm":{"macos_settings":{"enable_escrow_disk_encryption_key":false}}}`,
+		},
+		{
+			name: "windows disk encryption and canonical BitLocker PIN",
+			req: base(&TeamMDMSettings{WindowsSettings: &WindowsMDMSettings{
+				EnableDiskEncryption: boolPtr(true),
+				RequireBitlockerPIN:  boolPtr(true),
+			}}),
+			want: `{"name":"t","description":"d","mdm":{"windows_settings":{"enable_disk_encryption":true,"require_bitlocker_pin":true}}}`,
+		},
+		{
+			name: "linux escrow alone",
+			req:  base(&TeamMDMSettings{LinuxSettings: &LinuxMDMSettings{EnableEscrowDiskEncryptionKey: boolPtr(true)}}),
+			want: `{"name":"t","description":"d","mdm":{"linux_settings":{"enable_escrow_disk_encryption_key":true}}}`,
+		},
+		{
+			name: "declared blocks with nothing set send empty objects",
+			req: base(&TeamMDMSettings{
+				MacOSSettings:   &MacOSMDMSettings{},
+				WindowsSettings: &WindowsMDMSettings{},
+				LinuxSettings:   &LinuxMDMSettings{},
+			}),
+			want: `{"name":"t","description":"d","mdm":{"macos_settings":{},"windows_settings":{},"linux_settings":{}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := captureUpdateTeamBody(t, tt.req); got != tt.want {
+				t.Errorf("request body mismatch\n got: %s\nwant: %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGetTeam_Fleet492DiskEncryptionResponse decodes the shape Fleet 4.92
+// serves: every per-platform key explicit, the flat key as their AND, and
+// macOS settings under both macos_settings and apple_settings.
+func TestGetTeam_Fleet492DiskEncryptionResponse(t *testing.T) {
+	const body = `{"fleet":{"id":7,"name":"t","mdm":{
+		"enable_disk_encryption": false,
+		"windows_require_bitlocker_pin": false,
+		"macos_settings": {"custom_settings": [{"path": "p.mobileconfig"}], "enable_disk_encryption": true, "enable_escrow_disk_encryption_key": true},
+		"apple_settings": {"configuration_profiles": [{"path": "p.mobileconfig"}], "enable_disk_encryption": true, "enable_escrow_disk_encryption_key": true},
+		"windows_settings": {"custom_settings": null, "enable_managed_local_account": false, "enable_disk_encryption": false, "require_bitlocker_pin": false},
+		"linux_settings": {"enable_escrow_disk_encryption_key": true}
+	}}}`
+
+	decode := func(t *testing.T, raw string) *Team {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, raw)
+		}))
+		defer server.Close()
+		client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+		if err != nil {
+			t.Fatalf("failed to create client: %v", err)
+		}
+		team, err := client.GetTeam(context.Background(), 7)
+		if err != nil {
+			t.Fatalf("GetTeam failed: %v", err)
+		}
+		return team
+	}
+
+	team := decode(t, body)
+	mdm := team.MDM
+	if mdm == nil || mdm.EnableDiskEncryption == nil || *mdm.EnableDiskEncryption {
+		t.Fatalf("expected flat enable_disk_encryption false, got %+v", mdm)
+	}
+	macos := mdm.MacOS()
+	if macos == nil || macos.EnableDiskEncryption == nil || !*macos.EnableDiskEncryption ||
+		macos.EnableEscrowDiskEncryptionKey == nil || !*macos.EnableEscrowDiskEncryptionKey {
+		t.Errorf("unexpected macOS settings: %+v", macos)
+	}
+	if ws := mdm.WindowsSettings; ws == nil || ws.EnableDiskEncryption == nil || *ws.EnableDiskEncryption ||
+		ws.RequireBitlockerPIN == nil || *ws.RequireBitlockerPIN {
+		t.Errorf("unexpected Windows settings: %+v", ws)
+	}
+	if ls := mdm.LinuxSettings; ls == nil || ls.EnableEscrowDiskEncryptionKey == nil || !*ls.EnableEscrowDiskEncryptionKey {
+		t.Errorf("unexpected Linux settings: %+v", ls)
+	}
+
+	// A Fleet that only serves the renamed spelling still reads correctly.
+	renamedOnly := decode(t, `{"fleet":{"id":7,"mdm":{"apple_settings":{"enable_disk_encryption":true}}}}`)
+	if m := renamedOnly.MDM.MacOS(); m == nil || m.EnableDiskEncryption == nil || !*m.EnableDiskEncryption {
+		t.Errorf("expected apple_settings fallback, got %+v", m)
+	}
+}

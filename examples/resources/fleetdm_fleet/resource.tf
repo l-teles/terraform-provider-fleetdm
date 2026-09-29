@@ -13,18 +13,34 @@ resource "fleetdm_fleet" "servers" {
   host_expiry_window  = 30 # Days
 }
 
-# Create a fleet with disk encryption enabled.
+# Create a fleet with per-platform disk encryption (Fleet 4.92 or later).
 #
-# Note that enable_disk_encryption is NOT opt-in: it defaults to false and is
-# written on every apply, so leaving it out of a fleet's configuration disables
-# disk encryption even if an operator turned it on in the Fleet UI.
+# Each platform is configured on its own, and settings you leave out keep
+# whatever value they already have in Fleet. The deprecated top-level
+# enable_disk_encryption sets all four at once and cannot be combined with
+# these attributes.
 resource "fleetdm_fleet" "secure_workstations" {
   name        = "Secure Workstations"
   description = "Workstations with enhanced security"
 
-  enable_disk_encryption = true
-  host_expiry_enabled    = true
-  host_expiry_window     = 14
+  host_expiry_enabled = true
+  host_expiry_window  = 14
+
+  mdm = {
+    macos_settings = {
+      enable_disk_encryption            = true
+      enable_escrow_disk_encryption_key = true
+    }
+    windows_settings = {
+      enable_disk_encryption = true
+      # Fleet only accepts a BitLocker PIN requirement while Windows disk
+      # encryption is enabled.
+      require_bitlocker_pin = true
+    }
+    linux_settings = {
+      enable_escrow_disk_encryption_key = true
+    }
+  }
 }
 
 # Create a fleet with webhook, MDM, integration and feature settings.
@@ -61,8 +77,7 @@ resource "fleetdm_fleet" "managed_laptops" {
   }
 
   mdm = {
-    windows_require_bitlocker_pin = true
-    name_template                 = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+    name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
 
     # minimum_version must be a version Apple still publishes, given exactly:
     # Fleet checks it against Apple's Software Lookup Service.

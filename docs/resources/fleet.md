@@ -34,18 +34,34 @@ resource "fleetdm_fleet" "servers" {
   host_expiry_window  = 30 # Days
 }
 
-# Create a fleet with disk encryption enabled.
+# Create a fleet with per-platform disk encryption (Fleet 4.92 or later).
 #
-# Note that enable_disk_encryption is NOT opt-in: it defaults to false and is
-# written on every apply, so leaving it out of a fleet's configuration disables
-# disk encryption even if an operator turned it on in the Fleet UI.
+# Each platform is configured on its own, and settings you leave out keep
+# whatever value they already have in Fleet. The deprecated top-level
+# enable_disk_encryption sets all four at once and cannot be combined with
+# these attributes.
 resource "fleetdm_fleet" "secure_workstations" {
   name        = "Secure Workstations"
   description = "Workstations with enhanced security"
 
-  enable_disk_encryption = true
-  host_expiry_enabled    = true
-  host_expiry_window     = 14
+  host_expiry_enabled = true
+  host_expiry_window  = 14
+
+  mdm = {
+    macos_settings = {
+      enable_disk_encryption            = true
+      enable_escrow_disk_encryption_key = true
+    }
+    windows_settings = {
+      enable_disk_encryption = true
+      # Fleet only accepts a BitLocker PIN requirement while Windows disk
+      # encryption is enabled.
+      require_bitlocker_pin = true
+    }
+    linux_settings = {
+      enable_escrow_disk_encryption_key = true
+    }
+  }
 }
 
 # Create a fleet with webhook, MDM, integration and feature settings.
@@ -82,8 +98,7 @@ resource "fleetdm_fleet" "managed_laptops" {
   }
 
   mdm = {
-    windows_require_bitlocker_pin = true
-    name_template                 = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+    name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
 
     # minimum_version must be a version Apple still publishes, given exactly:
     # Fleet checks it against Apple's Software Lookup Service.
@@ -123,9 +138,9 @@ resource "fleetdm_fleet" "managed_laptops" {
 ### Optional
 
 - `description` (String) A description of the fleet.
-- `enable_disk_encryption` (Boolean) Whether disk encryption is enforced for hosts in this fleet.
+- `enable_disk_encryption` (Boolean, Deprecated) Whether disk encryption is enforced for hosts in this fleet.
 
-~> **Warning:** unlike the opt-in `mdm` block, this attribute defaults to `false` and is written on every apply, so leaving it out of your configuration actively **disables** disk encryption -- including encryption an operator turned on in the Fleet UI. Set it to `true` explicitly if this fleet should have disk encryption enforced. Making it opt-in like the `mdm` block would change that behaviour and is deferred to the next major version.
+~> **Deprecated:** prefer `mdm.macos_settings`, `mdm.windows_settings` and `mdm.linux_settings`. On Fleet 4.92 and later this attribute reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. An explicit `false` shows no drift while only some platforms are enabled in Fleet, yet every apply still turns all four off. It conflicts with the per-platform disk encryption attributes.
 - `features` (Attributes) Feature settings for this fleet. Only historical_data is writable through the fleet API; enable_host_users, enable_software_inventory and additional_queries can only be set per-fleet through Fleet's GitOps fleet spec, so they are not exposed here. (see [below for nested schema](#nestedatt--features))
 - `host_expiry_enabled` (Boolean) Whether host expiry is enabled for this fleet.
 - `host_expiry_window` (Number) The number of days after which hosts are considered expired.
@@ -187,12 +202,14 @@ Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) t
 - `ipados_updates` (Attributes) Minimum iPadOS version enforced on this fleet's hosts.
 
 Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ipados_updates))
+- `linux_settings` (Attributes) Linux-specific MDM settings for this fleet. Requires Fleet 4.92.0 or later. Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. Conflicts with the deprecated top-level enable_disk_encryption. (see [below for nested schema](#nestedatt--mdm--linux_settings))
+- `macos_settings` (Attributes) macOS-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. Requires Fleet 4.92.0 or later. Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. Conflicts with the deprecated top-level enable_disk_encryption. (see [below for nested schema](#nestedatt--mdm--macos_settings))
 - `macos_updates` (Attributes) Minimum macOS version enforced on this fleet's hosts.
 
 Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--macos_updates))
 - `name_template` (String) Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it.
-- `windows_require_bitlocker_pin` (Boolean) Whether a BitLocker PIN is required before Fleet considers a Windows host compliant.
-- `windows_settings` (Attributes) Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. Requires Fleet 4.91.0 or later. (see [below for nested schema](#nestedatt--mdm--windows_settings))
+- `windows_require_bitlocker_pin` (Boolean, Deprecated) Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. **Deprecated:** use `windows_settings.require_bitlocker_pin`, which Fleet 4.92 made the canonical key. Conflicts with it.
+- `windows_settings` (Attributes) Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. Requires Fleet 4.91.0 or later; `enable_disk_encryption` and `require_bitlocker_pin` require Fleet 4.92.0 or later. Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. Conflicts with the deprecated top-level enable_disk_encryption. (see [below for nested schema](#nestedatt--mdm--windows_settings))
 - `windows_updates` (Attributes) Windows update enforcement for this fleet. Set both attributes to `0` to clear it. (see [below for nested schema](#nestedatt--mdm--windows_updates))
 
 <a id="nestedatt--mdm--ios_updates"></a>
@@ -217,6 +234,23 @@ Optional:
 - `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
 
 
+<a id="nestedatt--mdm--linux_settings"></a>
+### Nested Schema for `mdm.linux_settings`
+
+Optional:
+
+- `enable_escrow_disk_encryption_key` (Boolean) Whether Fleet escrows the LUKS passphrase of this fleet's Linux hosts.
+
+
+<a id="nestedatt--mdm--macos_settings"></a>
+### Nested Schema for `mdm.macos_settings`
+
+Optional:
+
+- `enable_disk_encryption` (Boolean) Whether Fleet enforces FileVault on this fleet's macOS hosts.
+- `enable_escrow_disk_encryption_key` (Boolean) Whether Fleet escrows the FileVault recovery key of this fleet's macOS hosts, independently of whether Fleet enforces FileVault.
+
+
 <a id="nestedatt--mdm--macos_updates"></a>
 ### Nested Schema for `mdm.macos_updates`
 
@@ -233,7 +267,9 @@ Optional:
 
 Optional:
 
+- `enable_disk_encryption` (Boolean) Whether Fleet enforces BitLocker on this fleet's Windows hosts.
 - `enable_managed_local_account` (Boolean) Whether `fleetd` creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires `fleetd` 1.60.0 or later on the host.
+- `require_bitlocker_pin` (Boolean) Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Fleet only accepts `true` while Windows disk encryption is enabled for the fleet. Replaces the deprecated `mdm.windows_require_bitlocker_pin`.
 
 
 <a id="nestedatt--mdm--windows_updates"></a>

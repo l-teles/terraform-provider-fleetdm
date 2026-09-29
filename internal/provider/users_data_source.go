@@ -134,6 +134,21 @@ data "fleetdm_users" "team_users" {
 							MarkdownDescription: "The Gravatar URL for the user.",
 							Computed:            true,
 						},
+						"last_login_at": schema.StringAttribute{
+							Description:         userLastLoginAtDescription,
+							MarkdownDescription: userLastLoginAtDescription,
+							Computed:            true,
+						},
+						"last_activity_at": schema.StringAttribute{
+							Description:         userLastActivityAtDescription,
+							MarkdownDescription: userLastActivityAtDescription,
+							Computed:            true,
+						},
+						"status": schema.StringAttribute{
+							Description:         userStatusDescription,
+							MarkdownDescription: userStatusMarkdownDescription,
+							Computed:            true,
+						},
 						"teams": schema.ListNestedAttribute{
 							Description:         "Team assignments for this user.",
 							MarkdownDescription: "Team assignments for this user.",
@@ -230,6 +245,9 @@ func (d *UsersDataSource) mapUsersToList(ctx context.Context, users []fleetdm.Us
 		"api_only":             types.BoolType,
 		"force_password_reset": types.BoolType,
 		"gravatar_url":         types.StringType,
+		"last_login_at":        types.StringType,
+		"last_activity_at":     types.StringType,
+		"status":               types.StringType,
 		"teams":                types.ListType{ElemType: types.ObjectType{AttrTypes: teamAttrTypes}},
 	}
 
@@ -257,6 +275,9 @@ func (d *UsersDataSource) mapUsersToList(ctx context.Context, users []fleetdm.Us
 				"api_only":             types.BoolValue(u.APIOnly),
 				"force_password_reset": types.BoolValue(u.ForcePasswordReset),
 				"gravatar_url":         types.StringValue(u.GravatarURL),
+				"last_login_at":        stringPtrToString(u.LastLoginAt),
+				"last_activity_at":     stringPtrToString(u.LastActivityAt),
+				"status":               emptyStringToNull(u.Status),
 				"teams":                teamsList,
 			},
 		)

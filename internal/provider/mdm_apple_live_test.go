@@ -225,3 +225,84 @@ resource "fleetdm_fleet" "test" {
 		},
 	})
 }
+
+// TestAccFleetResource_perPlatformDiskEncryptionLive covers the Fleet 4.92
+// per-platform disk encryption keys. The mixed setup is the case the flat
+// attribute cannot express: it reads back false, and before the flat
+// attribute stopped defaulting to false every apply would have zeroed it.
+func TestAccFleetResource_perPlatformDiskEncryptionLive(t *testing.T) {
+	fleetName := "tf-acc-diskenc-pp-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	cfg := func(windows, pin bool) string {
+		pinLine := ""
+		if pin {
+			pinLine = "\n      require_bitlocker_pin  = true"
+		}
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+
+  mdm = {
+    macos_settings = {
+      enable_disk_encryption            = true
+      enable_escrow_disk_encryption_key = true
+    }
+    windows_settings = {
+      enable_disk_encryption = %[2]t%[3]s
+    }
+    linux_settings = {
+      enable_escrow_disk_encryption_key = true
+    }
+  }
+}
+`, fleetName, windows, pinLine)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			skipBeforeFleet492(t)
+		},
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(false, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_settings.enable_disk_encryption", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_settings.enable_escrow_disk_encryption_key", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "false"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.linux_settings.enable_escrow_disk_encryption_key", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "false"),
+				),
+			},
+			{
+				Config:   cfg(false, false),
+				PlanOnly: true,
+			},
+			{
+				// Flipping Windows on flips the AND the flat attribute reports,
+				// and Fleet only accepts the BitLocker PIN once Windows disk
+				// encryption is on.
+				Config: cfg(true, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.require_bitlocker_pin", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "true"),
+				),
+			},
+			{
+				Config:   cfg(true, true),
+				PlanOnly: true,
+			},
+			{
+				// The mdm block is opt-in, so import brings it back null (see
+				// TestAccFleetResource_recoveryLockPasswordLive). The flat
+				// attribute is always read, so it still verifies.
+				ResourceName:            "fleetdm_fleet.test",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"mdm"},
+			},
+		},
+	})
+}

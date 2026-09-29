@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -139,17 +140,21 @@ func fleetSchemaAttributes() map[string]schema.Attribute {
 			Default:             int64default.StaticInt64(0),
 		},
 		"enable_disk_encryption": schema.BoolAttribute{
-			Description: "Whether disk encryption is enforced for hosts in this fleet. " +
-				"Unlike the opt-in mdm block, this attribute defaults to false and is written on every apply, so leaving it out of your configuration actively DISABLES disk encryption -- including encryption an operator turned on in the Fleet UI. " +
-				"Set it to true explicitly if this fleet should have disk encryption enforced. " +
-				"Making it opt-in like the mdm block would change that behaviour and is deferred to the next major version.",
+			Description: "Whether disk encryption is enforced for hosts in this fleet. Deprecated: prefer mdm.macos_settings, mdm.windows_settings and mdm.linux_settings. " +
+				"On Fleet 4.92 and later this reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. " +
+				"It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. An explicit false shows no drift while only some platforms are enabled in Fleet, yet every apply still turns all four off. Conflicts with the per-platform disk encryption attributes.",
 			MarkdownDescription: "Whether disk encryption is enforced for hosts in this fleet.\n\n" +
-				"~> **Warning:** unlike the opt-in `mdm` block, this attribute defaults to `false` and is written on every apply, so leaving it out of your configuration actively **disables** disk encryption -- including encryption an operator turned on in the Fleet UI. " +
-				"Set it to `true` explicitly if this fleet should have disk encryption enforced. " +
-				"Making it opt-in like the `mdm` block would change that behaviour and is deferred to the next major version.",
-			Optional: true,
-			Computed: true,
-			Default:  booldefault.StaticBool(false),
+				"~> **Deprecated:** prefer `mdm.macos_settings`, `mdm.windows_settings` and `mdm.linux_settings`. " +
+				"On Fleet 4.92 and later this attribute reads back as the AND of the four per-platform settings (macOS FileVault enforcement and key escrow, Windows BitLocker enforcement, Linux key escrow), and when it is set Fleet applies it to all four. " +
+				"It is only sent when it is in your configuration; leaving it out keeps whatever Fleet has. An explicit `false` shows no drift while only some platforms are enabled in Fleet, yet every apply still turns all four off. It conflicts with the per-platform disk encryption attributes.",
+			DeprecationMessage: "Use the per-platform settings mdm.macos_settings.enable_disk_encryption, mdm.macos_settings.enable_escrow_disk_encryption_key, mdm.windows_settings.enable_disk_encryption and mdm.linux_settings.enable_escrow_disk_encryption_key instead (requires Fleet 4.92.0 or later).",
+			Optional:           true,
+			Computed:           true,
+			// No UseStateForUnknown: the value is derived from the per-platform
+			// settings, so a plan that changes them must leave it unknown.
+			Validators: []validator.Bool{
+				boolvalidator.ConflictsWith(perPlatformDiskEncryptionPaths()...),
+			},
 		},
 		"webhook_settings": fleetWebhookSettingsAttribute(),
 		"mdm":              fleetMDMAttribute(),
@@ -243,12 +248,18 @@ func (r *FleetResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	var configDiskEncryption types.Bool
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("enable_disk_encryption"), &configDiskEncryption)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// POST /fleets only accepts name and description, so everything else needs a
-	// follow-up PATCH. That PATCH is unconditional: host_expiry_enabled,
-	// host_expiry_window and enable_disk_encryption are Computed with defaults,
-	// so the plan always carries values for them and there is always something
-	// to write.
-	updateReq := buildUpdateTeamRequest(ctx, &plan, &resp.Diagnostics)
+	// follow-up PATCH. That PATCH is unconditional because host_expiry_enabled
+	// and host_expiry_window are Computed with defaults, so there is always
+	// something to write. enable_disk_encryption is not: it is only sent when
+	// it is in the configuration.
+	updateReq := buildUpdateTeamRequest(ctx, &plan, configDiskEncryption, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -325,8 +336,14 @@ func (r *FleetResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		"name": plan.Name.ValueString(),
 	})
 
+	var configDiskEncryption types.Bool
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("enable_disk_encryption"), &configDiskEncryption)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Build update request
-	updateReq := buildUpdateTeamRequest(ctx, &plan, &resp.Diagnostics)
+	updateReq := buildUpdateTeamRequest(ctx, &plan, configDiskEncryption, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -388,8 +405,9 @@ func (r *FleetResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 // buildUpdateTeamRequest assembles the PATCH body from the plan. Shared by
 // Create and Update so the two can never drift apart on which attributes make
-// it onto the wire.
-func buildUpdateTeamRequest(ctx context.Context, plan *FleetResourceModel, diags *diag.Diagnostics) fleetdm.UpdateTeamRequest {
+// it onto the wire. configDiskEncryption is enable_disk_encryption as written
+// in the configuration (null when omitted); see buildMDMSettings.
+func buildUpdateTeamRequest(ctx context.Context, plan *FleetResourceModel, configDiskEncryption types.Bool, diags *diag.Diagnostics) fleetdm.UpdateTeamRequest {
 	req := fleetdm.UpdateTeamRequest{
 		Name:        plan.Name.ValueString(),
 		Description: plan.Description.ValueString(),
@@ -402,7 +420,7 @@ func buildUpdateTeamRequest(ctx context.Context, plan *FleetResourceModel, diags
 		}
 	}
 
-	req.MDM = buildMDMSettings(plan.EnableDiskEncryption, plan.MDM)
+	req.MDM = buildMDMSettings(configDiskEncryption, plan.MDM)
 	req.WebhookSettings = buildWebhookSettings(ctx, plan.WebhookSettings, diags)
 	req.Integrations = buildIntegrations(plan.Integrations)
 	req.Features = buildFeatures(plan.Features)
@@ -426,8 +444,9 @@ func (r *FleetResource) mapTeamToModel(ctx context.Context, team *fleetdm.Team, 
 		model.HostExpiryWindow = types.Int64Value(0)
 	}
 
-	// enable_disk_encryption is Computed with a default, so unlike the nested
-	// blocks it always carries a concrete value.
+	// enable_disk_encryption is Computed, so unlike the nested blocks it is
+	// always read back; Fleet 4.92 reports it as the AND of the per-platform
+	// settings.
 	if team.MDM != nil && team.MDM.EnableDiskEncryption != nil {
 		model.EnableDiskEncryption = types.BoolValue(*team.MDM.EnableDiskEncryption)
 	} else {

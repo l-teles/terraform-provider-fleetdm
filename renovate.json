@@ -9,6 +9,14 @@
   },
   "packageRules": [
     {
+      "minimumReleaseAge": "7 days",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "enabled": true,
+      "description": "Renovate skips `// indirect` Go modules unless told otherwise, so a security fix in a transitive module (grpc GO-2026-6443, reached through terraform-plugin-go) never produced a PR and only surfaced as a govulncheck failure on main. Enabling them also lets Renovate's vulnerability-alert PRs, which bypass minimumReleaseAge and grouping, act on them."
+    },
+    {
+      "minimumReleaseAge": "7 days",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["mysql"],
       "allowedVersions": "<9",
@@ -16,6 +24,7 @@
       "labels": ["chore", "dependencies"]
     },
     {
+      "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
       "matchDepTypes": ["require", "indirect"],
@@ -25,6 +34,7 @@
       "groupName": "go-dependencies"
     },
     {
+      "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
       "matchDepTypes": ["toolchain"],
@@ -34,6 +44,7 @@
       "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
     },
     {
+      "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchFileNames": [".github/security-tools/go.mod"],
       "matchDepTypes": ["require", "indirect"],
@@ -43,6 +54,7 @@
       "groupName": "security-tools"
     },
     {
+      "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchFileNames": [".github/security-tools/go.mod"],
       "matchDepTypes": ["toolchain"],
@@ -52,6 +64,7 @@
       "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
     },
     {
+      "minimumReleaseAge": "7 days",
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "commitMessagePrefix": "ci:",

@@ -23,6 +23,15 @@ type User struct {
 	UpdatedAt          string     `json:"updated_at,omitempty"`
 	Teams              []UserTeam `json:"teams,omitempty"`
 
+	// LastLoginAt and LastActivityAt are RFC3339 timestamps, nil until the
+	// user has logged in or has a live session.
+	LastLoginAt    *string `json:"last_login_at"`
+	LastActivityAt *string `json:"last_activity_at"`
+
+	// Status is "active", "inactive" or "no_access". Fleet computes it at read
+	// time and only returns it from the list-users and get-user endpoints.
+	Status string `json:"status,omitempty"`
+
 	// APIEndpoints is the set of endpoints an API-only user is restricted to.
 	// Fleet only populates it for api_only users that have a scope configured;
 	// an empty value means the user may call every registered endpoint,

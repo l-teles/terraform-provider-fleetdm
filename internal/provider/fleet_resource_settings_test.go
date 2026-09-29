@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 	"github.com/hashicorp/terraform-plugin-testing/tfversion"
+	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
 // ---------------------------------------------------------------------------
@@ -83,9 +85,19 @@ func newFakeFleet() *fakeFleet {
 				"deadline_days":     nil,
 				"grace_period_days": nil,
 			},
+			"macos_settings": map[string]any{
+				"custom_settings":                   nil,
+				"enable_disk_encryption":            false,
+				"enable_escrow_disk_encryption_key": false,
+			},
 			"windows_settings": map[string]any{
 				"custom_settings":              nil,
 				"enable_managed_local_account": false,
+				"enable_disk_encryption":       false,
+				"require_bitlocker_pin":        false,
+			},
+			"linux_settings": map[string]any{
+				"enable_escrow_disk_encryption_key": false,
 			},
 		},
 		"features": map[string]any{
@@ -153,7 +165,16 @@ func (f *fakeFleet) start(t *testing.T) *httptest.Server {
 			if err := json.Unmarshal(raw, &req); err != nil {
 				t.Errorf("failed to unmarshal patch body: %v", err)
 			}
-			f.apply(req)
+			if msg := f.apply(req); msg != "" {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"message": "Validation Failed",
+					"errors":  []map[string]string{{"name": "mdm", "reason": msg}},
+				}); err != nil {
+					t.Errorf("failed to encode error response: %v", err)
+				}
+				return
+			}
 			f.respond(t, w)
 
 		case r.URL.Path == "/api/v1/fleet/fleets/1" && r.Method == http.MethodDelete:
@@ -177,8 +198,16 @@ func (f *fakeFleet) respond(t *testing.T, w http.ResponseWriter) {
 	}
 }
 
-// apply mirrors Fleet v4.91.0's ModifyTeam merge rules.
-func (f *fakeFleet) apply(req map[string]any) {
+// apply mirrors Fleet's ModifyTeam merge rules: v4.91.0 for most keys, and
+// v4.92.1 for disk encryption. It returns a validation message when Fleet
+// would reject the request, in which case nothing is stored.
+func (f *fakeFleet) apply(req map[string]any) string {
+	if v, ok := req["mdm"].(map[string]any); ok {
+		if msg := f.applyDiskEncryption(v); msg != "" {
+			return msg
+		}
+	}
+
 	for _, key := range []string{"name", "description"} {
 		if v, ok := req[key]; ok {
 			f.state[key] = v
@@ -221,10 +250,9 @@ func (f *fakeFleet) apply(req map[string]any) {
 	// mdm, integrations and features merge per sub-key via optjson.
 	if v, ok := req["mdm"].(map[string]any); ok {
 		mdm := f.state["mdm"].(map[string]any)
-		for _, key := range []string{
-			"enable_disk_encryption", "enable_recovery_lock_password",
-			"windows_require_bitlocker_pin", "name_template",
-		} {
+		// Disk encryption and the BitLocker PIN were merged by
+		// applyDiskEncryption above.
+		for _, key := range []string{"enable_recovery_lock_password", "name_template"} {
 			if val, ok := v[key]; ok {
 				mdm[key] = val
 			}
@@ -252,13 +280,8 @@ func (f *fakeFleet) apply(req map[string]any) {
 		// windows_settings merges per sub-key so that custom_settings, which the
 		// provider never sends, survives a PATCH.
 		if sub, ok := v["windows_settings"].(map[string]any); ok {
-			target, ok := mdm["windows_settings"].(map[string]any)
-			if !ok {
-				target = map[string]any{}
-				mdm["windows_settings"] = target
-			}
-			for k, val := range sub {
-				target[k] = val
+			if val, ok := sub["enable_managed_local_account"]; ok && val != nil {
+				mdm["windows_settings"].(map[string]any)["enable_managed_local_account"] = val
 			}
 		}
 	}
@@ -287,6 +310,85 @@ func (f *fakeFleet) apply(req map[string]any) {
 			}
 		}
 	}
+	return ""
+}
+
+// fakeDiskEncryptionKeys are the four per-platform settings the deprecated
+// flat enable_disk_encryption fans out to, as {block, key}.
+var fakeDiskEncryptionKeys = [][2]string{
+	{"macos_settings", "enable_disk_encryption"},
+	{"macos_settings", "enable_escrow_disk_encryption_key"},
+	{"windows_settings", "enable_disk_encryption"},
+	{"linux_settings", "enable_escrow_disk_encryption_key"},
+}
+
+// applyDiskEncryption ports the disk encryption and BitLocker PIN merge from
+// Fleet v4.92.1's ModifyTeam (ee/server/service/teams.go). The flat
+// enable_disk_encryption is virtual: it is stored as the AND of the four.
+func (f *fakeFleet) applyDiskEncryption(req map[string]any) string {
+	mdm := f.state["mdm"].(map[string]any)
+	stored := func(k [2]string) bool { return mdm[k[0]].(map[string]any)[k[1]].(bool) }
+	incoming := func(block, key string) (bool, bool) {
+		sub, _ := req[block].(map[string]any)
+		val, ok := sub[key].(bool)
+		return val, ok
+	}
+
+	oldAll := true
+	for _, k := range fakeDiskEncryptionKeys {
+		oldAll = oldAll && stored(k)
+	}
+	flat, flatValid := req["enable_disk_encryption"].(bool)
+	flatChanged := flatValid && flat != oldAll
+
+	next := make([]bool, len(fakeDiskEncryptionKeys))
+	for i, k := range fakeDiskEncryptionKeys {
+		old := stored(k)
+		inc, incValid := incoming(k[0], k[1])
+		incChanged := incValid && inc != old
+		switch {
+		case incChanged && flatChanged && inc != flat:
+			return "mdm.enable_disk_encryption conflicts with per-platform disk encryption settings"
+		case incChanged:
+			next[i] = inc
+		case flatValid && (flatChanged || !incValid):
+			next[i] = flat
+		case incValid:
+			next[i] = inc
+		default:
+			next[i] = old
+		}
+	}
+
+	winSettings := mdm["windows_settings"].(map[string]any)
+	oldWindows := winSettings["enable_disk_encryption"].(bool)
+	pin := winSettings["require_bitlocker_pin"].(bool)
+	deprecatedPIN, deprecatedValid := req["windows_require_bitlocker_pin"].(bool)
+	canonicalPIN, canonicalValid := incoming("windows_settings", "require_bitlocker_pin")
+	switch {
+	case deprecatedValid && canonicalValid && deprecatedPIN != canonicalPIN:
+		return "mdm.windows_require_bitlocker_pin conflicts with mdm.windows_settings.require_bitlocker_pin"
+	case canonicalValid:
+		pin = canonicalPIN
+	case deprecatedValid:
+		pin = deprecatedPIN
+	}
+	if newWindows := next[2]; pin && !newWindows {
+		if oldWindows {
+			return "mdm.windows_settings.enable_disk_encryption can't be disabled while a BitLocker PIN is required"
+		}
+		return "mdm.windows_settings.require_bitlocker_pin requires Windows disk encryption"
+	}
+
+	all := true
+	for i, k := range fakeDiskEncryptionKeys {
+		mdm[k[0]].(map[string]any)[k[1]] = next[i]
+		all = all && next[i]
+	}
+	mdm["enable_disk_encryption"] = all
+	winSettings["require_bitlocker_pin"] = pin
+	mdm["windows_require_bitlocker_pin"] = pin
+	return ""
 }
 
 // withDefaults fills in the keys a Go value-struct would have zeroed.
@@ -789,6 +891,9 @@ func TestAccFleetResource_moveStateWithPopulatedBlocks(t *testing.T) {
 
   mdm = {
     windows_require_bitlocker_pin = true
+    windows_settings = {
+      enable_disk_encryption = true
+    }
     windows_updates = {
       deadline_days     = 5
       grace_period_days = 1
@@ -1034,6 +1139,10 @@ resource "fleetdm_fleet" "test" {
   }
 
   mdm = {
+    # Fleet 4.92 rejects a BitLocker PIN unless Windows disk encryption is on.
+    windows_settings = {
+      enable_disk_encryption = true
+    }
     windows_require_bitlocker_pin = true
     name_template                 = "tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"
     windows_updates = {
@@ -1065,6 +1174,7 @@ resource "fleetdm_fleet" "test" {
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.failing_policies_webhook.host_batch_size", "25"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_status_webhook.host_percentage", "10"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "webhook_settings.host_status_webhook.days_count", "3"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "true"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_require_bitlocker_pin", "true"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.name_template", "tf-acc-$FLEET_VAR_HOST_HARDWARE_SERIAL"),
 					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_updates.deadline_days", "7"),
@@ -1318,9 +1428,420 @@ resource "fleetdm_fleet" "test" {
 	})
 }
 
-// TestAccFleetResource_windowsSettingsMock covers mdm.windows_settings, whose
-// only writable key is the managed local account toggle. Configuration profiles
-// must never be sent through it.
+// ---------------------------------------------------------------------------
+// Fleet 4.92 per-platform disk encryption
+// ---------------------------------------------------------------------------
+
+func TestBuildMDMSettings_PerPlatformDiskEncryption(t *testing.T) {
+	tests := []struct {
+		name string
+		flat types.Bool
+		mdm  *fleetMDMModel
+		want string
+	}{
+		{
+			name: "nothing configured sends no mdm object",
+			flat: types.BoolNull(),
+			want: `null`,
+		},
+		{
+			name: "flat only",
+			flat: types.BoolValue(false),
+			want: `{"enable_disk_encryption":false}`,
+		},
+		{
+			name: "declared blocks with unset attributes send empty objects",
+			flat: types.BoolNull(),
+			mdm: &fleetMDMModel{
+				MacOSSettings:   &fleetMacOSSettingsModel{},
+				WindowsSettings: &fleetWindowsSettingsModel{},
+				LinuxSettings:   &fleetLinuxSettingsModel{},
+			},
+			want: `{"macos_settings":{},"windows_settings":{},"linux_settings":{}}`,
+		},
+		{
+			name: "mixed per-platform values, false included",
+			flat: types.BoolNull(),
+			mdm: &fleetMDMModel{
+				MacOSSettings: &fleetMacOSSettingsModel{
+					EnableDiskEncryption:          types.BoolValue(true),
+					EnableEscrowDiskEncryptionKey: types.BoolNull(),
+				},
+				WindowsSettings: &fleetWindowsSettingsModel{
+					EnableDiskEncryption: types.BoolValue(false),
+					RequireBitlockerPIN:  types.BoolValue(false),
+				},
+				LinuxSettings: &fleetLinuxSettingsModel{
+					EnableEscrowDiskEncryptionKey: types.BoolValue(true),
+				},
+			},
+			want: `{"macos_settings":{"enable_disk_encryption":true},` +
+				`"windows_settings":{"enable_disk_encryption":false,"require_bitlocker_pin":false},` +
+				`"linux_settings":{"enable_escrow_disk_encryption_key":true}}`,
+		},
+		{
+			name: "unknown values are not sent",
+			flat: types.BoolUnknown(),
+			mdm: &fleetMDMModel{
+				MacOSSettings: &fleetMacOSSettingsModel{EnableEscrowDiskEncryptionKey: types.BoolUnknown()},
+			},
+			want: `{"macos_settings":{}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(buildMDMSettings(tt.flat, tt.mdm))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("mdm payload mismatch\n got: %s\nwant: %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRefreshMDM_PerPlatformDiskEncryption(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	t.Run("declared attributes take the echoed values", func(t *testing.T) {
+		m := &fleetMDMModel{
+			MacOSSettings: &fleetMacOSSettingsModel{
+				EnableDiskEncryption:          types.BoolValue(false),
+				EnableEscrowDiskEncryptionKey: types.BoolNull(),
+			},
+			WindowsSettings: &fleetWindowsSettingsModel{
+				EnableDiskEncryption: types.BoolValue(false),
+				RequireBitlockerPIN:  types.BoolValue(false),
+			},
+			LinuxSettings: &fleetLinuxSettingsModel{EnableEscrowDiskEncryptionKey: types.BoolValue(false)},
+		}
+		refreshMDM(m, &fleetdm.TeamMDMSettings{
+			MacOSSettings: &fleetdm.MacOSMDMSettings{
+				EnableDiskEncryption:          boolPtr(true),
+				EnableEscrowDiskEncryptionKey: boolPtr(true),
+			},
+			WindowsSettings: &fleetdm.WindowsMDMSettings{
+				EnableDiskEncryption: boolPtr(true),
+				RequireBitlockerPIN:  boolPtr(true),
+			},
+			LinuxSettings: &fleetdm.LinuxMDMSettings{EnableEscrowDiskEncryptionKey: boolPtr(true)},
+		})
+		if !m.MacOSSettings.EnableDiskEncryption.ValueBool() ||
+			!m.WindowsSettings.EnableDiskEncryption.ValueBool() ||
+			!m.WindowsSettings.RequireBitlockerPIN.ValueBool() ||
+			!m.LinuxSettings.EnableEscrowDiskEncryptionKey.ValueBool() {
+			t.Errorf("declared attributes should read back true, got %+v %+v %+v", *m.MacOSSettings, *m.WindowsSettings, *m.LinuxSettings)
+		}
+		if !m.MacOSSettings.EnableEscrowDiskEncryptionKey.IsNull() {
+			t.Errorf("an undeclared attribute must stay null, got %s", m.MacOSSettings.EnableEscrowDiskEncryptionKey)
+		}
+	})
+
+	t.Run("undeclared blocks stay nil", func(t *testing.T) {
+		m := &fleetMDMModel{}
+		refreshMDM(m, &fleetdm.TeamMDMSettings{
+			MacOSSettings: &fleetdm.MacOSMDMSettings{EnableDiskEncryption: boolPtr(true)},
+			LinuxSettings: &fleetdm.LinuxMDMSettings{EnableEscrowDiskEncryptionKey: boolPtr(true)},
+		})
+		if m.MacOSSettings != nil || m.WindowsSettings != nil || m.LinuxSettings != nil {
+			t.Errorf("undeclared blocks must not be populated: %+v", m)
+		}
+	})
+
+	t.Run("apple_settings is the fallback spelling", func(t *testing.T) {
+		m := &fleetMDMModel{MacOSSettings: &fleetMacOSSettingsModel{EnableDiskEncryption: types.BoolValue(false)}}
+		refreshMDM(m, &fleetdm.TeamMDMSettings{
+			AppleSettings: &fleetdm.MacOSMDMSettings{EnableDiskEncryption: boolPtr(true)},
+		})
+		if m.MacOSSettings == nil || !m.MacOSSettings.EnableDiskEncryption.ValueBool() {
+			t.Errorf("expected macos_settings to be read from apple_settings, got %+v", m.MacOSSettings)
+		}
+	})
+
+	// A pre-4.92 Fleet ignores the keys: macos_settings and linux_settings are
+	// missing or lack them. That must not read back as applied.
+	t.Run("keys an older Fleet does not echo are cleared", func(t *testing.T) {
+		m := &fleetMDMModel{
+			MacOSSettings:   &fleetMacOSSettingsModel{EnableDiskEncryption: types.BoolValue(true)},
+			WindowsSettings: &fleetWindowsSettingsModel{EnableDiskEncryption: types.BoolValue(true)},
+			LinuxSettings:   &fleetLinuxSettingsModel{EnableEscrowDiskEncryptionKey: types.BoolValue(true)},
+		}
+		refreshMDM(m, &fleetdm.TeamMDMSettings{
+			MacOSSettings:   &fleetdm.MacOSMDMSettings{},
+			WindowsSettings: &fleetdm.WindowsMDMSettings{EnableManagedLocalAccount: boolPtr(false)},
+		})
+		if m.MacOSSettings == nil || !m.MacOSSettings.EnableDiskEncryption.IsNull() {
+			t.Errorf("macos enable_disk_encryption should be cleared, got %+v", m.MacOSSettings)
+		}
+		if m.WindowsSettings == nil || !m.WindowsSettings.EnableDiskEncryption.IsNull() {
+			t.Errorf("windows enable_disk_encryption should be cleared, got %+v", m.WindowsSettings)
+		}
+		if m.LinuxSettings != nil {
+			t.Errorf("linux_settings should be dropped when Fleet does not report it, got %+v", m.LinuxSettings)
+		}
+	})
+}
+
+// TestAccFleetResource_flatDiskEncryptionNotSentWhenUnset is the regression
+// test for the flat attribute's old default: every apply sent
+// enable_disk_encryption:false, which on Fleet 4.92 zeroes all four
+// per-platform settings, including ones an operator enabled in the UI.
+func TestAccFleetResource_flatDiskEncryptionNotSentWhenUnset(t *testing.T) {
+	fake := newFakeFleet()
+	// macOS encryption enabled outside Terraform: the flat value reads false.
+	fake.state["mdm"].(map[string]any)["macos_settings"].(map[string]any)["enable_disk_encryption"] = true
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	cfg := func(description string) string {
+		return provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name        = %q
+  description = %q
+}
+`, name, description)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("first"),
+				Check:  resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "false"),
+			},
+			{
+				// An unrelated update is where the old default clobbered.
+				Config: cfg("second"),
+				Check:  resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "false"),
+			},
+			{
+				Config:   cfg("second"),
+				PlanOnly: true,
+			},
+		},
+	})
+
+	bodies := fake.patchBodies()
+	if len(bodies) < 2 {
+		t.Fatalf("expected a PATCH for create and for update, got %d", len(bodies))
+	}
+	for _, body := range bodies {
+		if strings.Contains(body, "enable_disk_encryption") || strings.Contains(body, `"mdm"`) {
+			t.Errorf("PATCH body must not carry disk encryption when it is not configured: %s", body)
+		}
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if !fake.state["mdm"].(map[string]any)["macos_settings"].(map[string]any)["enable_disk_encryption"].(bool) {
+		t.Error("macOS disk encryption enabled outside Terraform was cleared")
+	}
+}
+
+// TestAccFleetResource_perPlatformDiskEncryptionMock round-trips a mixed
+// per-platform config, then flips it so the AND the flat attribute reports
+// goes from false to true. The flip is what an UseStateForUnknown plan
+// modifier on the flat attribute would turn into an inconsistent-result error.
+func TestAccFleetResource_perPlatformDiskEncryptionMock(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	cfg := func(windows bool) string {
+		return provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  mdm = {
+    macos_settings = {
+      enable_disk_encryption            = true
+      enable_escrow_disk_encryption_key = true
+    }
+    windows_settings = {
+      enable_disk_encryption = %t
+    }
+    linux_settings = {
+      enable_escrow_disk_encryption_key = true
+    }
+  }
+}
+`, name, windows)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_settings.enable_disk_encryption", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.macos_settings.enable_escrow_disk_encryption_key", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "false"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.linux_settings.enable_escrow_disk_encryption_key", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "false"),
+					resource.TestCheckNoResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.require_bitlocker_pin"),
+				),
+			},
+			{
+				Config:   cfg(false),
+				PlanOnly: true,
+			},
+			{
+				Config: cfg(true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "enable_disk_encryption", "true"),
+				),
+			},
+			{
+				Config:   cfg(true),
+				PlanOnly: true,
+			},
+		},
+	})
+
+	for _, body := range fake.patchBodies() {
+		if strings.Contains(body, `"mdm":{"enable_disk_encryption"`) || strings.Contains(body, "custom_settings") {
+			t.Errorf("per-platform config must not send the flat key or profiles: %s", body)
+		}
+	}
+}
+
+// TestAccFleetResource_bitlockerPINCanonicalKeyMock covers the canonical
+// windows_settings.require_bitlocker_pin. Fleet refuses the PIN without
+// Windows disk encryption, so the two are set together.
+func TestAccFleetResource_bitlockerPINCanonicalKeyMock(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	config := fakeFleetProviderConfig(server.URL) + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+
+  mdm = {
+    windows_settings = {
+      enable_disk_encryption = true
+      require_bitlocker_pin  = true
+    }
+  }
+}
+`, name)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.require_bitlocker_pin", "true"),
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "mdm.windows_settings.enable_disk_encryption", "true"),
+					resource.TestCheckNoResourceAttr("fleetdm_fleet.test", "mdm.windows_require_bitlocker_pin"),
+				),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+
+	for _, body := range fake.patchBodies() {
+		if strings.Contains(body, "windows_require_bitlocker_pin") {
+			t.Errorf("the deprecated key must not be sent when only the canonical one is configured: %s", body)
+		}
+	}
+}
+
+// TestAccFleetResource_diskEncryptionConflicts pins the plan-time refusals.
+// Fleet answers the flat/per-platform mix with a 400 when the values disagree
+// and silently prefers one side otherwise, so the provider refuses it outright.
+func TestAccFleetResource_diskEncryptionConflicts(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	provider := fakeFleetProviderConfig(server.URL)
+
+	tests := []struct {
+		name  string
+		attrs string
+	}{
+		{
+			name: "flat with macos enable_disk_encryption",
+			attrs: `
+  enable_disk_encryption = true
+  mdm = {
+    macos_settings = { enable_disk_encryption = true }
+  }`,
+		},
+		{
+			name: "flat with macos escrow",
+			attrs: `
+  enable_disk_encryption = false
+  mdm = {
+    macos_settings = { enable_escrow_disk_encryption_key = true }
+  }`,
+		},
+		{
+			name: "flat with windows enable_disk_encryption",
+			attrs: `
+  enable_disk_encryption = true
+  mdm = {
+    windows_settings = { enable_disk_encryption = false }
+  }`,
+		},
+		{
+			name: "flat with linux escrow",
+			attrs: `
+  enable_disk_encryption = true
+  mdm = {
+    linux_settings = { enable_escrow_disk_encryption_key = true }
+  }`,
+		},
+		{
+			name: "deprecated and canonical BitLocker PIN",
+			attrs: `
+  mdm = {
+    windows_require_bitlocker_pin = true
+    windows_settings = {
+      enable_disk_encryption = true
+      require_bitlocker_pin  = true
+    }
+  }`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: provider + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+%s
+}
+`, name, tt.attrs),
+						PlanOnly:    true,
+						ExpectError: regexp.MustCompile(`(?s)Invalid\s+Attribute\s+Combination.*cannot\s+be\s+specified`),
+					},
+				},
+			})
+		})
+	}
+
+	if bodies := fake.patchBodies(); len(bodies) != 0 {
+		t.Errorf("a refused combination must never reach Fleet, got %v", bodies)
+	}
+}
+
+// TestAccFleetResource_windowsSettingsMock covers mdm.windows_settings'
+// managed local account toggle. Configuration profiles must never be sent
+// through the block.
 func TestAccFleetResource_windowsSettingsMock(t *testing.T) {
 	fake := newFakeFleet()
 	server := fake.start(t)

@@ -69,7 +69,7 @@ func (d *HostsDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 				Optional:            true,
 			},
 			"status": schema.StringAttribute{
-				MarkdownDescription: "Filter by host status (online, offline, mia, new, missing).",
+				MarkdownDescription: "Filter by host status (online, offline, mia, new, missing, enrolled). `enrolled` matches every host except those pending MDM enrollment and requires Fleet 4.92 or later.",
 				Optional:            true,
 			},
 			"team_id": schema.Int64Attribute{

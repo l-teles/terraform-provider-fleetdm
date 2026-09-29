@@ -88,3 +88,18 @@ resource "fleetdm_policy" "scoped" {
   # on the transition into failing. Team policies only.
   continuous_automations_enabled = true
 }
+
+# Fleet 4.92+: resend a configuration profile to failing hosts, and pin which
+# package of a multi-package title the install-software automation uses.
+# Both are team-only. profile_uuid needs a platform that includes darwin or
+# windows (or no platform), and software_package_id needs software_title_id.
+resource "fleetdm_policy" "vpn_ready" {
+  name         = "VPN client installed and configured"
+  query        = "SELECT 1 FROM apps WHERE bundle_identifier = 'com.example.vpn';"
+  team_id      = fleetdm_fleet.workstations.id
+  platform     = ["darwin"]
+  profile_uuid = fleetdm_configuration_profile.vpn.profile_uuid
+
+  software_title_id   = fleetdm_software_custom_package.vpn_client.title_id
+  software_package_id = 1234
+}

@@ -73,7 +73,7 @@ output "online_hosts" {
 - `platform` (String) Filter by platform (darwin, windows, ubuntu, etc.).
 - `policy_id` (Number) Filter by policy ID.
 - `query` (String) Search query string to filter hosts by hostname, display name, or IP.
-- `status` (String) Filter by host status (online, offline, mia, new, missing).
+- `status` (String) Filter by host status (online, offline, mia, new, missing, enrolled). `enrolled` matches every host except those pending MDM enrollment and requires Fleet 4.92 or later.
 - `team_id` (Number) Filter by team ID.
 
 ### Read-Only
