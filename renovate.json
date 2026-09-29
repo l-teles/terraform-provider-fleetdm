@@ -3,6 +3,7 @@
   "extends": ["config:recommended"],
   "minimumReleaseAge": "7 days",
   "prConcurrentLimit": 10,
+  "labels": ["dependencies"],
   "gomod": {
     "description": "Run `go mod tidy` after every Go update. Without it Renovate records only the /go.mod hashes for a bumped version, so go.sum ends up missing the module-zip (h1:) hashes and keeps superseded entries. Tool-only modules break outright, because `go install` runs in -mod=readonly.",
     "postUpdateOptions": ["gomodTidy"]
@@ -12,8 +13,16 @@
       "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchDepTypes": ["indirect"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
       "enabled": true,
-      "description": "Renovate skips `// indirect` Go modules unless told otherwise, so a security fix in a transitive module (grpc GO-2026-6443, reached through terraform-plugin-go) never produced a PR and only surfaced as a govulncheck failure on main. Enabling them also lets Renovate's vulnerability-alert PRs, which bypass minimumReleaseAge and grouping, act on them."
+      "description": "Renovate skips `// indirect` Go modules unless told otherwise, so a security fix in a transitive module (grpc GO-2026-6443, reached through terraform-plugin-go) never produced a PR and only surfaced as a govulncheck failure on main. Enabling them also lets Renovate's vulnerability-alert PRs, which bypass minimumReleaseAge and grouping, act on them. Major updates stay off: the importing module picks the major module path, so rewriting an indirect requirement to /v2 only produces an unused line."
+    },
+    {
+      "minimumReleaseAge": "7 days",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["google.golang.org/grpc"],
+      "allowedVersions": "!/^1\\.84\\./",
+      "description": "The Go vulnerability database's range for GO-2026-6443 wrongly covers the released grpc 1.84 line, so govulncheck fails on any 1.84.x even though the fix is in it (golang/vulndb#6580). Remove once that report is corrected."
     },
     {
       "minimumReleaseAge": "7 days",
@@ -21,16 +30,15 @@
       "matchPackageNames": ["mysql"],
       "allowedVersions": "<9",
       "description": "Fleet's migrations and generated columns compute checksums with MySQL's MD5(), which MySQL removed in the 26.x line. Upstream Fleet tests only 8.0.44/8.4.8/9.5.0 and documents 9.6.0 as incompatible, so CI stays on the 8.4 LTS.",
-      "labels": ["chore", "dependencies"]
+      "addLabels": ["chore"]
     },
     {
       "minimumReleaseAge": "7 days",
       "matchManagers": ["gomod"],
       "matchFileNames": ["go.mod"],
       "matchDepTypes": ["require", "indirect"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
       "commitMessagePrefix": "deps:",
-      "labels": ["dependencies"],
       "groupName": "go-dependencies"
     },
     {
@@ -40,7 +48,6 @@
       "matchDepTypes": ["toolchain"],
       "separateMinorPatch": true,
       "commitMessagePrefix": "deps:",
-      "labels": ["dependencies"],
       "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
     },
     {
@@ -48,9 +55,9 @@
       "matchManagers": ["gomod"],
       "matchFileNames": [".github/security-tools/go.mod"],
       "matchDepTypes": ["require", "indirect"],
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
       "commitMessagePrefix": "ci:",
-      "labels": ["chore", "dependencies"],
+      "addLabels": ["chore"],
       "groupName": "security-tools"
     },
     {
@@ -60,7 +67,7 @@
       "matchDepTypes": ["toolchain"],
       "separateMinorPatch": true,
       "commitMessagePrefix": "ci:",
-      "labels": ["chore", "dependencies"],
+      "addLabels": ["chore"],
       "description": "Left ungrouped so a Go stdlib security patch merges as its own PR, independent of regular dependency bumps."
     },
     {
@@ -68,7 +75,7 @@
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor", "patch"],
       "commitMessagePrefix": "ci:",
-      "labels": ["chore"],
+      "addLabels": ["chore"],
       "groupName": "github-actions"
     }
   ]
