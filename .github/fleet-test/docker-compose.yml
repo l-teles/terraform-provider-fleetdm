@@ -59,7 +59,7 @@ services:
   # installer upload 403s. Test-only credentials for an ephemeral local store,
   # not a real secret.
   s3:
-    image: rustfs/rustfs:1.0.0-alpha.85@sha256:23ff2af1ec2d64e0fb9608a1c39b5eb96fcff3a8efecf332986c948b0e3e4f8a
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     network_mode: "host"
     environment:
       RUSTFS_ADDRESS: 0.0.0.0:9000
