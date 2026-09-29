@@ -26,6 +26,13 @@
     },
     {
       "minimumReleaseAge": "7 days",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["google.golang.org/api"],
+      "allowedVersions": "<0.299.0",
+      "description": "google.golang.org/api v0.299.0 requires grpc v1.84.0, so a security-tools group PR that takes it would drag grpc back onto the 1.84 line through `go mod tidy` and fail govulncheck. Goes away together with the grpc rule above."
+    },
+    {
+      "minimumReleaseAge": "7 days",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["mysql"],
       "allowedVersions": "<9",
