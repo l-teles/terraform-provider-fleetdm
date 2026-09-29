@@ -34,6 +34,7 @@ make docs    # runs: go generate ./...
 # Format / lint
 make fmt     # gofmt -s -w .
 make lint    # golangci-lint run ./...
+make fuzz    # run every Fuzz* target briefly (FUZZTIME=10s per target)
 ```
 
 ## Architecture
