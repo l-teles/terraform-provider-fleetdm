@@ -37,4 +37,10 @@ jobs:
             - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
               with:
                   languages: go
+                  build-mode: manual
+            # The Go autobuilder runs the first build script it finds (`make`,
+            # whose default target is the acceptance suite) and visits every
+            # go.mod, including the package-less tools module. A plain build is
+            # all the extractor needs.
+            - run: go build ./...
             - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
