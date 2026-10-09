@@ -847,10 +847,16 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 		`"calendar_events_enabled":null`,
 		`"conditional_access_enabled":null`,
 		`"conditional_access_bypass_enabled":null`,
-		`"continuous_automations_enabled":null`,
 	} {
 		if !strings.Contains(rawBody, want) {
 			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
+		}
+	}
+	// The premium-only switches are omitted rather than sent as null: Fleet
+	// Free rejects them whenever they are present.
+	for _, key := range []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching"} {
+		if strings.Contains(rawBody, `"`+key+`"`) {
+			t.Errorf("expected request body to omit %q, body was: %s", key, rawBody)
 		}
 	}
 }
