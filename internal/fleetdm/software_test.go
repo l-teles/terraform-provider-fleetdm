@@ -184,6 +184,56 @@ func TestClient_ListSoftwareVersions(t *testing.T) {
 	}
 }
 
+// TestClient_ListSoftwareVersionsPaginates covers Fleet 4.93+, which caps an
+// unpaginated list at 10,000 rows: the client must page explicitly and keep
+// going while Fleet reports more results.
+func TestClient_ListSoftwareVersionsPaginates(t *testing.T) {
+	var pages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if got := q.Get("per_page"); got != "1000" {
+			t.Errorf("expected per_page=1000, got %q", got)
+		}
+		if got := q.Get("query"); got != "chrome" {
+			t.Errorf("expected the query filter on every page, got %q", got)
+		}
+		pages = append(pages, q.Get("page"))
+
+		resp := listSoftwareVersionsResponse{Count: 3, Meta: &PaginationMeta{}}
+		switch q.Get("page") {
+		case "":
+			resp.Software = []SoftwareVersion{{ID: 1}, {ID: 2}}
+			resp.Meta.HasNextResults = true
+		case "1":
+			resp.Software = []SoftwareVersion{{ID: 3}}
+			resp.Count = 99 // only the first page's count is reported
+		default:
+			t.Errorf("unexpected page %q", q.Get("page"))
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	versions, count, err := client.ListSoftwareVersions(context.Background(), SoftwareVersionListOptions{Query: "chrome"})
+	if err != nil {
+		t.Fatalf("failed to list software versions: %v", err)
+	}
+	if len(pages) != 2 || pages[0] != "" || pages[1] != "1" {
+		t.Errorf("expected pages [\"\" \"1\"], got %q", pages)
+	}
+	if count != 3 {
+		t.Errorf("expected count 3, got %d", count)
+	}
+	if len(versions) != 3 || versions[2].ID != 3 {
+		t.Errorf("expected 3 versions ending with id 3, got %+v", versions)
+	}
+}
+
 func TestClient_GetSoftwareVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/fleet/software/versions/1" {
@@ -1167,8 +1217,9 @@ func TestClient_ListSoftwareVersionsWithFilters(t *testing.T) {
 		if query.Get("vulnerable") != "true" {
 			t.Errorf("expected vulnerable=true, got: %s", query.Get("vulnerable"))
 		}
-		if query.Get("per_page") != "10" {
-			t.Errorf("expected per_page=10, got: %s", query.Get("per_page"))
+		// The walk sets its own page size; a caller's PerPage is ignored.
+		if query.Get("per_page") != "1000" {
+			t.Errorf("expected per_page=1000, got: %s", query.Get("per_page"))
 		}
 
 		resp := listSoftwareVersionsResponse{

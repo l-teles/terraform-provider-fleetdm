@@ -458,27 +458,55 @@ func (c *Client) GetSoftwareTitle(ctx context.Context, id int, teamID *int) (*So
 	return resp.SoftwareTitle, nil
 }
 
-// ListSoftwareVersions retrieves all software versions.
+const (
+	// softwareVersionsPerPage is the page size used when walking
+	// GET /software/versions. Since Fleet 4.93 an unpaginated request returns
+	// at most 10,000 rows, so the list is always paged explicitly.
+	softwareVersionsPerPage = 1000
+
+	// maxSoftwareVersionsPages bounds the walk so a server that keeps
+	// reporting has_next_results cannot spin forever.
+	maxSoftwareVersionsPages = 1000
+)
+
+// ListSoftwareVersions retrieves all software versions matching opts, walking
+// every page. opts.Page and opts.PerPage are ignored.
 func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionListOptions) ([]SoftwareVersion, int, error) {
-	params := make(map[string]string)
+	var versions []SoftwareVersion
+	count := 0
 
-	if opts.TeamID != nil {
-		params["team_id"] = strconv.Itoa(*opts.TeamID)
-	}
-	if opts.Query != "" {
-		params["query"] = opts.Query
-	}
-	if opts.VulnerableOnly {
-		params["vulnerable"] = "true"
-	}
-	opts.applyListParams(params)
+	for page := range maxSoftwareVersionsPages {
+		params := make(map[string]string)
+		if opts.TeamID != nil {
+			params["team_id"] = strconv.Itoa(*opts.TeamID)
+		}
+		if opts.Query != "" {
+			params["query"] = opts.Query
+		}
+		if opts.VulnerableOnly {
+			params["vulnerable"] = "true"
+		}
+		listOpts := opts.ListOptions
+		listOpts.Page = page
+		listOpts.PerPage = softwareVersionsPerPage
+		listOpts.applyListParams(params)
+		// applyListParams leaves out page 0, which Fleet treats the same way.
 
-	var resp listSoftwareVersionsResponse
-	err := c.Get(ctx, "/software/versions", params, &resp)
-	if err != nil {
-		return nil, 0, err
+		var resp listSoftwareVersionsResponse
+		if err := c.Get(ctx, "/software/versions", params, &resp); err != nil {
+			return nil, 0, fmt.Errorf("failed to list software versions (page %d): %w", page, err)
+		}
+		if page == 0 {
+			count = resp.Count
+		}
+		versions = append(versions, resp.Software...)
+
+		if len(resp.Software) == 0 || resp.Meta == nil || !resp.Meta.HasNextResults {
+			return versions, count, nil
+		}
 	}
-	return resp.Software, resp.Count, nil
+
+	return nil, 0, fmt.Errorf("software version pagination exceeded %d pages — Fleet API may be returning has_next_results=true indefinitely", maxSoftwareVersionsPages)
 }
 
 // GetSoftwareVersion retrieves a software version by ID.
