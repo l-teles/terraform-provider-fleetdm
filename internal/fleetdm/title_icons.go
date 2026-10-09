@@ -162,14 +162,36 @@ func (c *Client) GetTitleIcon(ctx context.Context, titleID, fleetID int) ([]byte
 // DeleteTitleIcon removes the custom icon for a software title.
 //
 // Fleet returns 200 with an empty object on success. When the title has no
-// icon it returns 500 "sql: no rows in result set" instead of a 404, so
-// callers that want delete to be idempotent should funnel the error through
-// IsTitleIconAbsent.
+// icon it returns a 500 instead of a 404, so callers that want delete to be
+// idempotent should use EnsureTitleIconDeleted.
 func (c *Client) DeleteTitleIcon(ctx context.Context, titleID, fleetID int) error {
 	if err := c.Delete(ctx, titleIconEndpoint(titleID, fleetID), nil, nil); err != nil {
 		return fmt.Errorf("failed to delete icon for software title %d: %w", titleID, err)
 	}
 	return nil
+}
+
+// EnsureTitleIconDeleted deletes the icon and treats "no icon stored" as
+// success, which DeleteTitleIcon alone cannot do reliably.
+//
+// Since Fleet 4.93 the no-icon 500 says only "The request could not be
+// processed.", so the no-rows text IsTitleIconAbsent matches is gone. Any other
+// 500 is therefore checked with a GET, which answers 404 when there is no icon.
+// If an icon is still there, the original DELETE error is returned.
+func (c *Client) EnsureTitleIconDeleted(ctx context.Context, titleID, fleetID int) error {
+	err := c.DeleteTitleIcon(ctx, titleID, fleetID)
+	if err == nil || IsTitleIconAbsent(err) {
+		return nil
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError {
+		return err
+	}
+	content, getErr := c.GetTitleIcon(ctx, titleID, fleetID)
+	if IsTitleIconAbsent(getErr) || (getErr == nil && len(content) == 0) {
+		return nil
+	}
+	return err
 }
 
 // IsTitleIconAbsent reports whether err means "this title has no icon".
