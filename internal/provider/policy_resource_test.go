@@ -1347,6 +1347,9 @@ resource "fleetdm_policy" "test" {
 				ResourceName:      "fleetdm_policy.test",
 				ImportState:       true,
 				ImportStateVerify: true,
+				// Fleet touches the policy row just after the update returns,
+				// moving updated_at by a second.
+				ImportStateVerifyIgnore: []string{"updated_at"},
 				ImportStateIdFunc: func(s *terraform.State) (string, error) {
 					rs, ok := s.RootModule().Resources["fleetdm_policy.test"]
 					if !ok {
