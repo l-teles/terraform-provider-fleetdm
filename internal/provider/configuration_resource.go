@@ -23,9 +23,15 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &ConfigurationResource{}
-	_ resource.ResourceWithImportState = &ConfigurationResource{}
+	_ resource.Resource                     = &ConfigurationResource{}
+	_ resource.ResourceWithImportState      = &ConfigurationResource{}
+	_ resource.ResourceWithConfigValidators = &ConfigurationResource{}
 )
+
+// ConfigValidators implements resource.ResourceWithConfigValidators.
+func (r *ConfigurationResource) ConfigValidators(context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{hostExpiryValidator{}}
+}
 
 // NewConfigurationResource creates a new configuration resource.
 func NewConfigurationResource() resource.Resource {
@@ -205,7 +211,7 @@ resource "fleetdm_configuration" "main" {
 				Optional:            true,
 				Computed:            true,
 				Default:             int64default.StaticInt64(0),
-				MarkdownDescription: "Number of days after which a host is removed if it hasn't checked in.",
+				MarkdownDescription: "Number of days after which a host is removed if it hasn't checked in. Must be at least 1 when `host_expiry_enabled` is true.",
 			},
 			// Activity Expiry Settings
 			"activity_expiry_enabled": schema.BoolAttribute{

@@ -75,7 +75,7 @@ resource "fleetdm_configuration" "main" {
 - `enable_host_users` (Boolean) Whether to collect user information from hosts.
 - `enable_software_inventory` (Boolean) Whether to collect software inventory from hosts.
 - `host_expiry_enabled` (Boolean) Whether to automatically remove hosts that have not checked in.
-- `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in.
+- `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in. Must be at least 1 when `host_expiry_enabled` is true.
 - `host_name_template` (String) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the "No team" scope), for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
 - `org_logo_url` (String, Deprecated) Deprecated alias of `org_logo_url_dark_mode`. When omitted, Fleet's current value is preserved.
