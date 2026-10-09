@@ -91,6 +91,7 @@ type Policy struct {
 	ConditionalAccessEnabled     bool                           `json:"conditional_access_enabled"`
 	ContinuousAutomationsEnabled bool                           `json:"continuous_automations_enabled"`
 	PatchWhenClosed              bool                           `json:"patch_when_closed"`
+	NotifyBeforePatching         bool                           `json:"notify_before_patching"`
 	FleetMaintained              bool                           `json:"fleet_maintained"`
 	HostCountUpdatedAt           *string                        `json:"host_count_updated_at"`
 	CreatedAt                    string                         `json:"created_at,omitempty"`
@@ -146,6 +147,7 @@ type CreatePolicyRequest struct {
 	ProfileUUID                  *string  `json:"profile_uuid,omitempty"`
 	ContinuousAutomationsEnabled bool     `json:"continuous_automations_enabled,omitempty"`
 	PatchWhenClosed              bool     `json:"patch_when_closed,omitempty"`
+	NotifyBeforePatching         bool     `json:"notify_before_patching,omitempty"`
 	LabelsIncludeAny             []string `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny             []string `json:"labels_exclude_any,omitempty"`
 	LabelsIncludeAll             []string `json:"labels_include_all,omitempty"`
@@ -188,6 +190,11 @@ type CreatePolicyResponse struct {
 //   - profile_uuid: omitting it means "no change". Send a pointer to ""
 //     to clear the profile.
 //
+// The premium-only switches (continuous_automations_enabled,
+// patch_when_closed, notify_before_patching) also use omitempty. Fleet Free
+// rejects any premium field that is present, even when it is false, so send
+// these only to turn them on or to clear one that was on.
+//
 // Fleet rejects a request whose labels_include_any AND labels_include_all are
 // both non-empty (likewise for the two exclude fields) with "policy can
 // include at most one of ...". Empty arrays don't count as set, so sending
@@ -206,8 +213,9 @@ type UpdatePolicyRequest struct {
 	CalendarEventsEnabled          *bool    `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled       *bool    `json:"conditional_access_enabled"`
 	ConditionalAccessBypassEnabled *bool    `json:"conditional_access_bypass_enabled"`
-	ContinuousAutomationsEnabled   *bool    `json:"continuous_automations_enabled"`
-	PatchWhenClosed                *bool    `json:"patch_when_closed"`
+	ContinuousAutomationsEnabled   *bool    `json:"continuous_automations_enabled,omitempty"`
+	PatchWhenClosed                *bool    `json:"patch_when_closed,omitempty"`
+	NotifyBeforePatching           *bool    `json:"notify_before_patching,omitempty"`
 	LabelsIncludeAny               []string `json:"labels_include_any"`
 	LabelsExcludeAny               []string `json:"labels_exclude_any"`
 	LabelsIncludeAll               []string `json:"labels_include_all"`

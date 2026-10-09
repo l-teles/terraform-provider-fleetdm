@@ -719,8 +719,8 @@ type PatchSoftwarePackageRequest struct {
 	//
 	// PreInstallQuery follows the same convention as of Fleet 4.91, which
 	// introduced the first Fleet-generated pre-install query: turning on a
-	// patch policy's patch_when_closed makes Fleet write a managed query onto
-	// the installer. Sending "" for an unmanaged field would wipe it and
+	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching)
+	// makes Fleet write a managed query onto the installer. Sending "" for an unmanaged field would wipe it and
 	// silently switch that behaviour back off.
 	//
 	// PostInstallScript stays a plain string because Fleet generates no
