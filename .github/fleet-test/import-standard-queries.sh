@@ -10,7 +10,7 @@
 # Environment variables:
 #   FLEETDM_URL         Fleet server address (default: http://localhost:8080)
 #   FLEETDM_API_TOKEN   API token obtained from setup-fleet.sh
-#   FLEETCTL_VERSION    fleetctl version to install, e.g. v4.92.1 (default: latest)
+#   FLEETCTL_VERSION    fleetctl version to install, e.g. v4.93.0 (default: latest)
 #   FLEETCTL_INSTALL_DIR where the fleetctl binary goes (default: ~/.fleetctl)
 
 set -euo pipefail
