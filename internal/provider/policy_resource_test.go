@@ -534,7 +534,7 @@ resource "fleetdm_policy" "test" {
   continuous_automations_enabled = true
 }
 `, policyName),
-				ExpectError: regexp.MustCompile("team_id required"),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
 			},
 		},
 	})
@@ -1170,7 +1170,7 @@ resource "fleetdm_policy" "test" {
   patch_when_closed = true
 }
 `, policyName),
-				ExpectError: regexp.MustCompile("team_id required"),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
 			},
 		},
 	})
@@ -1293,7 +1293,7 @@ resource "fleetdm_policy" "test" {
   notify_before_patching = true
 }
 `, policyName),
-				ExpectError: regexp.MustCompile("team_id required"),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
 			},
 		},
 	})
@@ -1935,4 +1935,33 @@ resource "fleetdm_policy" "test" {
 			},
 		},
 	})
+}
+
+// TestCheckPatchOptionsAtApply covers patch options that were Unknown at plan,
+// where ValidateConfig could not apply the rules.
+func TestCheckPatchOptionsAtApply(t *testing.T) {
+	tests := []struct {
+		name                    string
+		continuous, pwc, notify bool
+		wantErr                 bool
+	}{
+		{name: "nothing on"},
+		{name: "notify with continuous", continuous: true, notify: true},
+		{name: "notify without continuous", notify: true, wantErr: true},
+		{name: "patch_when_closed without continuous", pwc: true, wantErr: true},
+		{name: "both on", continuous: true, pwc: true, notify: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			checkPatchOptionsAtApply(PolicyResourceModel{
+				ContinuousAutomationsEnabled: types.BoolValue(tt.continuous),
+				PatchWhenClosed:              types.BoolValue(tt.pwc),
+				NotifyBeforePatching:         types.BoolValue(tt.notify),
+			}, &diags)
+			if diags.HasError() != tt.wantErr {
+				t.Errorf("HasError() = %v, want %v: %v", diags.HasError(), tt.wantErr, diags)
+			}
+		})
+	}
 }

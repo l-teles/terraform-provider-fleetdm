@@ -702,6 +702,10 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
+	checkPatchOptionsAtApply(data, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	createReq := fleetdm.CreatePolicyRequest{
 		Name:                         data.Name.ValueString(),
@@ -820,6 +824,10 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
+	checkPatchOptionsAtApply(data, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	updateReq := buildPolicyUpdateRequest(ctx, data, prior, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1018,6 +1026,35 @@ func policyNeedsAutomationFollowup(data PolicyResourceModel) bool {
 		return true
 	}
 	return false
+}
+
+// checkPatchOptionsAtApply repeats the ValidateConfig patch-option rules once
+// values that were Unknown at plan have resolved. continuous_automations_enabled
+// is left off the wire while false, and Fleet then forces it on rather than
+// rejecting the request, which would surface as an inconsistent result.
+func checkPatchOptionsAtApply(data PolicyResourceModel, diags *diag.Diagnostics) {
+	for _, f := range []struct {
+		attr string
+		val  types.Bool
+	}{
+		{"patch_when_closed", data.PatchWhenClosed},
+		{"notify_before_patching", data.NotifyBeforePatching},
+	} {
+		if boolKnownTrue(f.val) && !boolKnownTrue(data.ContinuousAutomationsEnabled) {
+			diags.AddAttributeError(
+				path.Root("continuous_automations_enabled"),
+				"Missing required value",
+				"continuous_automations_enabled must be true when "+f.attr+" is true.",
+			)
+		}
+	}
+	if boolKnownTrue(data.PatchWhenClosed) && boolKnownTrue(data.NotifyBeforePatching) {
+		diags.AddAttributeError(
+			path.Root("notify_before_patching"),
+			"Conflicting patch options",
+			"Only one of patch_when_closed or notify_before_patching can be true.",
+		)
+	}
 }
 
 // policyQueryForRequest returns the query value to send in a Create or
