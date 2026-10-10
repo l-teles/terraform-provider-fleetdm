@@ -450,17 +450,20 @@ func TestEnsureTitleIconDeleted(t *testing.T) {
 	const noRows500 = `{"message":"sql: no rows in result set"}`
 
 	tests := []struct {
-		name       string
-		deleteCode int
-		deleteBody string
-		getCode    int // 0 means the GET must not happen
-		getBody    string
-		wantErr    bool
+		name        string
+		deleteCode  int
+		deleteBody  string
+		getCode     int // 0 means the GET must not happen
+		getBody     string
+		getLocation string
+		wantErr     bool
 	}{
 		{name: "icon deleted", deleteCode: http.StatusOK, deleteBody: `{}`},
 		{name: "4.92 no-rows 500 needs no GET", deleteCode: http.StatusInternalServerError, deleteBody: noRows500},
 		{name: "4.93 generic 500 confirmed absent by 404", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
 			getCode: http.StatusNotFound, getBody: `{"message":"Resource Not Found"}`},
+		{name: "App Store title redirects to Apple's icon", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
+			getCode: http.StatusFound, getLocation: "/apple-icon.png"},
 		{name: "generic 500 while icon still stored is a failure", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
 			getCode: http.StatusOK, getBody: "\x89PNG", wantErr: true},
 		{name: "generic 500 with failing GET is a failure", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
@@ -477,7 +480,15 @@ func TestEnsureTitleIconDeleted(t *testing.T) {
 					w.WriteHeader(tt.deleteCode)
 					_, _ = w.Write([]byte(tt.deleteBody))
 				case http.MethodGet:
+					if r.URL.Path == "/apple-icon.png" {
+						t.Error("the absence probe must not follow the redirect to Apple's icon")
+						_, _ = w.Write([]byte("\x89PNG"))
+						return
+					}
 					gets++
+					if tt.getLocation != "" {
+						w.Header().Set("Location", tt.getLocation)
+					}
 					w.WriteHeader(tt.getCode)
 					_, _ = w.Write([]byte(tt.getBody))
 				default:
