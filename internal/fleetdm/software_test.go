@@ -234,6 +234,33 @@ func TestClient_ListSoftwareVersionsPaginates(t *testing.T) {
 	}
 }
 
+// TestClient_ListSoftwareVersionsStopsAtCount guards against a server that
+// keeps reporting has_next_results: the walk ends once it holds the count.
+func TestClient_ListSoftwareVersionsStopsAtCount(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		json.NewEncoder(w).Encode(listSoftwareVersionsResponse{
+			Software: []SoftwareVersion{{ID: requests}},
+			Count:    2,
+			Meta:     &PaginationMeta{HasNextResults: true},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	versions, _, err := client.ListSoftwareVersions(context.Background(), SoftwareVersionListOptions{})
+	if err != nil {
+		t.Fatalf("failed to list software versions: %v", err)
+	}
+	if requests != 2 || len(versions) != 2 {
+		t.Errorf("expected to stop after 2 requests with 2 versions, got %d requests and %d versions", requests, len(versions))
+	}
+}
+
 func TestClient_GetSoftwareVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/fleet/software/versions/1" {

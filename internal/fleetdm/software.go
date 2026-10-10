@@ -501,7 +501,9 @@ func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionL
 		}
 		versions = append(versions, resp.Software...)
 
-		if len(resp.Software) == 0 || resp.Meta == nil || !resp.Meta.HasNextResults {
+		// Holding the reported count also ends the walk, so a server that keeps
+		// claiming more results cannot grow the list without bound.
+		if len(resp.Software) == 0 || resp.Meta == nil || !resp.Meta.HasNextResults || (count > 0 && len(versions) >= count) {
 			return versions, count, nil
 		}
 	}
