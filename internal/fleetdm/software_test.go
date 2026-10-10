@@ -234,17 +234,45 @@ func TestClient_ListSoftwareVersionsPaginates(t *testing.T) {
 	}
 }
 
-// TestClient_ListSoftwareVersionsStopsAtCount guards against a server that
-// keeps reporting has_next_results: the walk ends once it holds the count.
-func TestClient_ListSoftwareVersionsStopsAtCount(t *testing.T) {
+// TestClient_ListSoftwareVersionsRejectsRepeatedPage guards against a server
+// that ignores page and keeps reporting has_next_results.
+func TestClient_ListSoftwareVersionsRejectsRepeatedPage(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests++
 		json.NewEncoder(w).Encode(listSoftwareVersionsResponse{
-			Software: []SoftwareVersion{{ID: requests}},
+			Software: []SoftwareVersion{{ID: 1}, {ID: 2}},
 			Count:    2,
 			Meta:     &PaginationMeta{HasNextResults: true},
 		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	if _, _, err := client.ListSoftwareVersions(context.Background(), SoftwareVersionListOptions{}); err == nil {
+		t.Fatal("expected an error for a repeated page")
+	}
+	if requests != 2 {
+		t.Errorf("expected to stop after 2 requests, got %d", requests)
+	}
+}
+
+// TestClient_ListSoftwareVersionsIgnoresLowCount keeps walking past the
+// reported count, which Fleet computes with a separate query and which can
+// lag the list.
+func TestClient_ListSoftwareVersionsIgnoresLowCount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := listSoftwareVersionsResponse{Count: 1, Meta: &PaginationMeta{}}
+		if r.URL.Query().Get("page") == "" {
+			resp.Software = []SoftwareVersion{{ID: 1}}
+			resp.Meta.HasNextResults = true
+		} else {
+			resp.Software = []SoftwareVersion{{ID: 2}}
+		}
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -256,8 +284,8 @@ func TestClient_ListSoftwareVersionsStopsAtCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to list software versions: %v", err)
 	}
-	if requests != 2 || len(versions) != 2 {
-		t.Errorf("expected to stop after 2 requests with 2 versions, got %d requests and %d versions", requests, len(versions))
+	if len(versions) != 2 {
+		t.Errorf("expected 2 versions, got %d", len(versions))
 	}
 }
 

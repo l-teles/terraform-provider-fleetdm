@@ -474,6 +474,7 @@ const (
 func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionListOptions) ([]SoftwareVersion, int, error) {
 	var versions []SoftwareVersion
 	count := 0
+	seen := make(map[int]struct{})
 
 	for page := range maxSoftwareVersionsPages {
 		params := make(map[string]string)
@@ -499,11 +500,22 @@ func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionL
 		if page == 0 {
 			count = resp.Count
 		}
+		// A page with nothing new means the server is not honouring page, so
+		// stop rather than collect the same rows up to the page bound. count
+		// is not used for this: Fleet computes it with a separate query.
+		fresh := 0
+		for _, v := range resp.Software {
+			if _, dup := seen[v.ID]; !dup {
+				seen[v.ID] = struct{}{}
+				fresh++
+			}
+		}
+		if len(resp.Software) > 0 && fresh == 0 {
+			return nil, 0, fmt.Errorf("software version pagination: page %d returned only versions already seen", page)
+		}
 		versions = append(versions, resp.Software...)
 
-		// Holding the reported count also ends the walk, so a server that keeps
-		// claiming more results cannot grow the list without bound.
-		if len(resp.Software) == 0 || resp.Meta == nil || !resp.Meta.HasNextResults || (count > 0 && len(versions) >= count) {
+		if len(resp.Software) == 0 || resp.Meta == nil || !resp.Meta.HasNextResults {
 			return versions, count, nil
 		}
 	}
