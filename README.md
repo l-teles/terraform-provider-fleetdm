@@ -82,7 +82,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 ## Requirements
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.5
-- [Go](https://golang.org/doc/install) >= 1.24 (for building)
+- [Go](https://golang.org/doc/install) >= 1.27.2 (for building)
 - FleetDM server >= 4.82.0 (required for all resources — the provider now exclusively uses the new `/fleets` and `/reports` API endpoints)
 
 ## Installation
@@ -217,7 +217,7 @@ resource "fleetdm_script" "system_update" {
 
 ### Prerequisites
 
-- Go 1.27+
+- Go 1.27.2+
 - Make
 
 ### Building
