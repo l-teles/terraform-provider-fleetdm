@@ -82,6 +82,9 @@ type ConfigurationResourceModel struct {
 	HostNameTemplate                       types.String `tfsdk:"host_name_template"`
 	WindowsAutomaticEnrollmentDefaultFleet types.String `tfsdk:"windows_automatic_enrollment_default_fleet"`
 
+	// Integrations: opt-in block, nil when not declared.
+	Integrations *configurationIntegrationsModel `tfsdk:"integrations"`
+
 	// Agent Options (JSON)
 	AgentOptions types.String `tfsdk:"agent_options"`
 }
@@ -119,6 +122,11 @@ resource "fleetdm_configuration" "main" {
   # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
   # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
   host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+
+  # Accept IdP credentials on certificate requests only from this endpoint.
+  integrations = {
+    certificates_idp_introspection_urls = ["https://idp.example.com/oauth2/introspect"]
+  }
 }
 ` + "```" + `
 `,
@@ -273,6 +281,7 @@ resource "fleetdm_configuration" "main" {
 					"Fleet rejects a name that does not exist; set to `\"\"` for no default, leaving new hosts unassigned. " +
 					"Requires Fleet Premium and Fleet 4.91.0 or later.",
 			},
+			"integrations": configurationIntegrationsSchema(),
 			// Agent Options
 			"agent_options": schema.StringAttribute{
 				Optional:            true,
@@ -307,6 +316,10 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 
 	// Build the update request
 	updateReq := r.buildUpdateRequest(&data, darkLogo, lightLogo)
+	updateReq.Integrations = buildConfigurationIntegrationsUpdate(ctx, data.Integrations, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Update the configuration
 	config, err := r.client.UpdateAppConfig(ctx, updateReq)
@@ -320,6 +333,7 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 
 	// Update state from response
 	r.updateModelFromConfig(&data, config)
+	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -340,6 +354,7 @@ func (r *ConfigurationResource) Read(ctx context.Context, req resource.ReadReque
 
 	data.ID = types.StringValue("configuration")
 	r.updateModelFromConfig(&data, config)
+	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -363,6 +378,10 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 
 	// Build the update request
 	updateReq := r.buildUpdateRequest(&data, darkLogo, lightLogo)
+	updateReq.Integrations = buildConfigurationIntegrationsUpdate(ctx, data.Integrations, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Update the configuration
 	config, err := r.client.UpdateAppConfig(ctx, updateReq)
@@ -376,6 +395,7 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 
 	// Update state from response
 	r.updateModelFromConfig(&data, config)
+	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
