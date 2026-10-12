@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -74,6 +75,24 @@ resource "fleetdm_configuration" "test" {
 				),
 			},
 			{
+				// An empty set clears the list and must read back without drift.
+				Config: cfg(`integrations = {
+    certificates_idp_introspection_urls = []
+  }`),
+				Check: resource.TestCheckResourceAttr(attr, "integrations.certificates_idp_introspection_urls.#", "0"),
+			},
+			{
+				Config: cfg(`integrations = {
+    certificates_idp_introspection_urls = []
+  }`),
+				PlanOnly: true,
+			},
+			{
+				Config: cfg(`integrations = {
+    certificates_idp_introspection_urls = ["https://idp-a.example.test/introspect"]
+  }`),
+			},
+			{
 				// Dropping the block stops managing the settings without clearing them.
 				Config: cfg(""),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -103,7 +122,10 @@ resource "fleetdm_configuration" "test" {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{Config: cfg(`certificates_idp_introspection_urls = ["http://idp.example.test/i"]`), ExpectError: invalidURL},
-			{Config: cfg(`certificates_idp_introspection_urls = ["https://user:pw@idp.example.test/i"]`), ExpectError: invalidURL},
+			{
+				Config:      cfg(`certificates_idp_introspection_urls = ["https://user:hunter2@idp.example.test/i"]`),
+				ExpectError: regexp.MustCompile(`(?s)this\s+one\s+contains\s+credentials`),
+			},
 			{Config: cfg(`certificates_idp_introspection_urls = ["/relative"]`), ExpectError: invalidURL},
 			{
 				Config:      cfg(`certificates_idp_introspection_urls = [" https://idp.example.test/i"]`),
@@ -183,6 +205,7 @@ func TestRefreshConfigurationIntegrations(t *testing.T) {
 	refreshConfigurationIntegrations(m, &fleetdm.AppConfigIntegrations{
 		CertificatesIdPIntrospectionURLs: nil,
 		CertificatesIdPClientIDs:         []string{"set-in-the-ui"},
+		HasCertificateControls:           true,
 	}, &diags)
 	if diags.HasError() {
 		t.Fatalf("unexpected diagnostics: %v", diags)
@@ -198,32 +221,22 @@ func TestRefreshConfigurationIntegrations(t *testing.T) {
 	}
 }
 
-func certificateIntegrationsTestClient(t *testing.T) *fleetdm.Client {
-	t.Helper()
-	verifyTLS := true
-	if v := os.Getenv("FLEETDM_VERIFY_TLS"); v == "false" || v == "0" {
-		verifyTLS = false
-	}
-	client, err := fleetdm.NewClient(fleetdm.ClientConfig{
+// certificateIntegrationsTestClient builds a client from the acceptance
+// environment. It returns an error rather than failing the test, because it
+// also runs from a cleanup.
+func certificateIntegrationsTestClient() (*fleetdm.Client, error) {
+	return fleetdm.NewClient(fleetdm.ClientConfig{
 		ServerAddress: os.Getenv("FLEETDM_URL"),
 		APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
-		VerifyTLS:     verifyTLS,
+		VerifyTLS:     os.Getenv("FLEETDM_VERIFY_TLS") != "false" && os.Getenv("FLEETDM_VERIFY_TLS") != "0",
 	})
-	if err != nil {
-		t.Fatalf("failed to build fleet client: %v", err)
-	}
-	return client
 }
 
 // checkCertificateIntrospectionURLsInFleet asserts Fleet's stored URLs
 // directly, for steps where Terraform no longer manages them.
 func checkCertificateIntrospectionURLsInFleet(want []string) resource.TestCheckFunc {
 	return func(*terraform.State) error {
-		client, err := fleetdm.NewClient(fleetdm.ClientConfig{
-			ServerAddress: os.Getenv("FLEETDM_URL"),
-			APIKey:        os.Getenv("FLEETDM_API_TOKEN"),
-			VerifyTLS:     os.Getenv("FLEETDM_VERIFY_TLS") != "false" && os.Getenv("FLEETDM_VERIFY_TLS") != "0",
-		})
+		client, err := certificateIntegrationsTestClient()
 		if err != nil {
 			return err
 		}
@@ -246,9 +259,14 @@ func checkCertificateIntrospectionURLsInFleet(want []string) resource.TestCheckF
 // certificate request controls.
 func resetCertificateIntegrationsOutOfBand(t *testing.T) {
 	t.Helper()
+	client, err := certificateIntegrationsTestClient()
+	if err != nil {
+		t.Logf("failed to build fleet client for cleanup: %v", err)
+		return
+	}
 	empty := []string{}
 	off := false
-	_, err := certificateIntegrationsTestClient(t).UpdateAppConfig(context.Background(), &fleetdm.UpdateAppConfigRequest{
+	_, err = client.UpdateAppConfig(context.Background(), &fleetdm.UpdateAppConfigRequest{
 		Integrations: &fleetdm.IntegrationsUpdate{
 			CertificatesIdPIntrospectionURLs:      &empty,
 			CertificatesIdPClientIDs:              &empty,
@@ -257,5 +275,49 @@ func resetCertificateIntegrationsOutOfBand(t *testing.T) {
 	})
 	if err != nil {
 		t.Logf("failed to reset certificate integrations: %v", err)
+	}
+}
+
+// TestConfigurationIntegrationsBeforeFleet493 covers a server that drops the
+// certificates_* keys: refresh keeps state, and apply names the version.
+func TestConfigurationIntegrationsBeforeFleet493(t *testing.T) {
+	var api fleetdm.AppConfigIntegrations
+	if err := json.Unmarshal([]byte(`{"jira":[],"zendesk":[]}`), &api); err != nil {
+		t.Fatal(err)
+	}
+	if api.HasCertificateControls {
+		t.Fatal("expected the certificates_* keys to be reported missing")
+	}
+	var present fleetdm.AppConfigIntegrations
+	if err := json.Unmarshal([]byte(`{"certificates_idp_introspection_urls":null}`), &present); err != nil {
+		t.Fatal(err)
+	}
+	if !present.HasCertificateControls {
+		t.Fatal("expected a null key to count as present")
+	}
+
+	planned := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("https://idp.example.test/i")})
+	m := &configurationIntegrationsModel{
+		CertificatesIdPIntrospectionURLs:      planned,
+		CertificatesIdPClientIDs:              types.SetNull(types.StringType),
+		CertificatesDisableHostEndUserBinding: types.BoolNull(),
+	}
+	var diags diag.Diagnostics
+	refreshConfigurationIntegrations(m, &api, &diags)
+	if !m.CertificatesIdPIntrospectionURLs.Equal(planned) {
+		t.Errorf("refresh must keep state when Fleet lacks the settings, got %v", m.CertificatesIdPIntrospectionURLs)
+	}
+	checkConfigurationIntegrationsApplied(m, &api, &diags)
+	if !diags.HasError() {
+		t.Error("expected an error naming the required Fleet version")
+	}
+
+	var none diag.Diagnostics
+	checkConfigurationIntegrationsApplied(&configurationIntegrationsModel{
+		CertificatesIdPIntrospectionURLs: types.SetNull(types.StringType),
+		CertificatesIdPClientIDs:         types.SetNull(types.StringType),
+	}, &api, &none)
+	if none.HasError() {
+		t.Errorf("an all-null block must not error: %v", none)
 	}
 }

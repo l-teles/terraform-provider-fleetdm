@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -58,8 +59,9 @@ func configurationIntegrationsSchema() schema.SingleNestedAttribute {
 				Optional: true,
 				MarkdownDescription: "Turn off the check that a certificate request signed by a host names that host's " +
 					"recorded end user (both the CSR email and UPN). The check is on by default and refuses hosts with no " +
-					"recorded identity.\n\n~> **Security:** setting this to `true` lets any enrolled host request a " +
-					"certificate for any end user. _Available in Fleet 4.93+._",
+					"recorded identity. **Security:** `true` lets any enrolled host request a certificate for any end user. " +
+					"Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn the check back on. " +
+					"_Available in Fleet 4.93+._",
 			},
 		},
 		Validators: []validator.Object{integrationsClientIDsNeedURLs{}},
@@ -96,9 +98,11 @@ func buildConfigurationIntegrationsUpdate(ctx context.Context, m *configurationI
 
 // refreshConfigurationIntegrations copies Fleet's values into the attributes that are
 // already managed. Fleet reports a list cleared with null as null, which is
-// stored as an empty set so it matches a configured [].
+// stored as an empty set so it matches a configured []. A server without the
+// settings (before 4.93) leaves state alone; checkConfigurationIntegrationsApplied
+// reports that on apply.
 func refreshConfigurationIntegrations(m *configurationIntegrationsModel, api *fleetdm.AppConfigIntegrations, diags *diag.Diagnostics) {
-	if m == nil || api == nil {
+	if m == nil || api == nil || !api.HasCertificateControls {
 		return
 	}
 	if !m.CertificatesIdPIntrospectionURLs.IsNull() {
@@ -110,6 +114,20 @@ func refreshConfigurationIntegrations(m *configurationIntegrationsModel, api *fl
 	if !m.CertificatesDisableHostEndUserBinding.IsNull() {
 		m.CertificatesDisableHostEndUserBinding = types.BoolValue(api.CertificatesDisableHostEndUserBinding != nil && *api.CertificatesDisableHostEndUserBinding)
 	}
+}
+
+// checkConfigurationIntegrationsApplied turns a server that silently dropped
+// the managed settings into a named error rather than an inconsistent result.
+func checkConfigurationIntegrationsApplied(m *configurationIntegrationsModel, api *fleetdm.AppConfigIntegrations, diags *diag.Diagnostics) {
+	if m == nil || (api != nil && api.HasCertificateControls) {
+		return
+	}
+	if m.CertificatesIdPIntrospectionURLs.IsNull() && m.CertificatesIdPClientIDs.IsNull() && m.CertificatesDisableHostEndUserBinding.IsNull() {
+		return
+	}
+	diags.AddAttributeError(path.Root("integrations"),
+		"Certificate request settings not supported",
+		"Fleet accepted the configuration but did not report the certificates_* settings. They need Fleet 4.93.0 or later. Remove them from the integrations block or upgrade Fleet.")
 }
 
 func stringsToSet(values []string, diags *diag.Diagnostics) types.Set {
@@ -146,7 +164,13 @@ func (idpIntrospectionURLValidator) ValidateString(_ context.Context, req valida
 		return
 	}
 	u, err := url.ParseRequestURI(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+	if err == nil && u.User != nil {
+		// Not echoed, so the credentials stay out of plan output and CI logs.
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid introspection URL",
+			"The URL must be an absolute https URL without credentials; this one contains credentials.")
+		return
+	}
+	if err != nil || u.Scheme != "https" || u.Host == "" {
 		resp.Diagnostics.AddAttributeError(req.Path, "Invalid introspection URL",
 			fmt.Sprintf("%q must be an absolute https URL without credentials.", raw))
 	}

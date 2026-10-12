@@ -333,6 +333,7 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 
 	// Update state from response
 	r.updateModelFromConfig(&data, config)
+	checkConfigurationIntegrationsApplied(data.Integrations, config.Integrations, &resp.Diagnostics)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -395,6 +396,7 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 
 	// Update state from response
 	r.updateModelFromConfig(&data, config)
+	checkConfigurationIntegrationsApplied(data.Integrations, config.Integrations, &resp.Diagnostics)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

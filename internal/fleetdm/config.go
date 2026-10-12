@@ -193,6 +193,25 @@ type AppConfigIntegrations struct {
 	CertificatesIdPIntrospectionURLs      []string `json:"certificates_idp_introspection_urls"`
 	CertificatesIdPClientIDs              []string `json:"certificates_idp_client_ids"`
 	CertificatesDisableHostEndUserBinding *bool    `json:"certificates_disable_host_end_user_binding"`
+
+	// HasCertificateControls is true when the response carried the
+	// certificates_* keys, which Fleet before 4.93 does not know and drops.
+	HasCertificateControls bool `json:"-"`
+}
+
+// UnmarshalJSON records whether the certificates_* keys were present, since a
+// missing key and a null one decode to the same value.
+func (i *AppConfigIntegrations) UnmarshalJSON(data []byte) error {
+	type plain AppConfigIntegrations
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, (*plain)(i)); err != nil {
+		return err
+	}
+	_, i.HasCertificateControls = keys["certificates_idp_introspection_urls"]
+	return nil
 }
 
 // EnrollSecretSpec represents the enrollment secrets specification

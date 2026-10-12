@@ -110,8 +110,6 @@ The `certificates_*` settings (Fleet 4.93+) control the request certificate API.
 
 Optional:
 
-- `certificates_disable_host_end_user_binding` (Boolean) Turn off the check that a certificate request signed by a host names that host's recorded end user (both the CSR email and UPN). The check is on by default and refuses hosts with no recorded identity.
-
-~> **Security:** setting this to `true` lets any enrolled host request a certificate for any end user. _Available in Fleet 4.93+._
+- `certificates_disable_host_end_user_binding` (Boolean) Turn off the check that a certificate request signed by a host names that host's recorded end user (both the CSR email and UPN). The check is on by default and refuses hosts with no recorded identity. **Security:** `true` lets any enrolled host request a certificate for any end user. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn the check back on. _Available in Fleet 4.93+._
 - `certificates_idp_client_ids` (Set of String) OAuth client IDs allowed on certificate requests, as a further constraint on `certificates_idp_introspection_urls`, which must not be empty while this is set. An empty set clears the list. _Available in Fleet Premium 4.93+._
 - `certificates_idp_introspection_urls` (Set of String) OAuth 2.0 token introspection endpoints allowed to vouch for certificate requests. Each must be an absolute `https` URL without credentials. Once any are listed, IdP credentials are required on every request. An empty set clears the list; leaving the attribute out leaves Fleet's value alone. _Available in Fleet Premium 4.93+._
