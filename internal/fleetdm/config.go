@@ -179,7 +179,39 @@ type AppConfig struct {
 	Logging                *LoggingConfig         `json:"logging,omitempty"`
 	UpdateInterval         *UpdateIntervalConfig  `json:"update_interval,omitempty"`
 	MDM                    *MDMConfig             `json:"mdm,omitempty"`
+	Integrations           *AppConfigIntegrations `json:"integrations,omitempty"`
 	SandboxEnabled         bool                   `json:"sandbox_enabled"`
+}
+
+// AppConfigIntegrations holds the global integration settings the provider
+// reads. Jira, Zendesk and Google Calendar are not modelled.
+//
+// The certificates_* settings (Fleet 4.93+) control who may request a
+// certificate through the request_certificate API. Fleet reports a list that
+// was cleared with null as null, and with [] as [].
+type AppConfigIntegrations struct {
+	CertificatesIdPIntrospectionURLs      []string `json:"certificates_idp_introspection_urls"`
+	CertificatesIdPClientIDs              []string `json:"certificates_idp_client_ids"`
+	CertificatesDisableHostEndUserBinding *bool    `json:"certificates_disable_host_end_user_binding"`
+
+	// HasCertificateControls is true when the response carried the
+	// certificates_* keys, which Fleet before 4.93 does not know and drops.
+	HasCertificateControls bool `json:"-"`
+}
+
+// UnmarshalJSON records whether the certificates_* keys were present, since a
+// missing key and a null one decode to the same value.
+func (i *AppConfigIntegrations) UnmarshalJSON(data []byte) error {
+	type plain AppConfigIntegrations
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, (*plain)(i)); err != nil {
+		return err
+	}
+	_, i.HasCertificateControls = keys["certificates_idp_introspection_urls"]
+	return nil
 }
 
 // EnrollSecretSpec represents the enrollment secrets specification
@@ -277,7 +309,18 @@ type UpdateAppConfigRequest struct {
 	FleetDesktop           *FleetDesktopSettings   `json:"fleet_desktop,omitempty"`
 	WebhookSettings        *WebhookSettings        `json:"webhook_settings,omitempty"`
 	MDM                    *MDMSettingsUpdate      `json:"mdm,omitempty"`
+	Integrations           *IntegrationsUpdate     `json:"integrations,omitempty"`
 	AgentOptions           *json.RawMessage        `json:"agent_options,omitempty"`
+}
+
+// IntegrationsUpdate is the partial "integrations" object sent in PATCH
+// /config. Fleet keeps every key left out, including Jira, Zendesk and Google
+// Calendar, so only managed settings are set. A pointer to an empty slice is
+// sent as [] and clears that list.
+type IntegrationsUpdate struct {
+	CertificatesIdPIntrospectionURLs      *[]string `json:"certificates_idp_introspection_urls,omitempty"`
+	CertificatesIdPClientIDs              *[]string `json:"certificates_idp_client_ids,omitempty"`
+	CertificatesDisableHostEndUserBinding *bool     `json:"certificates_disable_host_end_user_binding,omitempty"`
 }
 
 // UpdateAppConfig modifies the Fleet application configuration

@@ -23,10 +23,16 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var (
-	_ resource.Resource                = &FleetResource{}
-	_ resource.ResourceWithImportState = &FleetResource{}
-	_ resource.ResourceWithMoveState   = &FleetResource{}
+	_ resource.Resource                     = &FleetResource{}
+	_ resource.ResourceWithImportState      = &FleetResource{}
+	_ resource.ResourceWithConfigValidators = &FleetResource{}
+	_ resource.ResourceWithMoveState        = &FleetResource{}
 )
+
+// ConfigValidators implements resource.ResourceWithConfigValidators.
+func (r *FleetResource) ConfigValidators(context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{hostExpiryValidator{}}
+}
 
 // NewFleetResource creates a new fleet resource.
 func NewFleetResource() resource.Resource {
@@ -133,8 +139,8 @@ func fleetSchemaAttributes() map[string]schema.Attribute {
 			Default:             booldefault.StaticBool(false),
 		},
 		"host_expiry_window": schema.Int64Attribute{
-			Description:         "The number of days after which hosts are considered expired.",
-			MarkdownDescription: "The number of days after which hosts are considered expired.",
+			Description:         "The number of days after which hosts are considered expired. Must be at least 1 when host_expiry_enabled is true.",
+			MarkdownDescription: "The number of days after which hosts are considered expired. Must be at least 1 when `host_expiry_enabled` is true.",
 			Optional:            true,
 			Computed:            true,
 			Default:             int64default.StaticInt64(0),

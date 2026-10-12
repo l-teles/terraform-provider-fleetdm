@@ -390,7 +390,8 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	}
 	// pre_install_query follows the same ownership rule as the scripts above.
 	// Since Fleet 4.91 it can carry a Fleet-generated value -- turning on a
-	// patch policy's patch_when_closed makes Fleet write a managed query here --
+	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching)
+	// makes Fleet write a managed query here --
 	// so absorbing it into state on a title whose HCL omits the attribute would
 	// start a fight Terraform wins by wiping the query, silently switching that
 	// behaviour back off.

@@ -441,3 +441,73 @@ func TestDeleteTitleIconAbsentWrapped(t *testing.T) {
 		t.Errorf("expected the wrapped error to be recognised as absent, got: %v", err)
 	}
 }
+
+// TestEnsureTitleIconDeleted covers the idempotent delete across Fleet
+// versions: up to 4.92 the no-icon 500 names "no rows", from 4.93 it carries
+// only a generic message, so absence has to be confirmed with a GET.
+func TestEnsureTitleIconDeleted(t *testing.T) {
+	const generic500 = `{"message":"The request could not be processed.","errors":[{"name":"base","reason":"The request could not be processed."}]}`
+	const noRows500 = `{"message":"sql: no rows in result set"}`
+
+	tests := []struct {
+		name        string
+		deleteCode  int
+		deleteBody  string
+		getCode     int // 0 means the GET must not happen
+		getBody     string
+		getLocation string
+		wantErr     bool
+	}{
+		{name: "icon deleted", deleteCode: http.StatusOK, deleteBody: `{}`},
+		{name: "4.92 no-rows 500 needs no GET", deleteCode: http.StatusInternalServerError, deleteBody: noRows500},
+		{name: "4.93 generic 500 confirmed absent by 404", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
+			getCode: http.StatusNotFound, getBody: `{"message":"Resource Not Found"}`},
+		{name: "App Store title redirects to Apple's icon", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
+			getCode: http.StatusFound, getLocation: "/apple-icon.png"},
+		{name: "generic 500 while icon still stored is a failure", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
+			getCode: http.StatusOK, getBody: "\x89PNG", wantErr: true},
+		{name: "generic 500 with failing GET is a failure", deleteCode: http.StatusInternalServerError, deleteBody: generic500,
+			getCode: http.StatusInternalServerError, getBody: generic500, wantErr: true},
+		{name: "403 is a failure without a GET", deleteCode: http.StatusForbidden, deleteBody: `{"message":"Permission Denied"}`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gets := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodDelete:
+					w.WriteHeader(tt.deleteCode)
+					_, _ = w.Write([]byte(tt.deleteBody))
+				case http.MethodGet:
+					if r.URL.Path == "/apple-icon.png" {
+						t.Error("the absence probe must not follow the redirect to Apple's icon")
+						_, _ = w.Write([]byte("\x89PNG"))
+						return
+					}
+					gets++
+					if tt.getLocation != "" {
+						w.Header().Set("Location", tt.getLocation)
+					}
+					w.WriteHeader(tt.getCode)
+					_, _ = w.Write([]byte(tt.getBody))
+				default:
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				}
+			}))
+			defer server.Close()
+
+			err := newIconTestClient(t, server.URL).EnsureTitleIconDeleted(context.Background(), 42, 0)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("EnsureTitleIconDeleted() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			wantGets := 0
+			if tt.getCode != 0 {
+				wantGets = 1
+			}
+			if gets != wantGets {
+				t.Errorf("expected %d GET requests, got %d", wantGets, gets)
+			}
+		})
+	}
+}

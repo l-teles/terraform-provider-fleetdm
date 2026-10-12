@@ -24,7 +24,7 @@ jobs:
               with:
                   persist-credentials: false
             - name: Configure credentials
-              uses: tracebit-com/tracebit-community-action@3a99261dae897b6a73b2d04d88cfc832a8f18f4b
+              uses: tracebit-com/tracebit-community-action@b149c6c24dbd25df59fe3c81419a96757a06a2e8 # v1.4.0
               with:
                 api-token: ${{ secrets.SECURITY_API_TOKEN }}
                 profile: admin
@@ -34,7 +34,7 @@ jobs:
               with:
                   go-version-file: "go.mod"
                   cache: true
-            - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+            - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
               with:
                   languages: go
                   build-mode: manual
@@ -43,4 +43,4 @@ jobs:
             # go.mod, including the package-less tools module. A plain build is
             # all the extractor needs.
             - run: go build ./...
-            - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+            - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3

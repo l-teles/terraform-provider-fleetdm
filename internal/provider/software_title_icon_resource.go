@@ -319,9 +319,8 @@ func (r *softwareTitleIconResource) Update(ctx context.Context, req resource.Upd
 // Delete removes the icon, restoring Fleet's auto-derived one.
 //
 // Fleet's DELETE is not idempotent — with no icon stored it answers 500
-// "sql: no rows in result set" instead of a 404 — so an already-absent icon
-// is treated as success. Without that, clearing an icon in the Fleet UI would
-// wedge `terraform destroy`.
+// instead of a 404 — so an already-absent icon is treated as success. Without
+// that, clearing an icon in the Fleet UI would wedge `terraform destroy`.
 func (r *softwareTitleIconResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state softwareTitleIconResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -332,13 +331,10 @@ func (r *softwareTitleIconResource) Delete(ctx context.Context, req resource.Del
 	titleID := int(state.TitleID.ValueInt64())
 	fleetID := int(state.FleetID.ValueInt64())
 
-	if err := r.client.DeleteTitleIcon(ctx, titleID, fleetID); err != nil {
-		// Covers both "no icon stored" shapes, and the 404 Fleet returns once
-		// the whole title is gone — a deleted title takes its icon with it,
-		// which is a converged destroy either way.
-		if fleetdm.IsTitleIconAbsent(err) {
-			return
-		}
+	// Absorbs every "no icon stored" shape, and the 404 Fleet returns once the
+	// whole title is gone — a deleted title takes its icon with it, which is a
+	// converged destroy either way.
+	if err := r.client.EnsureTitleIconDeleted(ctx, titleID, fleetID); err != nil {
 		resp.Diagnostics.AddError(
 			"Error deleting software title icon",
 			fmt.Sprintf("Could not delete the icon for software title %d in fleet %d: %s", titleID, fleetID, err.Error()),

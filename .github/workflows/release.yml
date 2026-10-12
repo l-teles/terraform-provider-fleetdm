@@ -22,7 +22,7 @@ jobs:
                   fetch-depth: 0
                   persist-credentials: false
             - name: Configure credentials
-              uses: tracebit-com/tracebit-community-action@3a99261dae897b6a73b2d04d88cfc832a8f18f4b
+              uses: tracebit-com/tracebit-community-action@b149c6c24dbd25df59fe3c81419a96757a06a2e8 # v1.4.0
               with:
                 api-token: ${{ secrets.SECURITY_API_TOKEN }}
                 profile: admin

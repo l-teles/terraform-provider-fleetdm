@@ -89,6 +89,7 @@ type PolicyResourceModel struct {
 	ConditionalAccessBypassEnabled types.Bool   `tfsdk:"conditional_access_bypass_enabled"`
 	ContinuousAutomationsEnabled   types.Bool   `tfsdk:"continuous_automations_enabled"`
 	PatchWhenClosed                types.Bool   `tfsdk:"patch_when_closed"`
+	NotifyBeforePatching           types.Bool   `tfsdk:"notify_before_patching"`
 	AuthorID                       types.Int64  `tfsdk:"author_id"`
 	AuthorName                     types.String `tfsdk:"author_name"`
 	AuthorEmail                    types.String `tfsdk:"author_email"`
@@ -275,13 +276,20 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Default:  booldefault.StaticBool(false),
 				MarkdownDescription: "Only patch the app on a host while it is not running. Requires `type = \"patch\"`, " +
 					"`continuous_automations_enabled = true`, and `team_id` — Fleet silently drops the field on a global policy. " +
-					"_Available in Fleet Premium 4.91+._\n\n" +
+					"Mutually exclusive with `notify_before_patching`. _Available in Fleet Premium 4.91+._\n\n" +
 					"~> **Interaction with the installer resource:** Fleet implements this by writing a managed `pre_install_query` onto the " +
-					"patch target's installer. If that installer is managed by `fleetdm_software_fleet_maintained_app`, " +
-					"`fleetdm_software_custom_package` or `fleetdm_software_app_store_app` without a `pre_install_query` of its own, " +
-					"the next plan will show that query as drift and clear it, turning the behaviour off again. " +
-					"Until the installer resources learn to leave Fleet's managed query alone, either keep the installer outside Terraform " +
-					"or expect to reconcile the two on every apply.",
+					"patch target's installer. Leave `pre_install_query` unset on the installer resource so Terraform does not take that query over.",
+			},
+			"notify_before_patching": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+				MarkdownDescription: "While the app is open, skip the patch and have Fleet Desktop warn the end user 1 hour and again 5 minutes " +
+					"before it closes and updates the app. Requires `type = \"patch\"`, `continuous_automations_enabled = true`, `team_id`, " +
+					"a macOS Fleet-maintained app as the patch target, and Fleet Desktop 1.5.0 on the host. Mutually exclusive with " +
+					"`patch_when_closed`. _Available in Fleet Premium 4.93+._\n\n" +
+					"~> **Interaction with the installer resource:** like `patch_when_closed`, this makes Fleet write a managed " +
+					"`pre_install_query` onto the installer. Leave `pre_install_query` unset on the installer resource.",
 			},
 			"author_id": schema.Int64Attribute{
 				Computed:            true,
@@ -579,29 +587,50 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		}
 	}
 
-	// patch_when_closed only means anything on a patch policy, and Fleet
-	// additionally refuses it unless the policy's automations re-run on every
-	// failing check. Both were verified against Fleet 4.91:
-	//   - on a non-patch policy: 400 `"patch_when_closed" is only supported for patch policies`
-	//   - with continuous automations off: 400 `If "patch_when_closed" is true,
+	// The two patch options only mean anything on a patch policy, and Fleet
+	// additionally refuses them unless the policy's automations re-run on every
+	// failing check. Verified against Fleet 4.91 (patch_when_closed) and in the
+	// 4.93 source (notify_before_patching):
+	//   - on a non-patch policy: 400 `"<flag>" is only supported for patch policies`
+	//   - with continuous automations off: 400 `If "<flag>" is true,
 	//     "continuous_automations_enabled" can't be set to false.`
-	// Only enforce when the flag is known to be true; Unknown defers to the API.
-	patchWhenClosedOn := !data.PatchWhenClosed.IsUnknown() && !data.PatchWhenClosed.IsNull() && data.PatchWhenClosed.ValueBool()
-	if patchWhenClosedOn {
+	//   - both on: 400 `Only one of "patch_when_closed" or "notify_before_patching" can be set to true`
+	// notify_before_patching also needs a macOS patch target, which only the
+	// API can check. Only enforce when a flag is known to be true; Unknown
+	// defers to the API.
+	patchWhenClosedOn := boolKnownTrue(data.PatchWhenClosed)
+	notifyBeforePatchingOn := boolKnownTrue(data.NotifyBeforePatching)
+	for _, f := range []struct {
+		attr string
+		on   bool
+	}{
+		{"patch_when_closed", patchWhenClosedOn},
+		{"notify_before_patching", notifyBeforePatchingOn},
+	} {
+		if !f.on {
+			continue
+		}
 		if typeKnown && !isPatchType {
 			resp.Diagnostics.AddAttributeError(
-				path.Root("patch_when_closed"),
+				path.Root(f.attr),
 				"Unsupported field",
-				"patch_when_closed is only supported when type = \"patch\".",
+				f.attr+" is only supported when type = \"patch\".",
 			)
 		}
 		if !data.ContinuousAutomationsEnabled.IsUnknown() && !data.ContinuousAutomationsEnabled.ValueBool() {
 			resp.Diagnostics.AddAttributeError(
 				path.Root("continuous_automations_enabled"),
 				"Missing required value",
-				"continuous_automations_enabled must be true when patch_when_closed is true.",
+				"continuous_automations_enabled must be true when "+f.attr+" is true.",
 			)
 		}
+	}
+	if patchWhenClosedOn && notifyBeforePatchingOn {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("notify_before_patching"),
+			"Conflicting patch options",
+			"Only one of patch_when_closed or notify_before_patching can be true.",
+		)
 	}
 
 	// Fleet only resends profiles to macOS and Windows hosts, so it rejects a
@@ -636,6 +665,7 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 		{"conditional_access_bypass_enabled", !data.ConditionalAccessBypassEnabled.IsNull() && !data.ConditionalAccessBypassEnabled.IsUnknown()},
 		{"continuous_automations_enabled", !data.ContinuousAutomationsEnabled.IsNull() && !data.ContinuousAutomationsEnabled.IsUnknown()},
 		{"patch_when_closed", !data.PatchWhenClosed.IsNull() && !data.PatchWhenClosed.IsUnknown()},
+		{"notify_before_patching", !data.NotifyBeforePatching.IsNull() && !data.NotifyBeforePatching.IsUnknown()},
 	}
 	if teamKnown && !teamSet {
 		for _, c := range checks {
@@ -672,6 +702,10 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
+	checkPatchOptionsAtApply(data, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	createReq := fleetdm.CreatePolicyRequest{
 		Name:                         data.Name.ValueString(),
@@ -688,6 +722,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		ProfileUUID:                  data.ProfileUUID.ValueStringPointer(),
 		ContinuousAutomationsEnabled: data.ContinuousAutomationsEnabled.ValueBool(),
 		PatchWhenClosed:              data.PatchWhenClosed.ValueBool(),
+		NotifyBeforePatching:         data.NotifyBeforePatching.ValueBool(),
 		LabelsIncludeAny:             stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
 		LabelsExcludeAny:             stringSetToSlice(ctx, data.LabelsExcludeAny, &resp.Diagnostics),
 		LabelsIncludeAll:             stringSetToSlice(ctx, data.LabelsIncludeAll, &resp.Diagnostics),
@@ -724,13 +759,13 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		policy = updated
 	}
 
-	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID, NotifyBeforePatching: data.NotifyBeforePatching}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	var echo diag.Diagnostics
-	checkFleet492AutomationsEchoed(planned, data, &echo)
+	checkPolicyAutomationsEchoed(planned, data, &echo)
 	if echo.HasError() {
 		// Nothing is in state yet, so the policy Fleet just created would be
 		// orphaned and a retry would create a second one. Remove it.
@@ -782,10 +817,17 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 	var prior policyPriorAutomations
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("software_package_id"), &prior.SoftwarePackageID)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("profile_uuid"), &prior.ProfileUUID)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("continuous_automations_enabled"), &prior.ContinuousAutomationsEnabled)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("patch_when_closed"), &prior.PatchWhenClosed)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("notify_before_patching"), &prior.NotifyBeforePatching)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
+	checkPatchOptionsAtApply(data, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	updateReq := buildPolicyUpdateRequest(ctx, data, prior, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
@@ -796,9 +838,9 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID}
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID, NotifyBeforePatching: data.NotifyBeforePatching}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
-	checkFleet492AutomationsEchoed(planned, data, &resp.Diagnostics)
+	checkPolicyAutomationsEchoed(planned, data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -907,6 +949,7 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
 	data.ContinuousAutomationsEnabled = types.BoolValue(policy.ContinuousAutomationsEnabled)
 	data.PatchWhenClosed = types.BoolValue(policy.PatchWhenClosed)
+	data.NotifyBeforePatching = types.BoolValue(policy.NotifyBeforePatching)
 	// Fleet doesn't echo conditional_access_bypass_enabled in the response;
 	// the planner-supplied value (config or default) is left unchanged.
 
@@ -985,6 +1028,35 @@ func policyNeedsAutomationFollowup(data PolicyResourceModel) bool {
 	return false
 }
 
+// checkPatchOptionsAtApply repeats the ValidateConfig patch-option rules once
+// values that were Unknown at plan have resolved. continuous_automations_enabled
+// is left off the wire while false, and Fleet then forces it on rather than
+// rejecting the request, which would surface as an inconsistent result.
+func checkPatchOptionsAtApply(data PolicyResourceModel, diags *diag.Diagnostics) {
+	for _, f := range []struct {
+		attr string
+		val  types.Bool
+	}{
+		{"patch_when_closed", data.PatchWhenClosed},
+		{"notify_before_patching", data.NotifyBeforePatching},
+	} {
+		if boolKnownTrue(f.val) && !boolKnownTrue(data.ContinuousAutomationsEnabled) {
+			diags.AddAttributeError(
+				path.Root("continuous_automations_enabled"),
+				"Missing required value",
+				"continuous_automations_enabled must be true when "+f.attr+" is true.",
+			)
+		}
+	}
+	if boolKnownTrue(data.PatchWhenClosed) && boolKnownTrue(data.NotifyBeforePatching) {
+		diags.AddAttributeError(
+			path.Root("notify_before_patching"),
+			"Conflicting patch options",
+			"Only one of patch_when_closed or notify_before_patching can be true.",
+		)
+	}
+}
+
 // policyQueryForRequest returns the query value to send in a Create or
 // Update request — empty string for patch policies so the omitempty JSON
 // tag drops the field entirely. Fleet rejects `query` together with
@@ -1011,10 +1083,13 @@ func policyPlatformForRequest(ctx context.Context, data PolicyResourceModel) str
 
 // policyPriorAutomations carries the prior-state values of the automation
 // fields whose clearing needs an explicit zero value on the wire. The zero
-// value (both null) means "nothing to clear", as on create.
+// value (all null) means "nothing to clear", as on create.
 type policyPriorAutomations struct {
-	SoftwarePackageID types.Int64
-	ProfileUUID       types.String
+	SoftwarePackageID            types.Int64
+	ProfileUUID                  types.String
+	ContinuousAutomationsEnabled types.Bool
+	PatchWhenClosed              types.Bool
+	NotifyBeforePatching         types.Bool
 }
 
 // buildPolicyUpdateRequest builds an UpdatePolicyRequest from the planned
@@ -1054,8 +1129,9 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, pri
 		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
 		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
-		ContinuousAutomationsEnabled:   optionalBoolPtr(data.ContinuousAutomationsEnabled),
-		PatchWhenClosed:                optionalBoolPtr(data.PatchWhenClosed),
+		ContinuousAutomationsEnabled:   premiumFlagForUpdate(data.ContinuousAutomationsEnabled, prior.ContinuousAutomationsEnabled),
+		PatchWhenClosed:                premiumFlagForUpdate(data.PatchWhenClosed, prior.PatchWhenClosed),
+		NotifyBeforePatching:           premiumFlagForUpdate(data.NotifyBeforePatching, prior.NotifyBeforePatching),
 		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny, diags),
 		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny, diags),
 		LabelsIncludeAll:               stringSetToSlice(ctx, data.LabelsIncludeAll, diags),
@@ -1091,12 +1167,12 @@ func mapSoftwarePackageID(current types.Int64, s *fleetdm.PolicyAutomationSoftwa
 	return types.Int64PointerValue(s.SoftwarePackageID)
 }
 
-// checkFleet492AutomationsEchoed turns a silently ignored software_package_id
-// or profile_uuid into a named error. A Fleet before 4.92 drops both keys
-// without echoing them, and a VPP title has no package to pin, so the state
-// would otherwise disagree with the plan and Terraform would only report a
-// generic inconsistent result.
-func checkFleet492AutomationsEchoed(planned policyPriorAutomations, got PolicyResourceModel, diags *diag.Diagnostics) {
+// checkPolicyAutomationsEchoed turns a silently ignored automation setting
+// into a named error. A Fleet before 4.92 drops software_package_id and
+// profile_uuid, one before 4.93 drops notify_before_patching, and a VPP title
+// has no package to pin. The state would otherwise disagree with the plan and
+// Terraform would only report a generic inconsistent result.
+func checkPolicyAutomationsEchoed(planned policyPriorAutomations, got PolicyResourceModel, diags *diag.Diagnostics) {
 	if !planned.SoftwarePackageID.IsNull() && !planned.SoftwarePackageID.IsUnknown() && got.SoftwarePackageID.IsNull() {
 		diags.AddAttributeError(path.Root("software_package_id"),
 			"Software package pin was not applied",
@@ -1106,6 +1182,11 @@ func checkFleet492AutomationsEchoed(planned policyPriorAutomations, got PolicyRe
 		diags.AddAttributeError(path.Root("profile_uuid"),
 			"Configuration profile resend was not applied",
 			"Fleet accepted the policy but did not report a profile to resend. This needs Fleet 4.92.0 or later. Remove profile_uuid or upgrade Fleet.")
+	}
+	if boolKnownTrue(planned.NotifyBeforePatching) && !boolKnownTrue(got.NotifyBeforePatching) {
+		diags.AddAttributeError(path.Root("notify_before_patching"),
+			"Notify before patching was not applied",
+			"Fleet accepted the policy but did not report notify_before_patching as on. This needs Fleet 4.93.0 or later. Remove notify_before_patching or upgrade Fleet.")
 	}
 }
 

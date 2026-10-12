@@ -23,6 +23,11 @@ description: |-
     # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
     # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
     host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+  
+    # Accept IdP credentials on certificate requests only from this endpoint.
+    integrations = {
+      certificates_idp_introspection_urls = ["https://idp.example.com/oauth2/introspect"]
+    }
   }
 ---
 
@@ -52,6 +57,11 @@ resource "fleetdm_configuration" "main" {
   # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
   # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
   host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+
+  # Accept IdP credentials on certificate requests only from this endpoint.
+  integrations = {
+    certificates_idp_introspection_urls = ["https://idp.example.com/oauth2/introspect"]
+  }
 }
 ```
 
@@ -75,8 +85,11 @@ resource "fleetdm_configuration" "main" {
 - `enable_host_users` (Boolean) Whether to collect user information from hosts.
 - `enable_software_inventory` (Boolean) Whether to collect software inventory from hosts.
 - `host_expiry_enabled` (Boolean) Whether to automatically remove hosts that have not checked in.
-- `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in.
+- `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in. Must be at least 1 when `host_expiry_enabled` is true.
 - `host_name_template` (String) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the "No team" scope), for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.
+- `integrations` (Attributes) Global integration settings. Only the attributes set here are managed; Jira, Zendesk and Google Calendar integrations are not touched.
+
+The `certificates_*` settings (Fleet 4.93+) control the request certificate API. Since 4.93 it is closed by default: a request signed with a host identity certificate must name the end user Fleet recorded for that host, and IdP credentials are refused unless their introspection endpoint is listed here. (see [below for nested schema](#nestedatt--integrations))
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
 - `org_logo_url` (String, Deprecated) Deprecated alias of `org_logo_url_dark_mode`. When omitted, Fleet's current value is preserved.
 - `org_logo_url_dark_mode` (String) URL of the organization logo shown on top of dark backgrounds. When omitted, Fleet's current value is preserved.
@@ -91,3 +104,12 @@ resource "fleetdm_configuration" "main" {
 ### Read-Only
 
 - `id` (String) The identifier of the configuration (always 'configuration').
+
+<a id="nestedatt--integrations"></a>
+### Nested Schema for `integrations`
+
+Optional:
+
+- `certificates_disable_host_end_user_binding` (Boolean) Turn off the check that a certificate request signed by a host names that host's recorded end user (both the CSR email and UPN). The check is on by default and refuses hosts with no recorded identity. **Security:** `true` lets any enrolled host request a certificate for any end user. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn the check back on. _Available in Fleet 4.93+._
+- `certificates_idp_client_ids` (Set of String) OAuth client IDs allowed on certificate requests, as a further constraint on `certificates_idp_introspection_urls`, which must not be empty while this is set. An empty set clears the list. _Available in Fleet Premium 4.93+._
+- `certificates_idp_introspection_urls` (Set of String) OAuth 2.0 token introspection endpoints allowed to vouch for certificate requests. Each must be an absolute `https` URL without credentials. Once any are listed, IdP credentials are required on every request. An empty set clears the list; leaving the attribute out leaves Fleet's value alone. _Available in Fleet Premium 4.93+._

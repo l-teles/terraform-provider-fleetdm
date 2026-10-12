@@ -108,6 +108,25 @@ func optionalBoolPtr(val types.Bool) *bool {
 	return &v
 }
 
+// boolKnownTrue reports whether val is known and true.
+func boolKnownTrue(val types.Bool) bool {
+	return !val.IsNull() && !val.IsUnknown() && val.ValueBool()
+}
+
+// premiumFlagForUpdate returns the value to send for a premium-only switch on
+// an update: the planned value while it is true or while clearing a prior true,
+// otherwise nil. Fleet Free rejects a premium field that is present at all,
+// even as false, and omitting one that was already off changes nothing.
+func premiumFlagForUpdate(planned, prior types.Bool) *bool {
+	if planned.IsNull() || planned.IsUnknown() {
+		return nil
+	}
+	if planned.ValueBool() || boolKnownTrue(prior) {
+		return new(planned.ValueBool())
+	}
+	return nil
+}
+
 // optionalStringPtr converts an optional types.String to a *string.
 // Returns nil if the value is null or unknown. Note that an explicitly
 // configured empty string yields a pointer to "", which is how a setting is

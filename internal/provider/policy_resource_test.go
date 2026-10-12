@@ -534,7 +534,7 @@ resource "fleetdm_policy" "test" {
   continuous_automations_enabled = true
 }
 `, policyName),
-				ExpectError: regexp.MustCompile("team_id required"),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
 			},
 		},
 	})
@@ -1170,7 +1170,7 @@ resource "fleetdm_policy" "test" {
   patch_when_closed = true
 }
 `, policyName),
-				ExpectError: regexp.MustCompile("team_id required"),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
 			},
 		},
 	})
@@ -1186,8 +1186,7 @@ func TestAccPolicyResource_patchWhenClosed(t *testing.T) {
 	// The installer is added out of band rather than with
 	// fleetdm_software_fleet_maintained_app on purpose. Turning on
 	// patch_when_closed makes Fleet write a managed pre_install_query onto the
-	// installer, which a Terraform-managed installer resource would then plan
-	// to clear -- see the note on the attribute. Keeping the installer outside
+	// installer -- see the note on the attribute. Keeping the installer outside
 	// Terraform lets this test assert patch_when_closed itself.
 	// Set up before the step configs are built: TestStep.Config is a string
 	// evaluated now, whereas PreCheck runs later. Both gates have to be
@@ -1239,6 +1238,189 @@ resource "fleetdm_policy" "test" {
 			},
 		},
 	})
+}
+
+func TestAccPolicyResource_notifyBeforePatchingValidators(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  query                          = "SELECT 1;"
+  team_id                        = 1
+  continuous_automations_enabled = true
+  notify_before_patching         = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)notify_before_patching\s+is\s+only\s+supported\s+when\s+type`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  notify_before_patching  = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)continuous_automations_enabled\s+must\s+be\s+true\s+when\s+notify_before_patching`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  team_id                        = 1
+  type                           = "patch"
+  patch_software_title_id        = 999
+  continuous_automations_enabled = true
+  patch_when_closed              = true
+  notify_before_patching         = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)Only\s+one\s+of\s+patch_when_closed\s+or\s+notify_before_patching`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                   = %[1]q
+  query                  = "SELECT 1;"
+  notify_before_patching = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_notifyBeforePatching exercises notify_before_patching
+// against a live Fleet 4.93+, including switching to patch_when_closed and
+// back in single applies: the two are mutually exclusive, so each switch has
+// to clear one flag and set the other in the same request.
+func TestAccPolicyResource_notifyBeforePatching(t *testing.T) {
+	policyName := "tf-acc-test-nbp-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	teamName := "tf-acc-team-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	// Out-of-band installer and early gates for the same reasons as
+	// TestAccPolicyResource_patchWhenClosed.
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC must be set for live acceptance tests")
+	}
+	testAccPreCheck(t)
+	fleetID, titleID := addFleetMaintainedAppOutOfBand(t, teamName, "1Password", "darwin")
+
+	cfg := func(patchWhenClosed, notify bool) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  team_id                        = %[2]d
+  type                           = "patch"
+  patch_software_title_id        = %[3]d
+  continuous_automations_enabled = true
+  patch_when_closed              = %[4]t
+  notify_before_patching         = %[5]t
+}
+`, policyName, fleetID, titleID, patchWhenClosed, notify)
+	}
+	flags := func(patchWhenClosed, notify string) resource.TestCheckFunc {
+		return resource.ComposeAggregateTestCheckFunc(
+			resource.TestCheckResourceAttr("fleetdm_policy.test", "patch_when_closed", patchWhenClosed),
+			resource.TestCheckResourceAttr("fleetdm_policy.test", "notify_before_patching", notify),
+		)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg(false, true), Check: flags("false", "true")},
+			{Config: cfg(false, true), PlanOnly: true},
+			{Config: cfg(true, false), Check: flags("true", "false")},
+			{Config: cfg(false, true), Check: flags("false", "true")},
+			{
+				ResourceName:      "fleetdm_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				// Fleet touches the policy row just after the update returns,
+				// moving updated_at by a second.
+				ImportStateVerifyIgnore: []string{"updated_at"},
+				ImportStateIdFunc: func(s *terraform.State) (string, error) {
+					rs, ok := s.RootModule().Resources["fleetdm_policy.test"]
+					if !ok {
+						return "", fmt.Errorf("fleetdm_policy.test not found in state")
+					}
+					return rs.Primary.Attributes["team_id"] + ":" + rs.Primary.Attributes["id"], nil
+				},
+			},
+			{Config: cfg(false, false), Check: flags("false", "false")},
+		},
+	})
+}
+
+// TestBuildPolicyUpdateRequest_premiumFlags pins what reaches the wire for the
+// premium-only switches. Fleet Free answers "option X requires a premium
+// license" to any of them being present, even as false, so a switch that is
+// off and was off must be left out entirely.
+func TestBuildPolicyUpdateRequest_premiumFlags(t *testing.T) {
+	keys := []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching"}
+	tests := []struct {
+		name    string
+		planned bool
+		prior   types.Bool
+		want    string // "" means the key must be absent
+	}{
+		{name: "off and was off", planned: false, prior: types.BoolValue(false), want: ""},
+		{name: "off on create follow-up", planned: false, prior: types.BoolNull(), want: ""},
+		{name: "turned on", planned: true, prior: types.BoolValue(false), want: "true"},
+		{name: "stays on", planned: true, prior: types.BoolValue(true), want: "true"},
+		{name: "cleared", planned: false, prior: types.BoolValue(true), want: "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := PolicyResourceModel{
+				Name:                         types.StringValue("p"),
+				Query:                        types.StringValue("SELECT 1;"),
+				Type:                         types.StringValue("dynamic"),
+				Platform:                     types.ListNull(types.StringType),
+				ContinuousAutomationsEnabled: types.BoolValue(tt.planned),
+				PatchWhenClosed:              types.BoolValue(tt.planned),
+				NotifyBeforePatching:         types.BoolValue(tt.planned),
+			}
+			prior := policyPriorAutomations{
+				ContinuousAutomationsEnabled: tt.prior,
+				PatchWhenClosed:              tt.prior,
+				NotifyBeforePatching:         tt.prior,
+			}
+			var diags diag.Diagnostics
+			req := buildPolicyUpdateRequest(context.Background(), data, prior, &diags)
+			if diags.HasError() {
+				t.Fatalf("unexpected diagnostics: %v", diags)
+			}
+			raw, err := json.Marshal(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range keys {
+				got, present := body[k]
+				switch {
+				case tt.want == "" && present:
+					t.Errorf("%s: expected the key to be omitted, got %s", k, got)
+				case tt.want != "" && string(got) != tt.want:
+					t.Errorf("%s: expected %s, got %q (present=%v)", k, tt.want, got, present)
+				}
+			}
+		})
+	}
 }
 
 // addFleetMaintainedAppOutOfBand creates a fleet and adds a Fleet-maintained
@@ -1753,4 +1935,33 @@ resource "fleetdm_policy" "test" {
 			},
 		},
 	})
+}
+
+// TestCheckPatchOptionsAtApply covers patch options that were Unknown at plan,
+// where ValidateConfig could not apply the rules.
+func TestCheckPatchOptionsAtApply(t *testing.T) {
+	tests := []struct {
+		name                    string
+		continuous, pwc, notify bool
+		wantErr                 bool
+	}{
+		{name: "nothing on"},
+		{name: "notify with continuous", continuous: true, notify: true},
+		{name: "notify without continuous", notify: true, wantErr: true},
+		{name: "patch_when_closed without continuous", pwc: true, wantErr: true},
+		{name: "both on", continuous: true, pwc: true, notify: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			checkPatchOptionsAtApply(PolicyResourceModel{
+				ContinuousAutomationsEnabled: types.BoolValue(tt.continuous),
+				PatchWhenClosed:              types.BoolValue(tt.pwc),
+				NotifyBeforePatching:         types.BoolValue(tt.notify),
+			}, &diags)
+			if diags.HasError() != tt.wantErr {
+				t.Errorf("HasError() = %v, want %v: %v", diags.HasError(), tt.wantErr, diags)
+			}
+		})
+	}
 }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Terraform provider for [FleetDM](https://fleetdm.com) — manages Fleet resources via infrastructure-as-code. Built with the Terraform Plugin Framework (v1.19), Go 1.26, Protocol v6. Not affiliated with FleetDM, Inc.
+Terraform provider for [FleetDM](https://fleetdm.com) — manages Fleet resources via infrastructure-as-code. Built with the Terraform Plugin Framework (v1.19), Go 1.27.2, Protocol v6. Not affiliated with FleetDM, Inc.
 
 ## Common Commands
 

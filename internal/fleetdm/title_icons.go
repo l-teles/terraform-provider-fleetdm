@@ -162,14 +162,70 @@ func (c *Client) GetTitleIcon(ctx context.Context, titleID, fleetID int) ([]byte
 // DeleteTitleIcon removes the custom icon for a software title.
 //
 // Fleet returns 200 with an empty object on success. When the title has no
-// icon it returns 500 "sql: no rows in result set" instead of a 404, so
-// callers that want delete to be idempotent should funnel the error through
-// IsTitleIconAbsent.
+// icon it returns a 500 instead of a 404, so callers that want delete to be
+// idempotent should use EnsureTitleIconDeleted.
 func (c *Client) DeleteTitleIcon(ctx context.Context, titleID, fleetID int) error {
 	if err := c.Delete(ctx, titleIconEndpoint(titleID, fleetID), nil, nil); err != nil {
 		return fmt.Errorf("failed to delete icon for software title %d: %w", titleID, err)
 	}
 	return nil
+}
+
+// EnsureTitleIconDeleted deletes the icon and treats "no icon stored" as
+// success, which DeleteTitleIcon alone cannot do reliably.
+//
+// Since Fleet 4.93 the no-icon 500 says only "The request could not be
+// processed.", so the no-rows text IsTitleIconAbsent matches is gone. Any other
+// 500 is therefore checked with titleIconStored. If an icon is still there, or
+// the check fails, the original DELETE error is returned.
+func (c *Client) EnsureTitleIconDeleted(ctx context.Context, titleID, fleetID int) error {
+	err := c.DeleteTitleIcon(ctx, titleID, fleetID)
+	if err == nil || IsTitleIconAbsent(err) {
+		return nil
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError {
+		return err
+	}
+	if stored, probeErr := c.titleIconStored(ctx, titleID, fleetID); probeErr == nil && !stored {
+		return nil
+	}
+	return err
+}
+
+// titleIconStored reports whether Fleet holds a custom icon for the title.
+// Without one, Fleet answers 404, or for an App Store app a redirect to
+// Apple's icon. Redirects are therefore not followed: Apple's icon is not a
+// custom one.
+func (c *Client) titleIconStored(ctx context.Context, titleID, fleetID int) (bool, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+titleIconEndpoint(titleID, fleetID), nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpReq.Header.Set("User-Agent", c.UserAgent)
+
+	noRedirect := *c.HTTPClient
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.Do(httpReq)
+	if err != nil {
+		return false, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxTitleIconSize+1))
+	if err != nil {
+		return false, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound,
+		resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return false, nil
+	case resp.StatusCode >= 400:
+		return false, newAPIError(resp.StatusCode, body)
+	default:
+		return len(body) > 0, nil
+	}
 }
 
 // IsTitleIconAbsent reports whether err means "this title has no icon".

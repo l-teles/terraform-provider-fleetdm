@@ -344,11 +344,11 @@ func (m *iconMockServer) handler(t *testing.T) http.Handler {
 				_, _ = w.Write(content)
 			case http.MethodDelete:
 				if _, ok := m.icons[key]; !ok {
-					// Reproduce Fleet's non-idempotent DELETE: 500 with the
-					// no-rows sentinel rather than a 404.
+					// Reproduce Fleet's non-idempotent DELETE: a 500 rather than
+					// a 404, with the generic body Fleet 4.93+ sends.
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
-					_ = json.NewEncoder(w).Encode(map[string]any{"message": "sql: no rows in result set"})
+					_ = json.NewEncoder(w).Encode(map[string]any{"message": "The request could not be processed."})
 					return
 				}
 				delete(m.icons, key)
@@ -1072,8 +1072,8 @@ resource "fleetdm_software_title_icon" "test" {
 
 // TestAccSoftwareTitleIconResource_liveDeleteIdempotency pins the Fleet quirk
 // the Delete path absorbs, against the real server: DELETE on a title with no
-// icon answers HTTP 500 "sql: no rows in result set" rather than a 404 or a
-// no-op 200.
+// icon answers HTTP 500 rather than a 404 or a no-op 200, and since Fleet 4.93
+// that 500 no longer says why.
 //
 // This is deliberately a client-level test rather than a Terraform one.
 // Driving it through resource.Test is not possible: removing the icon
@@ -1118,11 +1118,12 @@ func TestAccSoftwareTitleIconResource_liveDeleteIdempotency(t *testing.T) {
 	// The title is brand new, so it has no icon yet. If Fleet ever fixes the
 	// non-idempotent DELETE this logs the change rather than silently passing,
 	// which is the signal to drop the workaround.
-	err = client.DeleteTitleIcon(ctx, title.ID, fleetID)
-	switch {
-	case err == nil:
-		t.Log("note: Fleet now accepts DELETE on a title with no icon; the IsTitleIconAbsent 500 workaround may no longer be needed")
-	case !fleetdm.IsTitleIconAbsent(err):
+	if err := client.DeleteTitleIcon(ctx, title.ID, fleetID); err == nil {
+		t.Log("note: Fleet now accepts DELETE on a title with no icon; the EnsureTitleIconDeleted workaround may no longer be needed")
+	} else {
+		t.Logf("raw DELETE on a title with no icon: %v", err)
+	}
+	if err := client.EnsureTitleIconDeleted(ctx, title.ID, fleetID); err != nil {
 		t.Errorf("deleting a non-existent icon returned an error the provider would not tolerate: %v", err)
 	}
 
@@ -1140,9 +1141,7 @@ func TestAccSoftwareTitleIconResource_liveDeleteIdempotency(t *testing.T) {
 	if err := client.DeleteTitleIcon(ctx, title.ID, fleetID); err != nil {
 		t.Fatalf("first delete should succeed outright: %v", err)
 	}
-	if err := client.DeleteTitleIcon(ctx, title.ID, fleetID); err == nil {
-		t.Log("note: Fleet's second DELETE now succeeds; the workaround may no longer be needed")
-	} else if !fleetdm.IsTitleIconAbsent(err) {
+	if err := client.EnsureTitleIconDeleted(ctx, title.ID, fleetID); err != nil {
 		t.Errorf("second delete returned an intolerable error: %v", err)
 	}
 }
