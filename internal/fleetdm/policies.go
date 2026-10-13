@@ -161,65 +161,52 @@ type CreatePolicyResponse struct {
 
 // UpdatePolicyRequest represents the request to update a policy.
 //
-// Fields here intentionally drop `omitempty` and use pointers (or, for
-// labels, slices) so the wire format can faithfully express the user's
-// intent. Two distinct conventions apply per Fleet's API:
+// Fleet Free rejects a request that carries any Premium-only field at all,
+// even as false, null or [], so every Premium field here is left out unless
+// the update sets it or clears a value it had before. The builder in the
+// provider decides which, using the prior state:
 //
-//   - Pointer fields (script_id, software_title_id, calendar_events_enabled,
-//     conditional_access_enabled, conditional_access_bypass_enabled): a Go
-//     `nil` serializes as JSON `null`, which Fleet treats as "clear /
-//     reset to default". A non-nil pointer is sent as the value.
-//
-//   - Label slice fields (labels_include_any, labels_exclude_any,
-//     labels_include_all, labels_exclude_all): a `nil` slice serializes as
-//     JSON `null`, which Fleet treats as "no change" (preserve the existing
-//     labels). An empty slice (`[]string{}`) serializes as JSON `[]`, which
-//     Fleet treats as "clear all labels". Use the empty slice to clear;
-//     never use nil if the user has asked for labels to be removed.
-//
-// `omitempty` would suppress null/empty values entirely, breaking both
-// conventions.
-//
-// The Fleet 4.92 fields are the exception and do use omitempty, so servers
-// that predate them never see the keys:
-//
+//   - software_title_id, script_id: Nullable, left out when unmanaged,
+//     null to clear, the ID to set.
+//   - Labels: a nil slice is left out and an empty slice is sent as []. Fleet
+//     treats the four selectors as one group: when any of them is sent, every
+//     selector left out is cleared too, and only a request with none of them
+//     leaves the labels unchanged. Send all four planned values together.
+//   - critical, calendar_events_enabled, conditional_access_enabled and the
+//     automation switches (continuous_automations_enabled, patch_when_closed,
+//     notify_before_patching): sent only when true or when turning off one
+//     that was on.
+//   - conditional_access_bypass_enabled is not Premium-gated: a nil pointer
+//     is sent as null, which resets it to Fleet's default.
 //   - software_package_id: Fleet re-resolves the package whenever
-//     software_title_id is sent, which is always, so omitting it (or 0)
-//     selects the title's first-added package. Send it on every request
-//     while a package is pinned.
-//   - profile_uuid: omitting it means "no change". Send a pointer to ""
-//     to clear the profile.
-//
-// The premium-only switches (continuous_automations_enabled,
-// patch_when_closed, notify_before_patching) also use omitempty. Fleet Free
-// rejects any premium field that is present, even when it is false, so send
-// these only to turn them on or to clear one that was on.
+//     software_title_id is sent, so send it on every request while a
+//     package is pinned; 0 selects the title's first-added package.
+//   - profile_uuid: left out means "no change", "" clears it.
 //
 // Fleet rejects a request whose labels_include_any AND labels_include_all are
 // both non-empty (likewise for the two exclude fields) with "policy can
-// include at most one of ...". Empty arrays don't count as set, so sending
-// `[]` for the unused half of each pair is safe.
+// include at most one of ...". Empty arrays don't count as set.
 type UpdatePolicyRequest struct {
-	Name                           string   `json:"name,omitempty"`
-	Description                    string   `json:"description,omitempty"`
-	Query                          string   `json:"query,omitempty"`
-	Critical                       bool     `json:"critical"`
-	Resolution                     string   `json:"resolution,omitempty"`
-	Platform                       string   `json:"platform,omitempty"`
-	SoftwareTitleID                *int     `json:"software_title_id"`
-	ScriptID                       *int     `json:"script_id"`
-	SoftwarePackageID              *int64   `json:"software_package_id,omitempty"`
-	ProfileUUID                    *string  `json:"profile_uuid,omitempty"`
-	CalendarEventsEnabled          *bool    `json:"calendar_events_enabled"`
-	ConditionalAccessEnabled       *bool    `json:"conditional_access_enabled"`
-	ConditionalAccessBypassEnabled *bool    `json:"conditional_access_bypass_enabled"`
-	ContinuousAutomationsEnabled   *bool    `json:"continuous_automations_enabled,omitempty"`
-	PatchWhenClosed                *bool    `json:"patch_when_closed,omitempty"`
-	NotifyBeforePatching           *bool    `json:"notify_before_patching,omitempty"`
-	LabelsIncludeAny               []string `json:"labels_include_any"`
-	LabelsExcludeAny               []string `json:"labels_exclude_any"`
-	LabelsIncludeAll               []string `json:"labels_include_all"`
-	LabelsExcludeAll               []string `json:"labels_exclude_all"`
+	Name                           string          `json:"name,omitempty"`
+	Description                    string          `json:"description,omitempty"`
+	Query                          string          `json:"query,omitempty"`
+	Critical                       *bool           `json:"critical,omitempty"`
+	Resolution                     string          `json:"resolution,omitempty"`
+	Platform                       string          `json:"platform,omitempty"`
+	SoftwareTitleID                Nullable[int64] `json:"software_title_id,omitzero"`
+	ScriptID                       Nullable[int64] `json:"script_id,omitzero"`
+	SoftwarePackageID              *int64          `json:"software_package_id,omitempty"`
+	ProfileUUID                    *string         `json:"profile_uuid,omitempty"`
+	CalendarEventsEnabled          *bool           `json:"calendar_events_enabled,omitempty"`
+	ConditionalAccessEnabled       *bool           `json:"conditional_access_enabled,omitempty"`
+	ConditionalAccessBypassEnabled *bool           `json:"conditional_access_bypass_enabled"`
+	ContinuousAutomationsEnabled   *bool           `json:"continuous_automations_enabled,omitempty"`
+	PatchWhenClosed                *bool           `json:"patch_when_closed,omitempty"`
+	NotifyBeforePatching           *bool           `json:"notify_before_patching,omitempty"`
+	LabelsIncludeAny               []string        `json:"labels_include_any,omitzero"`
+	LabelsExcludeAny               []string        `json:"labels_exclude_any,omitzero"`
+	LabelsIncludeAll               []string        `json:"labels_include_all,omitzero"`
+	LabelsExcludeAll               []string        `json:"labels_exclude_all,omitzero"`
 }
 
 // UpdatePolicyResponse represents the response from the update policy endpoint.
