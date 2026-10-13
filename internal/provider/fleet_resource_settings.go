@@ -5,7 +5,6 @@ import (
 	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -373,57 +372,6 @@ func fleetMDMAttribute() schema.Attribute {
 		"Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. " +
 		"Each attribute is sent only when you declare it, so settings you leave out keep whatever value they already have in Fleet."
 
-	appleUpdates := func(platform string) schema.Attribute {
-		desc := "Minimum " + platform + " version enforced on this fleet's hosts. " +
-			"Give an exact version Apple still publishes (for example \"26.6.1\", not \"26.6\") together with deadline, which Fleet validates against Apple's Software Lookup Service. " +
-			"Alternatively set minimum_version to \"latest\" together with deadline_days to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date. " +
-			"Set both minimum_version and deadline to \"\" to clear the requirement."
-		mdDesc := "Minimum " + platform + " version enforced on this fleet's hosts.\n\n" +
-			"Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. " +
-			"Alternatively set `minimum_version` to `\"latest\"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). " +
-			"Set both `minimum_version` and `deadline` to `\"\"` to clear the requirement."
-		return schema.SingleNestedAttribute{
-			Description:         desc,
-			MarkdownDescription: mdDesc,
-			Optional:            true,
-			Validators: []validator.Object{
-				appleOSUpdatesConsistentValidator{},
-			},
-			Attributes: map[string]schema.Attribute{
-				"minimum_version": schema.StringAttribute{
-					Description:         "Required minimum OS version, for example \"26.6.1\", or \"latest\" to track Apple's newest release. Set it with deadline, or with deadline_days when it is \"latest\".",
-					MarkdownDescription: "Required minimum OS version, for example `26.6.1`, or `\"latest\"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `\"latest\"`.",
-					Optional:            true,
-				},
-				"deadline": schema.StringAttribute{
-					Description:         "Date by which the update must be installed, as YYYY-MM-DD. Set it together with an exact minimum_version; Fleet rejects it when minimum_version is \"latest\".",
-					MarkdownDescription: "Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `\"latest\"`.",
-					Optional:            true,
-					Validators: []validator.String{
-						stringvalidator.AlsoRequires(siblingAttribute("minimum_version")),
-						stringvalidator.RegexMatches(
-							osUpdateDeadlineRegex,
-							`must be a date in YYYY-MM-DD form, or "" to clear it`,
-						),
-					},
-				},
-				"deadline_days": schema.Int64Attribute{
-					Description:         "Days after a version's release date before the update is enforced. Only valid when minimum_version is \"latest\", where it replaces deadline. Requires Fleet 4.91.0 or later.",
-					MarkdownDescription: "Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `\"latest\"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.",
-					Optional:            true,
-					Validators: []validator.Int64{
-						int64validator.AtLeast(1),
-					},
-				},
-				"update_new_hosts": schema.BoolAttribute{
-					Description:         "Enforce the latest version only on hosts that enroll from now on.",
-					MarkdownDescription: "Enforce the latest version only on hosts that enroll from now on.",
-					Optional:            true,
-				},
-			},
-		}
-	}
-
 	return schema.SingleNestedAttribute{
 		Description:         desc,
 		MarkdownDescription: desc,
@@ -448,89 +396,13 @@ func fleetMDMAttribute() schema.Attribute {
 				MarkdownDescription: "Template Fleet uses to name the fleet's MDM-enrolled hosts, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it.",
 				Optional:            true,
 			},
-			"macos_settings": schema.SingleNestedAttribute{
-				Description: "macOS-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. " +
-					"Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
-				MarkdownDescription: "macOS-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. " +
-					"Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
-				Optional: true,
-				Attributes: map[string]schema.Attribute{
-					"enable_disk_encryption": schema.BoolAttribute{
-						Description:         "Whether Fleet enforces FileVault on this fleet's macOS hosts.",
-						MarkdownDescription: "Whether Fleet enforces FileVault on this fleet's macOS hosts.",
-						Optional:            true,
-					},
-					"enable_escrow_disk_encryption_key": schema.BoolAttribute{
-						Description:         "Whether Fleet escrows the FileVault recovery key of this fleet's macOS hosts, independently of whether Fleet enforces FileVault.",
-						MarkdownDescription: "Whether Fleet escrows the FileVault recovery key of this fleet's macOS hosts, independently of whether Fleet enforces FileVault.",
-						Optional:            true,
-					},
-				},
-			},
-			"windows_settings": schema.SingleNestedAttribute{
-				Description: "Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the fleetdm_configuration_profile resource. " +
-					"Requires Fleet 4.91.0 or later; enable_disk_encryption and require_bitlocker_pin require Fleet 4.92.0 or later." + diskEncryptionGateNote,
-				MarkdownDescription: "Windows-specific MDM settings for this fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. " +
-					"Requires Fleet 4.91.0 or later; `enable_disk_encryption` and `require_bitlocker_pin` require Fleet 4.92.0 or later." + diskEncryptionGateNote,
-				Optional: true,
-				Attributes: map[string]schema.Attribute{
-					"enable_managed_local_account": schema.BoolAttribute{
-						Description:         "Whether fleetd creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires fleetd 1.60.0 or later on the host.",
-						MarkdownDescription: "Whether `fleetd` creates a managed local admin account on this fleet's Windows hosts during enrollment. Requires `fleetd` 1.60.0 or later on the host.",
-						Optional:            true,
-					},
-					"enable_disk_encryption": schema.BoolAttribute{
-						Description:         "Whether Fleet enforces BitLocker on this fleet's Windows hosts.",
-						MarkdownDescription: "Whether Fleet enforces BitLocker on this fleet's Windows hosts.",
-						Optional:            true,
-					},
-					"require_bitlocker_pin": schema.BoolAttribute{
-						Description:         "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Fleet only accepts true while Windows disk encryption is enabled for the fleet. Replaces the deprecated mdm.windows_require_bitlocker_pin.",
-						MarkdownDescription: "Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Fleet only accepts `true` while Windows disk encryption is enabled for the fleet. Replaces the deprecated `mdm.windows_require_bitlocker_pin`.",
-						Optional:            true,
-					},
-				},
-			},
-			"linux_settings": schema.SingleNestedAttribute{
-				Description:         "Linux-specific MDM settings for this fleet. Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
-				MarkdownDescription: "Linux-specific MDM settings for this fleet. Requires Fleet 4.92.0 or later." + diskEncryptionGateNote,
-				Optional:            true,
-				Attributes: map[string]schema.Attribute{
-					"enable_escrow_disk_encryption_key": schema.BoolAttribute{
-						Description:         "Whether Fleet escrows the LUKS passphrase of this fleet's Linux hosts.",
-						MarkdownDescription: "Whether Fleet escrows the LUKS passphrase of this fleet's Linux hosts.",
-						Optional:            true,
-					},
-				},
-			},
-			"macos_updates":  appleUpdates("macOS"),
-			"ios_updates":    appleUpdates("iOS"),
-			"ipados_updates": appleUpdates("iPadOS"),
-			"windows_updates": schema.SingleNestedAttribute{
-				Description:         "Windows update enforcement for this fleet. Set both attributes to 0 to clear it.",
-				MarkdownDescription: "Windows update enforcement for this fleet. Set both attributes to `0` to clear it.",
-				Optional:            true,
-				Attributes: map[string]schema.Attribute{
-					"deadline_days": schema.Int64Attribute{
-						Description:         "Days a host has to install an available update before it is forced, between 0 and 30. Must be set together with grace_period_days.",
-						MarkdownDescription: "Days a host has to install an available update before it is forced, between `0` and `30`. Must be set together with `grace_period_days`.",
-						Optional:            true,
-						Validators: []validator.Int64{
-							int64validator.Between(0, 30),
-							int64validator.AlsoRequires(siblingAttribute("grace_period_days")),
-						},
-					},
-					"grace_period_days": schema.Int64Attribute{
-						Description:         "Days a host has to restart once the deadline has passed, between 0 and 7. Must be set together with deadline_days.",
-						MarkdownDescription: "Days a host has to restart once the deadline has passed, between `0` and `7`. Must be set together with `deadline_days`.",
-						Optional:            true,
-						Validators: []validator.Int64{
-							int64validator.Between(0, 7),
-							int64validator.AlsoRequires(siblingAttribute("deadline_days")),
-						},
-					},
-				},
-			},
+			"macos_settings":   macOSSettingsAttribute(fleetMDMScope),
+			"windows_settings": windowsSettingsAttribute(fleetMDMScope),
+			"linux_settings":   linuxSettingsAttribute(fleetMDMScope),
+			"macos_updates":    appleOSUpdatesAttribute("macOS", fleetMDMScope),
+			"ios_updates":      appleOSUpdatesAttribute("iOS", fleetMDMScope),
+			"ipados_updates":   appleOSUpdatesAttribute("iPadOS", fleetMDMScope),
+			"windows_updates":  windowsUpdatesAttribute(fleetMDMScope),
 		},
 	}
 }
@@ -702,8 +574,8 @@ func buildMDMSettings(enableDiskEncryption types.Bool, m *fleetMDMModel) *fleetd
 
 	if w := m.WindowsUpdates; w != nil {
 		out.WindowsUpdates = &fleetdm.WindowsUpdates{
-			DeadlineDays:    optionalIntPtr(w.DeadlineDays),
-			GracePeriodDays: optionalIntPtr(w.GracePeriodDays),
+			DeadlineDays:    optionalInt64Ptr(w.DeadlineDays),
+			GracePeriodDays: optionalInt64Ptr(w.GracePeriodDays),
 		}
 	}
 
@@ -873,8 +745,8 @@ func refreshMDM(m *fleetMDMModel, api *fleetdm.TeamMDMSettings) {
 	refreshAppleOSUpdates(m.IPadOSUpdates, api.IPadOSUpdates)
 
 	if w, a := m.WindowsUpdates, api.WindowsUpdates; w != nil && a != nil {
-		w.DeadlineDays = refreshOptionalInt64(w.DeadlineDays, a.DeadlineDays)
-		w.GracePeriodDays = refreshOptionalInt64(w.GracePeriodDays, a.GracePeriodDays)
+		w.DeadlineDays = refreshOptionalInt64Ptr(w.DeadlineDays, a.DeadlineDays)
+		w.GracePeriodDays = refreshOptionalInt64Ptr(w.GracePeriodDays, a.GracePeriodDays)
 	}
 }
 

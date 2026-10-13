@@ -1,25 +1,10 @@
 # Design note: the app-config `mdm` surface on `fleetdm_configuration`
 
-Status: proposal. Records why `windows_automatic_enrollment_default_fleet` landed as a flat attribute in the Fleet 4.91 change, and what shape the rest of the surface should take.
+Status: implemented. Records the shape of the global `mdm` block and the decisions behind it.
 
-## Where we are
+## Shape
 
-`fleetdm_configuration` maps `PATCH /api/v1/fleet/config`, but only a flat subset of it. Fleet's app config has 30 keys under `mdm`; the provider exposes two, both flattened to top level:
-
-- `host_name_template` -> `mdm.name_template`
-- `windows_automatic_enrollment_default_fleet` -> `mdm.windows_automatic_enrollment.default_fleet` (added for 4.91)
-
-Both follow the same opt-in rule: unconfigured means null, the key never goes on the wire, and a value set in the Fleet UI or by GitOps is left alone. Fleet accepts exactly one `mdm` object per request, so every managed key is merged into it at request-build time.
-
-The flat naming was kept for the 4.91 addition deliberately. Introducing a nested `mdm` block for one new key, while `host_name_template` stayed at top level, would have given the resource two competing representations of the same API object in the same release.
-
-## Why the flat shape does not scale
-
-Three of the remaining keys are nested objects, not scalars (`macos_setup`, `windows_settings`, `end_user_authentication`), and three more are the per-platform OS update objects that `fleetdm_fleet` already models as `mdm.{macos,ios,ipados}_updates`. Flattening those produces names like `windows_automatic_enrollment_default_fleet` — already the longest attribute on the resource — and gives the same setting a different name depending on whether it is global or per-fleet, even though the wire shape is identical.
-
-## Proposed shape
-
-Add an opt-in `mdm` block whose sub-blocks mirror Fleet's own key names, so that a global setting and its per-fleet equivalent read the same:
+`fleetdm_configuration` has an opt-in `mdm` block that maps the global `mdm` object of `PATCH /api/v1/fleet/config`. Its sub-blocks use Fleet's own key names, so a global setting and its per-fleet equivalent on `fleetdm_fleet` read the same:
 
 ```hcl
 resource "fleetdm_configuration" "this" {
@@ -38,12 +23,20 @@ resource "fleetdm_configuration" "this" {
 }
 ```
 
-This reuses the block semantics `fleetdm_fleet` already documents and tests: a block you do not declare is neither written nor read into state, and attributes inside a declared block are only sent when set. The Apple OS update sub-blocks can share `appleUpdates()` and `appleOSUpdatesConsistentValidator` with `fleetdm_fleet` rather than duplicating the `latest`/`deadline_days` rules.
+The block follows the convention of `fleetdm_fleet`'s settings blocks: nothing is Computed, an attribute is only sent while it is configured and only refreshed while it is in state. `PATCH /config` merges the request onto the stored config, so a key left out keeps its value; this was verified live for every shared sub-block on Fleet 4.93, including moving an OS update requirement between `"latest"` and an exact version. The OS update, disk encryption and Windows update sub-blocks share their schema and validators with `fleetdm_fleet` (`internal/provider/mdm_settings_shared.go`), worded per scope.
 
-## Migration
+## Scope
 
-`host_name_template` and `windows_automatic_enrollment_default_fleet` become deprecated aliases of their in-block equivalents, following the `org_logo_url` / `org_logo_url_dark_mode` precedent already in this resource. Precedence, drift behaviour when both are set, and removal timing are the parts that need settling before implementation — that is the reason this is a separate change rather than part of the 4.91 work.
+Fleet 4.93 has 33 keys under `mdm`. Twenty are managed by the block. The rest stay out on purpose:
 
-## Scope to confirm before implementing
+- Read-only status (`enabled_and_configured`, `apple_bm_enabled_and_configured`, `apple_bm_terms_expired`, `windows_enabled_and_configured`, `android_enabled_and_configured`, `microsoft_graph_credential_invalid`) belongs on the data source.
+- Settings owned by other resources or by uploaded assets: `macos_setup` (setup experience), `android_settings`, `apple_business_manager` and `volume_purchasing_program` (token assignments), and every `custom_settings` list (configuration profiles).
+- Keys Fleet itself deprecates: `apple_bm_default_team`, the flat `enable_disk_encryption`, and `windows_require_bitlocker_pin`.
 
-Not every key belongs here. Read-only status keys (`enabled_and_configured`, `apple_bm_terms_expired`, `windows_enabled_and_configured`, `android_enabled_and_configured`) already exist on `fleetdm_configuration`'s data source and should stay computed-only. Keys backed by uploaded assets or external enrolments — `volume_purchasing_program`, `apple_business_manager`, `macos_setup`'s bootstrap package and setup-experience fields — are managed by their own resources and should not be duplicated. `macos_setup.enable_managed_local_account` is deferred separately: its wire shape was still changing in 4.91 (see the PR that added this note).
+## Migration of the flat attributes
+
+`host_name_template` and `windows_automatic_enrollment_default_fleet` predate the block. They stay as deprecated attributes and conflict with their in-block equivalents, so there is no precedence rule: a configuration sets each setting in one place only. Both map to the same Fleet key as the in-block attribute, so moving a value across is a no-op in Fleet. They are removed in the next major version.
+
+## Secrets
+
+`apple_account_provisioning.oauth_idp_client_secret` is stored by Fleet outside the app config and always read back masked. It follows the certificate authority pattern: a sensitive attribute, a write-only `_wo` sibling for Terraform 1.11 and later, and a `_wo_version` to make a rotation visible. Because the three Platform SSO settings are stored together, the secret is sent on every apply that manages the block.

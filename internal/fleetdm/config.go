@@ -152,6 +152,56 @@ type MDMConfig struct {
 	// (Fleet 4.91+). Fleet reports it as an object whose default_fleet is ""
 	// when no default is set.
 	WindowsAutomaticEnrollment *WindowsAutomaticEnrollment `json:"windows_automatic_enrollment,omitempty"`
+
+	// The settings below mirror MDMSettingsUpdate. Pointers distinguish a key
+	// the server did not send, which an older Fleet omits, from its zero value.
+	AppleServerURL             *string             `json:"apple_server_url"`
+	EnableRecoveryLockPassword *bool               `json:"enable_recovery_lock_password"`
+	MacOSSettings              *MacOSMDMSettings   `json:"macos_settings"`
+	WindowsSettings            *WindowsMDMSettings `json:"windows_settings"`
+	LinuxSettings              *LinuxMDMSettings   `json:"linux_settings"`
+	MacOSUpdates               *AppleOSUpdates     `json:"macos_updates"`
+	IOSUpdates                 *AppleOSUpdates     `json:"ios_updates"`
+	IPadOSUpdates              *AppleOSUpdates     `json:"ipados_updates"`
+	WindowsUpdates             *WindowsUpdates     `json:"windows_updates"`
+
+	WindowsMigrationEnabled        *bool                     `json:"windows_migration_enabled"`
+	EnableTurnOnWindowsMDMManually *bool                     `json:"enable_turn_on_windows_mdm_manually"`
+	WindowsEntraTenantIDs          []string                  `json:"windows_entra_tenant_ids"`
+	WindowsEntraClientIDs          []string                  `json:"windows_entra_client_ids"`
+	MacOSMigration                 *MacOSMigration           `json:"macos_migration"`
+	EndUserAuthentication          *EndUserAuthentication    `json:"end_user_authentication"`
+	AppleAccountProvisioning       *AppleAccountProvisioning `json:"apple_account_provisioning"`
+
+	AppleRequireHardwareAttestation  *bool `json:"apple_require_hardware_attestation"`
+	OnlyAllowAppleBusinessEnrollment *bool `json:"only_allow_apple_business_enrollment"`
+}
+
+// MacOSMigration configures migrating macOS hosts from another MDM to Fleet.
+// Fields are pointers so a request only carries what is managed.
+type MacOSMigration struct {
+	Enable     *bool   `json:"enable,omitempty"`
+	Mode       *string `json:"mode,omitempty"`
+	WebhookURL *string `json:"webhook_url,omitempty"`
+}
+
+// EndUserAuthentication is the SAML identity provider Fleet uses to
+// authenticate end users during MDM enrollment.
+type EndUserAuthentication struct {
+	EntityID    *string `json:"entity_id,omitempty"`
+	IssuerURI   *string `json:"issuer_uri,omitempty"`
+	Metadata    *string `json:"metadata,omitempty"`
+	MetadataURL *string `json:"metadata_url,omitempty"`
+	IDPName     *string `json:"idp_name,omitempty"`
+}
+
+// AppleAccountProvisioning configures Platform SSO account provisioning
+// against an OAuth identity provider (Fleet 4.92+). Fleet keeps the client
+// secret outside the app config and reports it masked, or null when unset.
+type AppleAccountProvisioning struct {
+	OAuthIdPTokenURL     *string `json:"oauth_idp_token_url,omitempty"`
+	OAuthIdPClientID     *string `json:"oauth_idp_client_id,omitempty"`
+	OAuthIdPClientSecret *string `json:"oauth_idp_client_secret,omitempty"`
 }
 
 // WindowsAutomaticEnrollment holds the settings applied to new user-driven
@@ -297,6 +347,30 @@ type MDMSettingsUpdate struct {
 	// WindowsAutomaticEnrollment is omitted unless declared, so a config that
 	// does not manage it leaves Fleet's stored default fleet alone.
 	WindowsAutomaticEnrollment *WindowsAutomaticEnrollment `json:"windows_automatic_enrollment,omitempty"`
+
+	// Every other key follows the same rule: nil is omitted and keeps Fleet's
+	// value; a nested object only carries its managed fields. Lists are
+	// pointers so an empty list is still sent, which is how one is cleared.
+	AppleServerURL             *string             `json:"apple_server_url,omitempty"`
+	EnableRecoveryLockPassword *bool               `json:"enable_recovery_lock_password,omitempty"`
+	MacOSSettings              *MacOSMDMSettings   `json:"macos_settings,omitempty"`
+	WindowsSettings            *WindowsMDMSettings `json:"windows_settings,omitempty"`
+	LinuxSettings              *LinuxMDMSettings   `json:"linux_settings,omitempty"`
+	MacOSUpdates               *AppleOSUpdates     `json:"macos_updates,omitempty"`
+	IOSUpdates                 *AppleOSUpdates     `json:"ios_updates,omitempty"`
+	IPadOSUpdates              *AppleOSUpdates     `json:"ipados_updates,omitempty"`
+	WindowsUpdates             *WindowsUpdates     `json:"windows_updates,omitempty"`
+
+	WindowsMigrationEnabled        *bool                     `json:"windows_migration_enabled,omitempty"`
+	EnableTurnOnWindowsMDMManually *bool                     `json:"enable_turn_on_windows_mdm_manually,omitempty"`
+	WindowsEntraTenantIDs          *[]string                 `json:"windows_entra_tenant_ids,omitempty"`
+	WindowsEntraClientIDs          *[]string                 `json:"windows_entra_client_ids,omitempty"`
+	MacOSMigration                 *MacOSMigration           `json:"macos_migration,omitempty"`
+	EndUserAuthentication          *EndUserAuthentication    `json:"end_user_authentication,omitempty"`
+	AppleAccountProvisioning       *AppleAccountProvisioning `json:"apple_account_provisioning,omitempty"`
+
+	AppleRequireHardwareAttestation  *bool `json:"apple_require_hardware_attestation,omitempty"`
+	OnlyAllowAppleBusinessEnrollment *bool `json:"only_allow_apple_business_enrollment,omitempty"`
 }
 
 // UpdateAppConfigRequest represents a partial app config update

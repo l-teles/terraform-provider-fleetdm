@@ -20,9 +20,16 @@ description: |-
     enable_host_users         = true
     enable_software_inventory = true
   
-    # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
-    # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
-    host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+    mdm = {
+      # Name MDM-enrolled hosts that are not assigned to a fleet after their
+      # serial number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
+      name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+  
+      macos_updates = {
+        minimum_version = "latest"
+        deadline_days   = 7
+      }
+    }
   
     # Accept IdP credentials on certificate requests only from this endpoint.
     integrations = {
@@ -54,9 +61,16 @@ resource "fleetdm_configuration" "main" {
   enable_host_users         = true
   enable_software_inventory = true
 
-  # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
-  # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
-  host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+  mdm = {
+    # Name MDM-enrolled hosts that are not assigned to a fleet after their
+    # serial number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
+    name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+
+    macos_updates = {
+      minimum_version = "latest"
+      deadline_days   = 7
+    }
+  }
 
   # Accept IdP credentials on certificate requests only from this endpoint.
   integrations = {
@@ -86,11 +100,12 @@ resource "fleetdm_configuration" "main" {
 - `enable_software_inventory` (Boolean) Whether to collect software inventory from hosts.
 - `host_expiry_enabled` (Boolean) Whether to automatically remove hosts that have not checked in.
 - `host_expiry_window` (Number) Number of days after which a host is removed if it hasn't checked in. Must be at least 1 when `host_expiry_enabled` is true.
-- `host_name_template` (String) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the "No team" scope), for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.
+- `host_name_template` (String, Deprecated) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the "No team" scope), for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. The per-fleet equivalent is `mdm.name_template` on `fleetdm_fleet`. Requires a Fleet Premium license.
 - `integrations` (Attributes) Global integration settings. Only the attributes set here are managed; Jira, Zendesk and Google Calendar integrations are not touched.
 
 The `certificates_*` settings (Fleet 4.93+) control the request certificate API. Since 4.93 it is closed by default: a request signed with a host identity certificate must name the end user Fleet recorded for that host, and IdP credentials are refused unless their introspection endpoint is listed here. (see [below for nested schema](#nestedatt--integrations))
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
+- `mdm` (Attributes) Global MDM settings. Settings that also exist per fleet (OS updates, disk encryption) apply to hosts that are not assigned to a fleet; the rest apply to the whole Fleet instance. Only the attributes set here are managed: anything left out keeps its current value in Fleet. Configuration profiles, the setup experience, Apple Business Manager and VPP are managed by their own resources. (see [below for nested schema](#nestedatt--mdm))
 - `org_logo_url` (String, Deprecated) Deprecated alias of `org_logo_url_dark_mode`. When omitted, Fleet's current value is preserved.
 - `org_logo_url_dark_mode` (String) URL of the organization logo shown on top of dark backgrounds. When omitted, Fleet's current value is preserved.
 - `org_logo_url_light_background` (String, Deprecated) Deprecated alias of `org_logo_url_light_mode`. When omitted, Fleet's current value is preserved.
@@ -99,7 +114,7 @@ The `certificates_*` settings (Fleet 4.93+) control the request certificate API.
 - `scripts_disabled` (Boolean) Whether scripts are disabled.
 - `server_url` (String) The Fleet server URL. Changing this requires enrolled hosts to re-enroll.
 - `transparency_url` (String) URL shown in Fleet Desktop transparency modal.
-- `windows_automatic_enrollment_default_fleet` (String) Name of the fleet that hosts enrolling through user-driven Windows MDM enrollment (Windows Autopilot, Entra join) are assigned to. The fleet is assigned before the Autopilot Enrollment Status Page runs, so that fleet's software, scripts and configuration profiles apply during out-of-box setup. This is a fleet **name**, which is what Fleet's API accepts here — reference `fleetdm_fleet.example.name` rather than its `id`. Fleet rejects a name that does not exist; set to `""` for no default, leaving new hosts unassigned. Requires Fleet Premium and Fleet 4.91.0 or later.
+- `windows_automatic_enrollment_default_fleet` (String, Deprecated) Name of the fleet that hosts enrolling through user-driven Windows MDM enrollment (Windows Autopilot, Entra join) are assigned to. The fleet is assigned before the Autopilot Enrollment Status Page runs, so that fleet's software, scripts and configuration profiles apply during out-of-box setup. This is a fleet **name**, which is what Fleet's API accepts here — reference `fleetdm_fleet.example.name` rather than its `id`. Fleet rejects a name that does not exist; set to `""` for no default, leaving new hosts unassigned. Requires Fleet Premium and Fleet 4.91.0 or later.
 
 ### Read-Only
 
@@ -113,3 +128,149 @@ Optional:
 - `certificates_disable_host_end_user_binding` (Boolean) Turn off the check that a certificate request signed by a host names that host's recorded end user (both the CSR email and UPN). The check is on by default and refuses hosts with no recorded identity. **Security:** `true` lets any enrolled host request a certificate for any end user. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn the check back on. _Available in Fleet 4.93+._
 - `certificates_idp_client_ids` (Set of String) OAuth client IDs allowed on certificate requests, as a further constraint on `certificates_idp_introspection_urls`, which must not be empty while this is set. An empty set clears the list. _Available in Fleet Premium 4.93+._
 - `certificates_idp_introspection_urls` (Set of String) OAuth 2.0 token introspection endpoints allowed to vouch for certificate requests. Each must be an absolute `https` URL without credentials. Once any are listed, IdP credentials are required on every request. An empty set clears the list; leaving the attribute out leaves Fleet's value alone. _Available in Fleet Premium 4.93+._
+
+
+<a id="nestedatt--mdm"></a>
+### Nested Schema for `mdm`
+
+Optional:
+
+- `apple_account_provisioning` (Attributes) OAuth identity provider Fleet uses to provision accounts through Platform SSO on macOS. Requires Fleet 4.92.0 or later. Fleet never returns the client secret, so a secret changed outside Terraform is not detected. Removing the block stops managing it but leaves Fleet's settings in place. (see [below for nested schema](#nestedatt--mdm--apple_account_provisioning))
+- `apple_require_hardware_attestation` (Boolean) Whether iPhones and iPads assigned to Fleet in Apple Business prove their hardware with ACME attestation when they enroll. Requires Fleet Premium. **Security:** together with `only_allow_apple_business_enrollment`, Fleet stops issuing SCEP certificates altogether, so only attested devices can enroll or renew. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management.
+- `apple_server_url` (String) URL Apple devices use to reach Fleet for MDM, when it differs from the server URL. Set to `""` to use the server URL. **Warning:** changing it can leave already-enrolled devices unable to reach Fleet until they re-enroll.
+- `enable_recovery_lock_password` (Boolean) Whether Fleet escrows a recovery lock password for unassigned Apple silicon hosts. Requires Apple MDM to be turned on.
+- `enable_turn_on_windows_mdm_manually` (Boolean) Whether end users turn on Windows MDM themselves from Fleet Desktop instead of Fleet doing it automatically. Requires Windows MDM and Fleet Premium. Cannot be true together with `windows_migration_enabled`.
+- `end_user_authentication` (Attributes) SAML identity provider Fleet uses to authenticate end users during MDM enrollment. Fleet needs `entity_id`, `idp_name` and one of `metadata` or `metadata_url` once any of them is set. Set every attribute to `""` to clear it. (see [below for nested schema](#nestedatt--mdm--end_user_authentication))
+- `ios_updates` (Attributes) Minimum iOS version enforced on unassigned hosts.
+
+Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ios_updates))
+- `ipados_updates` (Attributes) Minimum iPadOS version enforced on unassigned hosts.
+
+Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--ipados_updates))
+- `linux_settings` (Attributes) Linux-specific MDM settings for hosts that are not assigned to a fleet. Requires Fleet 4.92.0 or later. Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. (see [below for nested schema](#nestedatt--mdm--linux_settings))
+- `macos_migration` (Attributes) Migration of macOS hosts from another MDM to Fleet. Enabling it requires Fleet Premium, a `mode` and a `webhook_url`. (see [below for nested schema](#nestedatt--mdm--macos_migration))
+- `macos_settings` (Attributes) macOS-specific MDM settings for hosts that are not assigned to a fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. Requires Fleet 4.92.0 or later. Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. (see [below for nested schema](#nestedatt--mdm--macos_settings))
+- `macos_updates` (Attributes) Minimum macOS version enforced on unassigned hosts.
+
+Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--macos_updates))
+- `name_template` (String) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. Replaces the deprecated top-level `host_name_template` and conflicts with it. Requires Fleet Premium.
+- `only_allow_apple_business_enrollment` (Boolean) Whether Apple MDM enrollment is limited to devices assigned to Fleet in Apple Business. Manual, OTA and account-driven (BYOD) enrollment are blocked. Requires Fleet Premium and Fleet 4.93.0 or later. **Security:** together with `apple_require_hardware_attestation`, Fleet stops issuing SCEP certificates altogether. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management.
+- `windows_automatic_enrollment` (Attributes) Settings for user-driven Windows MDM enrollment (Windows Autopilot, Entra join). Requires Fleet Premium and Fleet 4.91.0 or later. (see [below for nested schema](#nestedatt--mdm--windows_automatic_enrollment))
+- `windows_entra_client_ids` (Set of String) Microsoft Entra application (client) IDs accepted for automatic Windows enrollment, as lowercase GUIDs (Fleet stores them in lowercase). An empty set clears the list. Requires Windows MDM and Fleet Premium.
+- `windows_entra_tenant_ids` (Set of String) Microsoft Entra tenant IDs (GUIDs) allowed to enroll Windows hosts automatically. An empty set clears the list. Requires Windows MDM and Fleet Premium.
+- `windows_migration_enabled` (Boolean) Whether Fleet migrates Windows hosts from another MDM. Requires Windows MDM and Fleet Premium. Cannot be true together with `enable_turn_on_windows_mdm_manually`.
+- `windows_settings` (Attributes) Windows-specific MDM settings for hosts that are not assigned to a fleet. Configuration profiles are deliberately not exposed here; use the `fleetdm_configuration_profile` resource. Requires Fleet 4.91.0 or later; `enable_disk_encryption` and `require_bitlocker_pin` require Fleet 4.92.0 or later. Fleet only accepts a disk encryption change while Apple or Windows MDM is turned on, and enabling one needs the Fleet server private key to be configured. (see [below for nested schema](#nestedatt--mdm--windows_settings))
+- `windows_updates` (Attributes) Windows update enforcement for hosts that are not assigned to a fleet. Set both attributes to `0` to clear it. (see [below for nested schema](#nestedatt--mdm--windows_updates))
+
+<a id="nestedatt--mdm--apple_account_provisioning"></a>
+### Nested Schema for `mdm.apple_account_provisioning`
+
+Required:
+
+- `oauth_idp_client_id` (String) Client ID registered with the identity provider.
+- `oauth_idp_token_url` (String) Token endpoint of the identity provider. Must be https: Fleet sends the client secret to it.
+
+Optional:
+
+- `oauth_idp_client_secret` (String, Sensitive) Client secret registered with the identity provider. Exactly one of `oauth_idp_client_secret` and `oauth_idp_client_secret_wo` must be set. This attribute is stored in Terraform state; prefer the write-only variant on Terraform 1.11 and later.
+- `oauth_idp_client_secret_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only client secret: Terraform never stores it in the plan or state. Requires Terraform 1.11 or later. Terraform cannot see a change to it, so increment `oauth_idp_client_secret_wo_version` in the same change to send the new value. The secret is also resent on any apply that changes this resource, so an edited value reaches Fleet then even without a version bump.
+- `oauth_idp_client_secret_wo_version` (Number) Any number; change it to send a new `oauth_idp_client_secret_wo`. Terraform cannot see a write-only value, so this is what makes a rotation show up in the plan.
+
+
+<a id="nestedatt--mdm--end_user_authentication"></a>
+### Nested Schema for `mdm.end_user_authentication`
+
+Optional:
+
+- `entity_id` (String) Entity ID Fleet presents to the identity provider.
+- `idp_name` (String) Name of the identity provider, shown to end users.
+- `issuer_uri` (String) Issuer URI of the identity provider.
+- `metadata` (String) Identity provider metadata XML. Alternative to `metadata_url`. Fleet trims surrounding whitespace, so wrap a heredoc in `trimspace()`.
+- `metadata_url` (String) URL Fleet fetches the identity provider metadata from. Alternative to `metadata`. Must be https: the metadata carries the identity provider's signing certificate.
+
+
+<a id="nestedatt--mdm--ios_updates"></a>
+### Nested Schema for `mdm.ios_updates`
+
+Optional:
+
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `"latest"`.
+- `deadline_days` (Number) Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `"latest"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`, or `"latest"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `"latest"`.
+- `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--ipados_updates"></a>
+### Nested Schema for `mdm.ipados_updates`
+
+Optional:
+
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `"latest"`.
+- `deadline_days` (Number) Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `"latest"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`, or `"latest"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `"latest"`.
+- `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--linux_settings"></a>
+### Nested Schema for `mdm.linux_settings`
+
+Optional:
+
+- `enable_escrow_disk_encryption_key` (Boolean) Whether Fleet escrows the LUKS passphrase of unassigned Linux hosts.
+
+
+<a id="nestedatt--mdm--macos_migration"></a>
+### Nested Schema for `mdm.macos_migration`
+
+Optional:
+
+- `enable` (Boolean) Whether end users are prompted to migrate to Fleet.
+- `mode` (String) How the end user is prompted: `voluntary` or `forced`.
+- `webhook_url` (String) URL Fleet calls to have the previous MDM release the host. Use https: the payloads carry host identifiers, and webhook URLs frequently embed a secret token in the path, both of which travel in the clear over http.
+
+
+<a id="nestedatt--mdm--macos_settings"></a>
+### Nested Schema for `mdm.macos_settings`
+
+Optional:
+
+- `enable_disk_encryption` (Boolean) Whether Fleet enforces FileVault on unassigned macOS hosts.
+- `enable_escrow_disk_encryption_key` (Boolean) Whether Fleet escrows the FileVault recovery key of unassigned macOS hosts, independently of whether Fleet enforces FileVault.
+
+
+<a id="nestedatt--mdm--macos_updates"></a>
+### Nested Schema for `mdm.macos_updates`
+
+Optional:
+
+- `deadline` (String) Date by which the update must be installed, as `YYYY-MM-DD`. Set it together with an exact `minimum_version`; Fleet rejects it when `minimum_version` is `"latest"`.
+- `deadline_days` (Number) Days after a version's release date before the update is enforced. Only valid when `minimum_version` is `"latest"`, where it replaces `deadline`. Requires Fleet 4.91.0 or later.
+- `minimum_version` (String) Required minimum OS version, for example `26.6.1`, or `"latest"` to track Apple's newest release. Set it with `deadline`, or with `deadline_days` when it is `"latest"`.
+- `update_new_hosts` (Boolean) Enforce the latest version only on hosts that enroll from now on.
+
+
+<a id="nestedatt--mdm--windows_automatic_enrollment"></a>
+### Nested Schema for `mdm.windows_automatic_enrollment`
+
+Optional:
+
+- `default_fleet` (String) Name of the fleet new hosts are assigned to, before the Autopilot Enrollment Status Page runs. This is a fleet **name** — reference `fleetdm_fleet.example.name`. Set to `""` to leave new hosts unassigned. Replaces the deprecated top-level `windows_automatic_enrollment_default_fleet` and conflicts with it.
+
+
+<a id="nestedatt--mdm--windows_settings"></a>
+### Nested Schema for `mdm.windows_settings`
+
+Optional:
+
+- `enable_disk_encryption` (Boolean) Whether Fleet enforces BitLocker on unassigned Windows hosts.
+- `enable_managed_local_account` (Boolean) Whether `fleetd` creates a managed local admin account on unassigned Windows hosts during enrollment. Requires `fleetd` 1.60.0 or later on the host.
+- `require_bitlocker_pin` (Boolean) Whether a BitLocker PIN is required before Fleet considers a Windows host compliant. Fleet only accepts `true` while Windows disk encryption is enabled for unassigned hosts.
+
+
+<a id="nestedatt--mdm--windows_updates"></a>
+### Nested Schema for `mdm.windows_updates`
+
+Optional:
+
+- `deadline_days` (Number) Days a host has to install an available update before it is forced, between `0` and `30`. Must be set together with `grace_period_days`.
+- `grace_period_days` (Number) Days a host has to restart once the deadline has passed, between `0` and `7`. Must be set together with `deadline_days`.
