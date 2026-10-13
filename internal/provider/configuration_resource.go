@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -82,8 +83,9 @@ type ConfigurationResourceModel struct {
 	HostNameTemplate                       types.String `tfsdk:"host_name_template"`
 	WindowsAutomaticEnrollmentDefaultFleet types.String `tfsdk:"windows_automatic_enrollment_default_fleet"`
 
-	// Integrations: opt-in block, nil when not declared.
+	// Integrations and MDM: opt-in blocks, nil when not declared.
 	Integrations *configurationIntegrationsModel `tfsdk:"integrations"`
+	MDM          *configurationMDMModel          `tfsdk:"mdm"`
 
 	// Agent Options (JSON)
 	AgentOptions types.String `tfsdk:"agent_options"`
@@ -119,9 +121,16 @@ resource "fleetdm_configuration" "main" {
   enable_host_users         = true
   enable_software_inventory = true
 
-  # Name MDM-enrolled hosts that are not assigned to a fleet after their serial
-  # number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
-  host_name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+  mdm = {
+    # Name MDM-enrolled hosts that are not assigned to a fleet after their
+    # serial number. The per-fleet equivalent is mdm.name_template on fleetdm_fleet.
+    name_template = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+
+    macos_updates = {
+      minimum_version = "latest"
+      deadline_days   = 7
+    }
+  }
 
   # Accept IdP credentials on certificate requests only from this endpoint.
   integrations = {
@@ -262,9 +271,11 @@ resource "fleetdm_configuration" "main" {
 			// and then written back on every apply. Left unconfigured, the attribute
 			// stays null and the provider never sends mdm.name_template at all.
 			"host_name_template": schema.StringAttribute{
-				Optional: true,
+				Optional:           true,
+				DeprecationMessage: "Use mdm.name_template instead. Both map to the same Fleet setting, so moving the value across changes nothing in Fleet. This attribute will be removed in the next major version.",
 				Validators: []validator.String{
 					hostNameTemplateNotPadded{},
+					stringvalidator.ConflictsWith(path.MatchRoot("mdm").AtName("name_template")),
 				},
 				MarkdownDescription: "Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet (the \"No team\" scope), " +
 					"for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `\"\"` to clear it. " +
@@ -274,7 +285,11 @@ resource "fleetdm_configuration" "main" {
 			// attribute stays null and windows_automatic_enrollment never goes on
 			// the wire, so a default fleet chosen in the Fleet UI is not clobbered.
 			"windows_automatic_enrollment_default_fleet": schema.StringAttribute{
-				Optional: true,
+				Optional:           true,
+				DeprecationMessage: "Use mdm.windows_automatic_enrollment.default_fleet instead. Both map to the same Fleet setting, so moving the value across changes nothing in Fleet. This attribute will be removed in the next major version.",
+				Validators: []validator.String{
+					stringvalidator.ConflictsWith(path.MatchRoot("mdm").AtName("windows_automatic_enrollment").AtName("default_fleet")),
+				},
 				MarkdownDescription: "Name of the fleet that hosts enrolling through user-driven Windows MDM enrollment (Windows Autopilot, Entra join) are assigned to. " +
 					"The fleet is assigned before the Autopilot Enrollment Status Page runs, so that fleet's software, scripts and configuration profiles apply during out-of-box setup. " +
 					"This is a fleet **name**, which is what Fleet's API accepts here — reference `fleetdm_fleet.example.name` rather than its `id`. " +
@@ -282,6 +297,7 @@ resource "fleetdm_configuration" "main" {
 					"Requires Fleet Premium and Fleet 4.91.0 or later.",
 			},
 			"integrations": configurationIntegrationsSchema(),
+			"mdm":          configurationMDMSchema(),
 			// Agent Options
 			"agent_options": schema.StringAttribute{
 				Optional:            true,
@@ -317,6 +333,8 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 	// Build the update request
 	updateReq := r.buildUpdateRequest(&data, darkLogo, lightLogo)
 	updateReq.Integrations = buildConfigurationIntegrationsUpdate(ctx, data.Integrations, &resp.Diagnostics)
+	secret := resolveAppleAccountProvisioningSecret(ctx, req.Config, data.MDM, &resp.Diagnostics)
+	buildConfigurationMDM(ctx, data.MDM, secret, updateReq, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -335,6 +353,9 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 	r.updateModelFromConfig(&data, config)
 	checkConfigurationIntegrationsApplied(data.Integrations, config.Integrations, &resp.Diagnostics)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
+	checkConfigurationMDMApplied(data.MDM, config.MDM, &resp.Diagnostics)
+	refreshConfigurationMDM(data.MDM, config.MDM, &resp.Diagnostics)
+	data.MDM.nullifyWriteOnly()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -356,6 +377,8 @@ func (r *ConfigurationResource) Read(ctx context.Context, req resource.ReadReque
 	data.ID = types.StringValue("configuration")
 	r.updateModelFromConfig(&data, config)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
+	refreshConfigurationMDM(data.MDM, config.MDM, &resp.Diagnostics)
+	data.MDM.nullifyWriteOnly()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -380,6 +403,8 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 	// Build the update request
 	updateReq := r.buildUpdateRequest(&data, darkLogo, lightLogo)
 	updateReq.Integrations = buildConfigurationIntegrationsUpdate(ctx, data.Integrations, &resp.Diagnostics)
+	secret := resolveAppleAccountProvisioningSecret(ctx, req.Config, data.MDM, &resp.Diagnostics)
+	buildConfigurationMDM(ctx, data.MDM, secret, updateReq, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -398,6 +423,9 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 	r.updateModelFromConfig(&data, config)
 	checkConfigurationIntegrationsApplied(data.Integrations, config.Integrations, &resp.Diagnostics)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
+	checkConfigurationMDMApplied(data.MDM, config.MDM, &resp.Diagnostics)
+	refreshConfigurationMDM(data.MDM, config.MDM, &resp.Diagnostics)
+	data.MDM.nullifyWriteOnly()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
