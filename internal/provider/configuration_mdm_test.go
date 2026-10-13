@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -80,7 +81,32 @@ func snapshotConfigurationMDM(t *testing.T) {
 		if err := client.Patch(context.Background(), "/config", map[string]any{"mdm": restore}, nil); err != nil {
 			t.Errorf("failed to restore the mdm config: %v", err)
 		}
-		// Platform SSO is restored to "not configured", which is what the rig starts with.
+	})
+}
+
+// requireUnconfiguredAppleAccountProvisioning skips the test when Fleet
+// already has Platform SSO configured, and otherwise clears it again from a
+// cleanup. Fleet never returns the client secret, so a configuration that
+// existed before the test could not be put back.
+func requireUnconfiguredAppleAccountProvisioning(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TF_ACC") == "" || os.Getenv("FLEETDM_URL") == "" {
+		return
+	}
+	client, err := certificateIntegrationsTestClient()
+	if err != nil {
+		t.Fatalf("failed to build fleet client: %v", err)
+	}
+	cfg, err := client.GetAppConfig(context.Background())
+	if err != nil {
+		t.Fatalf("failed to read the mdm config: %v", err)
+	}
+	if cfg.MDM != nil && cfg.MDM.AppleAccountProvisioning != nil {
+		if url := cfg.MDM.AppleAccountProvisioning.OAuthIdPTokenURL; url != nil && *url != "" {
+			t.Skip("Platform SSO account provisioning is already configured on this Fleet; its secret could not be restored")
+		}
+	}
+	t.Cleanup(func() {
 		clearSecret := map[string]any{"mdm": map[string]any{"apple_account_provisioning": map[string]string{
 			"oauth_idp_token_url": "", "oauth_idp_client_id": "", "oauth_idp_client_secret": "",
 		}}}
@@ -359,7 +385,7 @@ func TestAccConfigurationResource_mdmSecurityToggles(t *testing.T) {
 // with the client secret stored in state, which works on every Terraform
 // version. Fleet reports the secret masked, so it must not show as drift.
 func TestAccConfigurationResource_mdmAppleAccountProvisioning(t *testing.T) {
-	snapshotConfigurationMDM(t)
+	requireUnconfiguredAppleAccountProvisioning(t)
 	const attr = "fleetdm_configuration.test"
 	cfg := func(clientID, secret string) string {
 		return configurationMDMConfig(fmt.Sprintf(`mdm = {
@@ -394,7 +420,7 @@ func TestAccConfigurationResource_mdmAppleAccountProvisioning(t *testing.T) {
 // write-only secret, which needs Terraform 1.11. Rotating it needs a version
 // bump, because Terraform cannot see a write-only value.
 func TestAccConfigurationResource_mdmAppleAccountProvisioningWriteOnly(t *testing.T) {
-	snapshotConfigurationMDM(t)
+	requireUnconfiguredAppleAccountProvisioning(t)
 	const attr = "fleetdm_configuration.test"
 	cfg := func(secret string, version int) string {
 		return configurationMDMConfig(fmt.Sprintf(`mdm = {
@@ -615,6 +641,17 @@ func TestCheckConfigurationMDMAppliedLists(t *testing.T) {
 	var present fleetdm.MDMConfig
 	if err := json.Unmarshal([]byte(`{"windows_entra_tenant_ids":[],"windows_entra_client_ids":[]}`), &present); err != nil {
 		t.Fatal(err)
+	}
+	// Refresh keeps a list Fleet did not report and clears one it reported as [].
+	m.WindowsEntraTenantIDs = types.SetValueMust(types.StringType, []attr.Value{types.StringValue("x")})
+	var rd diag.Diagnostics
+	refreshConfigurationMDM(m, &fleetdm.MDMConfig{}, &rd)
+	if len(m.WindowsEntraTenantIDs.Elements()) != 1 {
+		t.Errorf("an unreported list must keep state, got %v", m.WindowsEntraTenantIDs)
+	}
+	refreshConfigurationMDM(m, &present, &rd)
+	if len(m.WindowsEntraTenantIDs.Elements()) != 0 {
+		t.Errorf("a list reported as [] must clear state, got %v", m.WindowsEntraTenantIDs)
 	}
 	var ok diag.Diagnostics
 	checkConfigurationMDMApplied(m, &present, &ok)

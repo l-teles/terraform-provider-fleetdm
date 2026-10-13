@@ -389,10 +389,11 @@ func refreshConfigurationMDM(m *configurationMDMModel, api *fleetdm.MDMConfig, d
 
 	m.WindowsMigrationEnabled = refreshOptionalBool(m.WindowsMigrationEnabled, api.WindowsMigrationEnabled)
 	m.EnableTurnOnWindowsMDMManually = refreshOptionalBool(m.EnableTurnOnWindowsMDMManually, api.EnableTurnOnWindowsMDMManually)
-	if !m.WindowsEntraTenantIDs.IsNull() {
+	// A list Fleet did not report keeps state; one it reported as [] clears it.
+	if !m.WindowsEntraTenantIDs.IsNull() && api.WindowsEntraTenantIDs != nil {
 		m.WindowsEntraTenantIDs = stringsToSet(api.WindowsEntraTenantIDs, diags)
 	}
-	if !m.WindowsEntraClientIDs.IsNull() {
+	if !m.WindowsEntraClientIDs.IsNull() && api.WindowsEntraClientIDs != nil {
 		m.WindowsEntraClientIDs = stringsToSet(api.WindowsEntraClientIDs, diags)
 	}
 	if mm, a := m.MacOSMigration, api.MacOSMigration; mm != nil && a != nil {
