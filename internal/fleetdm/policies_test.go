@@ -230,7 +230,7 @@ func TestClient_UpdateGlobalPolicy(t *testing.T) {
 				ID:          3,
 				Name:        req.Name,
 				Description: req.Description,
-				Critical:    req.Critical,
+				Critical:    req.Critical != nil && *req.Critical,
 			},
 		})
 	}))
@@ -247,7 +247,6 @@ func TestClient_UpdateGlobalPolicy(t *testing.T) {
 	policy, err := client.UpdateGlobalPolicy(context.Background(), 3, UpdatePolicyRequest{
 		Name:        "Updated Policy",
 		Description: "Updated description",
-		Critical:    false,
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -807,13 +806,11 @@ func TestClient_CreateTeamPolicy_PatchOmitsQuery(t *testing.T) {
 	}
 }
 
-// TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear is the
-// regression guard for the no-omitempty decision on the *pointer* fields
-// of UpdatePolicyRequest (script_id, software_title_id, the calendar/CA
-// bools). Fleet treats JSON null on these fields as "clear / reset to
-// default"; omitempty would suppress the null and silently leave the
-// previous server-side value in place. Label slice fields use a different
-// convention (null = no change, [] = clear) and are tested separately.
+// TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear pins how the
+// clearable fields go on the wire. script_id and software_title_id are sent
+// as null only when explicitly cleared and are otherwise left out, because
+// Fleet Free rejects them when present at all. The conditional access bypass,
+// which is not Premium-gated, is still sent as null and resets to default.
 func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -832,8 +829,8 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
 		Name:                           "Cleared",
 		Query:                          "SELECT 1",
-		SoftwareTitleID:                nil,
-		ScriptID:                       nil,
+		SoftwareTitleID:                Null[int64](),
+		ScriptID:                       Null[int64](),
 		CalendarEventsEnabled:          nil,
 		ConditionalAccessEnabled:       nil,
 		ConditionalAccessBypassEnabled: nil,
@@ -844,17 +841,16 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 	for _, want := range []string{
 		`"software_title_id":null`,
 		`"script_id":null`,
-		`"calendar_events_enabled":null`,
-		`"conditional_access_enabled":null`,
 		`"conditional_access_bypass_enabled":null`,
 	} {
 		if !strings.Contains(rawBody, want) {
 			t.Errorf("expected request body to contain %q, body was: %s", want, rawBody)
 		}
 	}
-	// The premium-only switches are omitted rather than sent as null: Fleet
-	// Free rejects them whenever they are present.
-	for _, key := range []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching"} {
+	// The premium-only switches, critical and the labels are omitted rather
+	// than sent as null: Fleet Free rejects them whenever they are present.
+	for _, key := range []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching",
+		"critical", "calendar_events_enabled", "conditional_access_enabled", "labels_include_any", "labels_exclude_any", "labels_include_all", "labels_exclude_all"} {
 		if strings.Contains(rawBody, `"`+key+`"`) {
 			t.Errorf("expected request body to omit %q, body was: %s", key, rawBody)
 		}
@@ -862,9 +858,9 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 }
 
 // TestClient_UpdateTeamPolicy_LabelClearVsNoChange documents and asserts
-// the asymmetric label semantics: a nil slice serializes as JSON null
-// (Fleet treats this as "no change" — keep existing labels), while an
-// empty slice serializes as JSON [] (Fleet clears the labels). The
+// the asymmetric label semantics: a nil slice is left out of the request
+// (Fleet keeps the existing labels, and Fleet Free does not reject it),
+// while an empty slice serializes as JSON [] (Fleet clears the labels). The
 // provider relies on this distinction to preserve UI-set labels when a
 // label set is Unknown at plan time, and to actually clear labels when
 // the user removes them from HCL.
@@ -881,7 +877,7 @@ func TestClient_UpdateTeamPolicy_LabelClearVsNoChange(t *testing.T) {
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
 
-	// nil slice => null (no change semantics).
+	// nil slice => left out (no change semantics).
 	if _, err := client.UpdateTeamPolicy(context.Background(), 1, 5, UpdatePolicyRequest{
 		Name:             "ok",
 		LabelsIncludeAny: nil,
@@ -889,8 +885,8 @@ func TestClient_UpdateTeamPolicy_LabelClearVsNoChange(t *testing.T) {
 		t.Fatalf("nil-labels update failed: %v", err)
 	}
 	body := <-captured
-	if !strings.Contains(body, `"labels_include_any":null`) {
-		t.Errorf("nil slice should serialize as JSON null; got: %s", body)
+	if strings.Contains(body, `"labels_include_any"`) {
+		t.Errorf("nil slice should be left out; got: %s", body)
 	}
 
 	// Empty slice => [] (clear semantics).
@@ -908,9 +904,8 @@ func TestClient_UpdateTeamPolicy_LabelClearVsNoChange(t *testing.T) {
 
 // TestClient_UpdateTeamPolicy_AllLabelSelectorsClearVsNoChange extends the
 // nil-vs-empty guard to the Fleet 4.90 "all" selectors. Every one of the four
-// label fields is on the same convention, and the provider always sends all
-// four, so a regression on any of them would silently drop or preserve the
-// wrong targeting.
+// label fields is on the same convention, so a regression on any of them
+// would silently drop or preserve the wrong targeting.
 func TestClient_UpdateTeamPolicy_AllLabelSelectorsClearVsNoChange(t *testing.T) {
 	captured := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -928,14 +923,9 @@ func TestClient_UpdateTeamPolicy_AllLabelSelectorsClearVsNoChange(t *testing.T) 
 		t.Fatalf("nil-labels update failed: %v", err)
 	}
 	body := <-captured
-	for _, want := range []string{
-		`"labels_include_any":null`,
-		`"labels_exclude_any":null`,
-		`"labels_include_all":null`,
-		`"labels_exclude_all":null`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("expected request body to contain %q, body was: %s", want, body)
+	for _, key := range []string{"labels_include_any", "labels_exclude_any", "labels_include_all", "labels_exclude_all"} {
+		if strings.Contains(body, `"`+key+`"`) {
+			t.Errorf("expected request body to leave out %q, body was: %s", key, body)
 		}
 	}
 

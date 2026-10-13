@@ -951,7 +951,7 @@ func setPolicyScriptIDOutOfBand(t *testing.T, policyName, scriptName string) {
 	}
 
 	if _, err := client.UpdatePolicy(context.Background(), policyID, &teamID, fleetdm.UpdatePolicyRequest{
-		ScriptID: &scriptID,
+		ScriptID: fleetdm.Value(int64(scriptID)),
 	}); err != nil {
 		t.Fatalf("failed to attach script %d to policy %d out-of-band: %v", scriptID, policyID, err)
 	}
@@ -1964,4 +1964,129 @@ func TestCheckPatchOptionsAtApply(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildPolicyUpdateRequest_freeTier pins issue #175: a plain update must
+// carry no Premium field at all, because Fleet Free rejects one that is
+// present even as false, null or []. Clearing a value the policy had still
+// sends the explicit null or [].
+func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
+	premiumKeys := []string{
+		"critical", "calendar_events_enabled", "conditional_access_enabled", "software_title_id", "script_id", "labels_include_any", "labels_exclude_any",
+		"labels_include_all", "labels_exclude_all", "continuous_automations_enabled", "patch_when_closed",
+		"notify_before_patching", "software_package_id", "profile_uuid",
+	}
+	nullSet := types.SetNull(types.StringType)
+	plain := PolicyResourceModel{
+		Name:                         types.StringValue("p"),
+		Query:                        types.StringValue("SELECT 1;"),
+		Type:                         types.StringValue("dynamic"),
+		Platform:                     types.ListNull(types.StringType),
+		Critical:                     types.BoolValue(false),
+		CalendarEventsEnabled:        types.BoolValue(false),
+		ConditionalAccessEnabled:     types.BoolValue(false),
+		SoftwareTitleID:              types.Int64Null(),
+		ScriptID:                     types.Int64Null(),
+		SoftwarePackageID:            types.Int64Null(),
+		ProfileUUID:                  types.StringNull(),
+		ContinuousAutomationsEnabled: types.BoolValue(false),
+		PatchWhenClosed:              types.BoolValue(false),
+		NotifyBeforePatching:         types.BoolValue(false),
+		LabelsIncludeAny:             nullSet,
+		LabelsExcludeAny:             nullSet,
+		LabelsIncludeAll:             nullSet,
+		LabelsExcludeAll:             nullSet,
+	}
+	body := func(prior policyPriorAutomations) map[string]json.RawMessage {
+		t.Helper()
+		var diags diag.Diagnostics
+		req := buildPolicyUpdateRequest(context.Background(), plain, prior, &diags)
+		if diags.HasError() {
+			t.Fatalf("unexpected diagnostics: %v", diags)
+		}
+		raw, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	got := body(policyPriorAutomations{
+		Critical: types.BoolValue(false), SoftwareTitleID: types.Int64Null(), ScriptID: types.Int64Null(),
+		LabelsIncludeAny: nullSet, LabelsExcludeAny: nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
+	})
+	for _, k := range premiumKeys {
+		if v, ok := got[k]; ok {
+			t.Errorf("plain update must leave out %s, got %s", k, v)
+		}
+	}
+
+	cleared := body(policyPriorAutomations{
+		Critical:         types.BoolValue(true),
+		SoftwareTitleID:  types.Int64Value(7),
+		ScriptID:         types.Int64Value(9),
+		LabelsIncludeAny: types.SetValueMust(types.StringType, []attr.Value{types.StringValue("Macs")}),
+		LabelsExcludeAny: nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
+	})
+	for k, want := range map[string]string{
+		"critical": "false", "software_title_id": "null", "script_id": "null", "labels_include_any": "[]",
+	} {
+		if string(cleared[k]) != want {
+			t.Errorf("clearing %s: got %q, want %s", k, cleared[k], want)
+		}
+	}
+	if _, ok := cleared["labels_exclude_any"]; ok {
+		t.Error("a label selector that had no value must stay out of the request")
+	}
+}
+
+// TestAccPolicyResource_withoutPremiumFeatures creates and updates a global
+// policy using only what Fleet Free supports. Before #175 every update failed
+// on Free because the request carried Premium fields set to false, null or
+// []. Run it against a Free server to check that tier; it passes on Premium
+// too.
+func TestAccPolicyResource_withoutPremiumFeatures(t *testing.T) {
+	name := "tf-acc-test-free-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	cfg := func(description, query, platform, resolution string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name        = %q
+  description = %q
+  query       = %q
+  platform    = [%q]
+  resolution  = %q
+}
+`, name, description, query, platform, resolution)
+	}
+	const attr = "fleetdm_policy.test"
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("first", "SELECT 1;", "darwin", "Restart."),
+				Check:  resource.TestCheckResourceAttr(attr, "description", "first"),
+			},
+			{
+				Config: cfg("second", "SELECT 2;", "windows", "Reboot."),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(attr, "description", "second"),
+					resource.TestCheckResourceAttr(attr, "query", "SELECT 2;"),
+					resource.TestCheckResourceAttr(attr, "platform.0", "windows"),
+					resource.TestCheckResourceAttr(attr, "resolution", "Reboot."),
+				),
+			},
+			{Config: cfg("second", "SELECT 2;", "windows", "Reboot."), PlanOnly: true},
+			{
+				ResourceName:            attr,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"conditional_access_bypass_enabled", "updated_at"},
+			},
+		},
+	})
 }

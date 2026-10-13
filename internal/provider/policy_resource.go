@@ -820,6 +820,15 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("continuous_automations_enabled"), &prior.ContinuousAutomationsEnabled)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("patch_when_closed"), &prior.PatchWhenClosed)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("notify_before_patching"), &prior.NotifyBeforePatching)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("critical"), &prior.Critical)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("calendar_events_enabled"), &prior.CalendarEventsEnabled)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("conditional_access_enabled"), &prior.ConditionalAccessEnabled)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("software_title_id"), &prior.SoftwareTitleID)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("script_id"), &prior.ScriptID)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("labels_include_any"), &prior.LabelsIncludeAny)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("labels_exclude_any"), &prior.LabelsExcludeAny)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("labels_include_all"), &prior.LabelsIncludeAll)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("labels_exclude_all"), &prior.LabelsExcludeAll)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -1081,15 +1090,53 @@ func policyPlatformForRequest(ctx context.Context, data PolicyResourceModel) str
 	return platformListToString(ctx, data.Platform)
 }
 
-// policyPriorAutomations carries the prior-state values of the automation
-// fields whose clearing needs an explicit zero value on the wire. The zero
-// value (all null) means "nothing to clear", as on create.
+// policyPriorAutomations carries the prior-state values of the fields that
+// are only sent to set them or to clear a value they had: Fleet Free rejects
+// Premium fields that are present at all. The zero value (all null) means
+// "nothing to clear", as on create.
 type policyPriorAutomations struct {
 	SoftwarePackageID            types.Int64
 	ProfileUUID                  types.String
 	ContinuousAutomationsEnabled types.Bool
 	PatchWhenClosed              types.Bool
 	NotifyBeforePatching         types.Bool
+	Critical                     types.Bool
+	CalendarEventsEnabled        types.Bool
+	ConditionalAccessEnabled     types.Bool
+	SoftwareTitleID              types.Int64
+	ScriptID                     types.Int64
+	LabelsIncludeAny             types.Set
+	LabelsExcludeAny             types.Set
+	LabelsIncludeAll             types.Set
+	LabelsExcludeAll             types.Set
+}
+
+// nullableIDForUpdate returns the ID to send: the planned one, null to clear
+// one the prior state had, or nothing.
+func nullableIDForUpdate(planned, prior types.Int64) fleetdm.Nullable[int64] {
+	switch {
+	case planned.IsUnknown():
+		return fleetdm.Nullable[int64]{}
+	case !planned.IsNull():
+		return fleetdm.Value(planned.ValueInt64())
+	case !prior.IsNull() && !prior.IsUnknown():
+		return fleetdm.Null[int64]()
+	}
+	return fleetdm.Nullable[int64]{}
+}
+
+// labelsForUpdate returns the labels to send: the planned ones, [] to clear
+// ones the prior state had, or nil, which is left out and changes nothing.
+func labelsForUpdate(ctx context.Context, planned, prior types.Set, diags *diag.Diagnostics) []string {
+	switch {
+	case planned.IsUnknown():
+		return nil
+	case !planned.IsNull():
+		return stringSetToSlice(ctx, planned, diags)
+	case !prior.IsNull() && !prior.IsUnknown():
+		return []string{}
+	}
+	return nil
 }
 
 // buildPolicyUpdateRequest builds an UpdatePolicyRequest from the planned
@@ -1119,23 +1166,23 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, pri
 		Name:                           data.Name.ValueString(),
 		Description:                    data.Description.ValueString(),
 		Query:                          policyQueryForRequest(data),
-		Critical:                       data.Critical.ValueBool(),
+		Critical:                       premiumFlagForUpdate(data.Critical, prior.Critical),
 		Resolution:                     data.Resolution.ValueString(),
 		Platform:                       policyPlatformForRequest(ctx, data),
-		SoftwareTitleID:                optionalIntPtr(data.SoftwareTitleID),
+		SoftwareTitleID:                nullableIDForUpdate(data.SoftwareTitleID, prior.SoftwareTitleID),
 		SoftwarePackageID:              packageID,
-		ScriptID:                       optionalIntPtr(data.ScriptID),
+		ScriptID:                       nullableIDForUpdate(data.ScriptID, prior.ScriptID),
 		ProfileUUID:                    profileUUID,
-		CalendarEventsEnabled:          optionalBoolPtr(data.CalendarEventsEnabled),
-		ConditionalAccessEnabled:       optionalBoolPtr(data.ConditionalAccessEnabled),
+		CalendarEventsEnabled:          premiumFlagForUpdate(data.CalendarEventsEnabled, prior.CalendarEventsEnabled),
+		ConditionalAccessEnabled:       premiumFlagForUpdate(data.ConditionalAccessEnabled, prior.ConditionalAccessEnabled),
 		ConditionalAccessBypassEnabled: optionalBoolPtr(data.ConditionalAccessBypassEnabled),
 		ContinuousAutomationsEnabled:   premiumFlagForUpdate(data.ContinuousAutomationsEnabled, prior.ContinuousAutomationsEnabled),
 		PatchWhenClosed:                premiumFlagForUpdate(data.PatchWhenClosed, prior.PatchWhenClosed),
 		NotifyBeforePatching:           premiumFlagForUpdate(data.NotifyBeforePatching, prior.NotifyBeforePatching),
-		LabelsIncludeAny:               stringSetToSlice(ctx, data.LabelsIncludeAny, diags),
-		LabelsExcludeAny:               stringSetToSlice(ctx, data.LabelsExcludeAny, diags),
-		LabelsIncludeAll:               stringSetToSlice(ctx, data.LabelsIncludeAll, diags),
-		LabelsExcludeAll:               stringSetToSlice(ctx, data.LabelsExcludeAll, diags),
+		LabelsIncludeAny:               labelsForUpdate(ctx, data.LabelsIncludeAny, prior.LabelsIncludeAny, diags),
+		LabelsExcludeAny:               labelsForUpdate(ctx, data.LabelsExcludeAny, prior.LabelsExcludeAny, diags),
+		LabelsIncludeAll:               labelsForUpdate(ctx, data.LabelsIncludeAll, prior.LabelsIncludeAll, diags),
+		LabelsExcludeAll:               labelsForUpdate(ctx, data.LabelsExcludeAll, prior.LabelsExcludeAll, diags),
 	}
 }
 
