@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"context"
+
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -81,13 +83,42 @@ func appleOSUpdatesAttribute(platform string, s mdmScope) schema.Attribute {
 					int64validator.AtLeast(1),
 				},
 			},
-			"update_new_hosts": schema.BoolAttribute{
-				Description:         "Enforce the latest version only on hosts that enroll from now on.",
-				MarkdownDescription: "Enforce the latest version only on hosts that enroll from now on.",
-				Optional:            true,
-			},
+			"update_new_hosts": updateNewHostsAttribute(platform),
 		},
 	}
+}
+
+func updateNewHostsAttribute(platform string) schema.BoolAttribute {
+	a := schema.BoolAttribute{
+		Description:         "Enforce the latest version only on hosts that enroll from now on.",
+		MarkdownDescription: "Enforce the latest version only on hosts that enroll from now on.",
+		Optional:            true,
+	}
+	if platform != "macOS" {
+		a.Validators = []validator.Bool{macOSOnlyUpdateNewHostsValidator{}}
+	}
+	return a
+}
+
+// macOSOnlyUpdateNewHostsValidator warns that Fleet drops update_new_hosts for
+// iOS and iPadOS on both the fleet and the global endpoint, so the value only
+// ever exists in Terraform state.
+type macOSOnlyUpdateNewHostsValidator struct{}
+
+func (macOSOnlyUpdateNewHostsValidator) Description(context.Context) string {
+	return "Fleet only applies update_new_hosts to macOS"
+}
+
+func (v macOSOnlyUpdateNewHostsValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (macOSOnlyUpdateNewHostsValidator) ValidateBool(_ context.Context, req validator.BoolRequest, resp *validator.BoolResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	resp.Diagnostics.AddAttributeWarning(req.Path, "Setting ignored by Fleet",
+		"Fleet only applies update_new_hosts to macOS and discards it for iOS and iPadOS, so this value has no effect. Remove it.")
 }
 
 func macOSSettingsAttribute(s mdmScope) schema.Attribute {

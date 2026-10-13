@@ -27,6 +27,9 @@ import (
 var (
 	// entraGUIDRegex matches Fleet's IsValidEntraGUID.
 	entraGUIDRegex = regexp.MustCompile(`^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$`)
+	// httpsURLOrEmptyRegex accepts an https URL, or "" where that clears the setting.
+	httpsURLOrEmptyRegex = regexp.MustCompile(`^(https://\S+)?$`)
+	httpsURLRegex        = regexp.MustCompile(`^https://\S+$`)
 	// entraClientIDRegex is the lowercase form Fleet stores client IDs in.
 	entraClientIDRegex = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 )
@@ -121,6 +124,7 @@ func configurationMDMSchema() schema.SingleNestedAttribute {
 				"URL Apple devices use to reach Fleet for MDM, when it differs from the server URL. Set to `\"\"` to use the server URL. "+
 					"**Warning:** changing it can leave already-enrolled devices unable to reach Fleet until they re-enroll.",
 				noSurroundingWhitespace{},
+				stringvalidator.RegexMatches(httpsURLOrEmptyRegex, `must be an "https://" URL, or "" to use the server URL`),
 			),
 			"enable_recovery_lock_password": boolean(
 				"Whether Fleet escrows a recovery lock password for unassigned Apple silicon hosts. Requires Apple MDM to be turned on."),
@@ -170,21 +174,29 @@ func configurationMDMSchema() schema.SingleNestedAttribute {
 				MarkdownDescription: "SAML identity provider Fleet uses to authenticate end users during MDM enrollment. Fleet needs " +
 					"`entity_id`, `idp_name` and one of `metadata` or `metadata_url` once any of them is set. Set every attribute to `\"\"` to clear it.",
 				Attributes: map[string]schema.Attribute{
-					"entity_id":    str("Entity ID Fleet presents to the identity provider.", noSurroundingWhitespace{}),
-					"issuer_uri":   str("Issuer URI of the identity provider.", noSurroundingWhitespace{}),
-					"metadata":     str("Identity provider metadata XML. Alternative to `metadata_url`.", noSurroundingWhitespace{}),
-					"metadata_url": str("URL Fleet fetches the identity provider metadata from. Alternative to `metadata`.", noSurroundingWhitespace{}),
-					"idp_name":     str("Name of the identity provider, shown to end users.", noSurroundingWhitespace{}),
+					"entity_id":  str("Entity ID Fleet presents to the identity provider.", noSurroundingWhitespace{}),
+					"issuer_uri": str("Issuer URI of the identity provider.", noSurroundingWhitespace{}),
+					"metadata": str("Identity provider metadata XML. Alternative to `metadata_url`. Fleet trims surrounding whitespace, "+
+						"so wrap a heredoc in `trimspace()`.", noSurroundingWhitespace{}),
+					"metadata_url": str("URL Fleet fetches the identity provider metadata from. Alternative to `metadata`. Must be https: "+
+						"the metadata carries the identity provider's signing certificate.",
+						noSurroundingWhitespace{},
+						stringvalidator.RegexMatches(httpsURLOrEmptyRegex, `must be an "https://" URL, or "" to clear it`)),
+					"idp_name": str("Name of the identity provider, shown to end users.", noSurroundingWhitespace{}),
 				},
 			},
 			"apple_require_hardware_attestation": boolean(
 				"Whether iPhones and iPads assigned to Fleet in Apple Business prove their hardware with ACME attestation when they " +
 					"enroll. Requires Fleet Premium. **Security:** together with `only_allow_apple_business_enrollment`, Fleet stops issuing " +
-					"SCEP certificates altogether, so only attested devices can enroll or renew."),
+					"SCEP certificates altogether, so only attested devices can enroll or renew. " +
+					"Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. " +
+					"Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management."),
 			"only_allow_apple_business_enrollment": boolean(
 				"Whether Apple MDM enrollment is limited to devices assigned to Fleet in Apple Business. Manual, OTA and account-driven " +
 					"(BYOD) enrollment are blocked. Requires Fleet Premium and Fleet 4.93.0 or later. **Security:** together with " +
-					"`apple_require_hardware_attestation`, Fleet stops issuing SCEP certificates altogether."),
+					"`apple_require_hardware_attestation`, Fleet stops issuing SCEP certificates altogether. " +
+					"Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. " +
+					"Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management."),
 			"apple_account_provisioning": schema.SingleNestedAttribute{
 				Optional: true,
 				MarkdownDescription: "OAuth identity provider Fleet uses to provision accounts through Platform SSO on macOS. Requires " +
@@ -193,8 +205,9 @@ func configurationMDMSchema() schema.SingleNestedAttribute {
 				Attributes: map[string]schema.Attribute{
 					"oauth_idp_token_url": schema.StringAttribute{
 						Required:            true,
-						MarkdownDescription: "Token endpoint of the identity provider.",
-						Validators:          []validator.String{stringvalidator.LengthAtLeast(1), noSurroundingWhitespace{}},
+						MarkdownDescription: "Token endpoint of the identity provider. Must be https: Fleet sends the client secret to it.",
+						Validators: []validator.String{stringvalidator.LengthAtLeast(1), noSurroundingWhitespace{},
+							stringvalidator.RegexMatches(httpsURLRegex, `must be an "https://" URL`)},
 					},
 					"oauth_idp_client_id": schema.StringAttribute{
 						Required:            true,
@@ -221,8 +234,9 @@ func configurationMDMSchema() schema.SingleNestedAttribute {
 						Sensitive: true,
 						WriteOnly: true,
 						MarkdownDescription: "Write-only client secret: Terraform never stores it in the plan or state. Requires Terraform " +
-							"1.11 or later. Changing it has no effect on its own; increment `oauth_idp_client_secret_wo_version` in the " +
-							"same change to send the new value.",
+							"1.11 or later. Terraform cannot see a change to it, so increment `oauth_idp_client_secret_wo_version` in the same " +
+							"change to send the new value. The secret is also resent on any apply that changes this resource, so an edited " +
+							"value reaches Fleet then even without a version bump.",
 						Validators: []validator.String{stringvalidator.LengthAtLeast(1), stringvalidator.NoneOf(fleetdm.MaskedCASecret)},
 					},
 					"oauth_idp_client_secret_wo_version": schema.Int64Attribute{
@@ -233,7 +247,7 @@ func configurationMDMSchema() schema.SingleNestedAttribute {
 				},
 			},
 		},
-		Validators: []validator.Object{windowsEnrollmentTogglesValidator{}},
+		Validators: []validator.Object{configurationMDMObjectValidator{}},
 	}
 }
 
@@ -282,8 +296,8 @@ func buildConfigurationMDM(ctx context.Context, m *configurationMDMModel, client
 	out.IPadOSUpdates = buildAppleOSUpdates(m.IPadOSUpdates)
 	if w := m.WindowsUpdates; w != nil {
 		out.WindowsUpdates = &fleetdm.WindowsUpdates{
-			DeadlineDays:    optionalIntPtr(w.DeadlineDays),
-			GracePeriodDays: optionalIntPtr(w.GracePeriodDays),
+			DeadlineDays:    optionalInt64Ptr(w.DeadlineDays),
+			GracePeriodDays: optionalInt64Ptr(w.GracePeriodDays),
 		}
 	}
 
@@ -369,8 +383,8 @@ func refreshConfigurationMDM(m *configurationMDMModel, api *fleetdm.MDMConfig, d
 	refreshAppleOSUpdates(m.IOSUpdates, api.IOSUpdates)
 	refreshAppleOSUpdates(m.IPadOSUpdates, api.IPadOSUpdates)
 	if w, a := m.WindowsUpdates, api.WindowsUpdates; w != nil && a != nil {
-		w.DeadlineDays = refreshOptionalInt64(w.DeadlineDays, a.DeadlineDays)
-		w.GracePeriodDays = refreshOptionalInt64(w.GracePeriodDays, a.GracePeriodDays)
+		w.DeadlineDays = refreshOptionalInt64Ptr(w.DeadlineDays, a.DeadlineDays)
+		w.GracePeriodDays = refreshOptionalInt64Ptr(w.GracePeriodDays, a.GracePeriodDays)
 	}
 
 	m.WindowsMigrationEnabled = refreshOptionalBool(m.WindowsMigrationEnabled, api.WindowsMigrationEnabled)
@@ -428,9 +442,14 @@ func checkConfigurationMDMApplied(m *configurationMDMModel, api *fleetdm.MDMConf
 	check("apple_require_hardware_attestation", !m.AppleRequireHardwareAttestation.IsNull(), a.AppleRequireHardwareAttestation != nil)
 	check("only_allow_apple_business_enrollment", !m.OnlyAllowAppleBusinessEnrollment.IsNull(), a.OnlyAllowAppleBusinessEnrollment != nil)
 	check("apple_account_provisioning", m.AppleAccountProvisioning != nil, a.AppleAccountProvisioning != nil)
-	check("macos_settings", m.MacOSSettings != nil, a.MacOSSettings != nil)
-	check("windows_settings", m.WindowsSettings != nil, a.WindowsSettings != nil)
-	check("linux_settings", m.LinuxSettings != nil, a.LinuxSettings != nil)
+	check("windows_automatic_enrollment", m.WindowsAutomaticEnrollment != nil, a.WindowsAutomaticEnrollment != nil)
+	check("enable_recovery_lock_password", !m.EnableRecoveryLockPassword.IsNull(), a.EnableRecoveryLockPassword != nil)
+	check("windows_entra_tenant_ids", !m.WindowsEntraTenantIDs.IsNull(), a.WindowsEntraTenantIDs != nil)
+	check("windows_entra_client_ids", !m.WindowsEntraClientIDs.IsNull(), a.WindowsEntraClientIDs != nil)
+	check("macos_updates", m.MacOSUpdates != nil, a.MacOSUpdates != nil)
+	check("ios_updates", m.IOSUpdates != nil, a.IOSUpdates != nil)
+	check("ipados_updates", m.IPadOSUpdates != nil, a.IPadOSUpdates != nil)
+	check("windows_updates", m.WindowsUpdates != nil, a.WindowsUpdates != nil)
 	if len(missing) > 0 {
 		diags.AddAttributeError(path.Root("mdm"), "MDM settings not supported by this Fleet",
 			fmt.Sprintf("Fleet accepted the configuration but did not report %s, so this Fleet version does not support them. "+
@@ -470,19 +489,20 @@ func (noSurroundingWhitespace) ValidateString(_ context.Context, req validator.S
 	}
 }
 
-// windowsEnrollmentTogglesValidator mirrors Fleet's 422 when Windows MDM
-// migration and manual turn-on are both enabled.
-type windowsEnrollmentTogglesValidator struct{}
+// configurationMDMObjectValidator mirrors Fleet's 422 when Windows MDM
+// migration and manual turn-on are both enabled, and warns when the two Apple
+// enrollment restrictions together stop SCEP issuance.
+type configurationMDMObjectValidator struct{}
 
-func (windowsEnrollmentTogglesValidator) Description(context.Context) string {
+func (configurationMDMObjectValidator) Description(context.Context) string {
 	return "windows_migration_enabled and enable_turn_on_windows_mdm_manually cannot both be true"
 }
 
-func (v windowsEnrollmentTogglesValidator) MarkdownDescription(ctx context.Context) string {
+func (v configurationMDMObjectValidator) MarkdownDescription(ctx context.Context) string {
 	return v.Description(ctx)
 }
 
-func (windowsEnrollmentTogglesValidator) ValidateObject(_ context.Context, req validator.ObjectRequest, resp *validator.ObjectResponse) {
+func (configurationMDMObjectValidator) ValidateObject(_ context.Context, req validator.ObjectRequest, resp *validator.ObjectResponse) {
 	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
 		return
 	}
@@ -492,6 +512,14 @@ func (windowsEnrollmentTogglesValidator) ValidateObject(_ context.Context, req v
 	if boolKnownTrue(migration) && boolKnownTrue(manual) {
 		resp.Diagnostics.AddAttributeError(req.Path.AtName("enable_turn_on_windows_mdm_manually"), "Conflicting Windows enrollment settings",
 			"windows_migration_enabled and enable_turn_on_windows_mdm_manually cannot both be true.")
+	}
+	attestation, _ := attrs["apple_require_hardware_attestation"].(types.Bool)
+	businessOnly, _ := attrs["only_allow_apple_business_enrollment"].(types.Bool)
+	if boolKnownTrue(attestation) && boolKnownTrue(businessOnly) {
+		resp.Diagnostics.AddAttributeWarning(req.Path.AtName("only_allow_apple_business_enrollment"), "Fleet will stop issuing SCEP certificates",
+			"With apple_require_hardware_attestation and only_allow_apple_business_enrollment both true, only devices assigned to Fleet "+
+				"in Apple Business that pass hardware attestation can enroll or renew. Other enrolled Apple devices will stop renewing "+
+				"their MDM certificate.")
 	}
 }
 

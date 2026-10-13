@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -63,15 +64,28 @@ func snapshotConfigurationMDM(t *testing.T) {
 		restore[k] = stripReadOnlyMDMFields(k, decoded)
 	}
 	t.Cleanup(func() {
+		// The two Apple enrollment restrictions go first and alone: they block
+		// SCEP issuance for every later test, and any other key Fleet rejects
+		// would fail the whole request.
+		security := map[string]any{}
+		for _, k := range []string{"apple_require_hardware_attestation", "only_allow_apple_business_enrollment"} {
+			if v, ok := restore[k]; ok {
+				security[k] = v
+				delete(restore, k)
+			}
+		}
+		if err := client.Patch(context.Background(), "/config", map[string]any{"mdm": security}, nil); err != nil {
+			t.Errorf("failed to restore the Apple enrollment restrictions: %v", err)
+		}
 		if err := client.Patch(context.Background(), "/config", map[string]any{"mdm": restore}, nil); err != nil {
-			t.Logf("failed to restore the mdm config: %v", err)
+			t.Errorf("failed to restore the mdm config: %v", err)
 		}
 		// Platform SSO is restored to "not configured", which is what the rig starts with.
 		clearSecret := map[string]any{"mdm": map[string]any{"apple_account_provisioning": map[string]string{
 			"oauth_idp_token_url": "", "oauth_idp_client_id": "", "oauth_idp_client_secret": "",
 		}}}
 		if err := client.Patch(context.Background(), "/config", clearSecret, nil); err != nil {
-			t.Logf("failed to clear apple_account_provisioning: %v", err)
+			t.Errorf("failed to clear apple_account_provisioning: %v", err)
 		}
 	})
 }
@@ -440,6 +454,13 @@ func TestAccConfigurationResource_mdmValidators(t *testing.T) {
       oauth_idp_client_id     = "c"
       oauth_idp_client_secret = "********"
     } }`, `none\s+of`},
+		{"http token url", `mdm = { apple_account_provisioning = {
+      oauth_idp_token_url     = "http://idp.example.test/token"
+      oauth_idp_client_id     = "c"
+      oauth_idp_client_secret = "s"
+    } }`, `must\s+be\s+an\s+"https://"\s+URL`},
+		{"http metadata url", `mdm = { end_user_authentication = { metadata_url = "http://idp.example.test/md" } }`, `must\s+be\s+an\s+"https://"\s+URL`},
+		{"http apple server url", `mdm = { apple_server_url = "http://mdm.example.test" }`, `must\s+be\s+an\s+"https://"\s+URL`},
 		{"no secret", `mdm = { apple_account_provisioning = {
       oauth_idp_token_url = "https://idp.example.test/token"
       oauth_idp_client_id = "c"
@@ -555,5 +576,54 @@ func checkGlobalMDMInFleet(key, fragment string) resource.TestCheckFunc {
 			return fmt.Errorf("mdm.%s is %s, want it to contain %s", key, cfg.MDM[key], fragment)
 		}
 		return nil
+	}
+}
+
+// TestMacOSOnlyUpdateNewHostsValidator checks that update_new_hosts on iOS and
+// iPadOS, which Fleet discards on both endpoints, warns instead of passing
+// silently, and that leaving it out stays quiet.
+func TestMacOSOnlyUpdateNewHostsValidator(t *testing.T) {
+	for _, tc := range []struct {
+		value    types.Bool
+		warnings int
+	}{
+		{types.BoolValue(true), 1},
+		{types.BoolValue(false), 1},
+		{types.BoolNull(), 0},
+	} {
+		var resp validator.BoolResponse
+		macOSOnlyUpdateNewHostsValidator{}.ValidateBool(context.Background(), validator.BoolRequest{ConfigValue: tc.value}, &resp)
+		if got := resp.Diagnostics.WarningsCount(); got != tc.warnings || resp.Diagnostics.HasError() {
+			t.Errorf("%v: got %d warnings (errors: %v), want %d", tc.value, got, resp.Diagnostics.HasError(), tc.warnings)
+		}
+	}
+}
+
+// TestCheckConfigurationMDMAppliedLists covers the list and update keys: a
+// list Fleet did not report at all is named, while an empty one is not.
+func TestCheckConfigurationMDMAppliedLists(t *testing.T) {
+	m := &configurationMDMModel{
+		AppleServerURL:                   types.StringNull(),
+		EnableRecoveryLockPassword:       types.BoolNull(),
+		WindowsMigrationEnabled:          types.BoolNull(),
+		EnableTurnOnWindowsMDMManually:   types.BoolNull(),
+		AppleRequireHardwareAttestation:  types.BoolNull(),
+		OnlyAllowAppleBusinessEnrollment: types.BoolNull(),
+		WindowsEntraTenantIDs:            types.SetValueMust(types.StringType, nil),
+		WindowsEntraClientIDs:            types.SetValueMust(types.StringType, nil),
+	}
+	var present fleetdm.MDMConfig
+	if err := json.Unmarshal([]byte(`{"windows_entra_tenant_ids":[],"windows_entra_client_ids":[]}`), &present); err != nil {
+		t.Fatal(err)
+	}
+	var ok diag.Diagnostics
+	checkConfigurationMDMApplied(m, &present, &ok)
+	if ok.HasError() {
+		t.Errorf("empty lists Fleet reported must not be flagged: %v", ok)
+	}
+	var missing diag.Diagnostics
+	checkConfigurationMDMApplied(m, &fleetdm.MDMConfig{}, &missing)
+	if !missing.HasError() || !strings.Contains(missing.Errors()[0].Detail(), "windows_entra_client_ids") {
+		t.Errorf("expected the unreported lists to be named, got %v", missing)
 	}
 }

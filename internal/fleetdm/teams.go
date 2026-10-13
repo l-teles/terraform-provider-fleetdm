@@ -135,8 +135,8 @@ type AppleOSUpdates struct {
 
 // WindowsUpdates represents Windows update settings.
 type WindowsUpdates struct {
-	DeadlineDays    *int `json:"deadline_days,omitempty"`
-	GracePeriodDays *int `json:"grace_period_days,omitempty"`
+	DeadlineDays    *int64 `json:"deadline_days,omitempty"`
+	GracePeriodDays *int64 `json:"grace_period_days,omitempty"`
 }
 
 // TeamIntegrations represents team-level third-party integration settings.

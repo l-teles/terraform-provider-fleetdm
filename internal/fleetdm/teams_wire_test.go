@@ -235,7 +235,7 @@ func TestUpdateTeamRequest_WireFormat_OmitsUnsetFields(t *testing.T) {
 		{
 			name: "windows_updates deadline_days alone",
 			req: base(&TeamMDMSettings{WindowsUpdates: &WindowsUpdates{
-				DeadlineDays: intPtr(7),
+				DeadlineDays: new(int64(7)),
 			}}),
 			want: `{"name":"t","description":"d","mdm":{"windows_updates":{"deadline_days":7}}}`,
 		},
@@ -244,8 +244,8 @@ func TestUpdateTeamRequest_WireFormat_OmitsUnsetFields(t *testing.T) {
 			// cleared), so it must survive serialisation.
 			name: "windows_updates zero values are sent, not omitted",
 			req: base(&TeamMDMSettings{WindowsUpdates: &WindowsUpdates{
-				DeadlineDays:    intPtr(0),
-				GracePeriodDays: intPtr(0),
+				DeadlineDays:    new(int64(0)),
+				GracePeriodDays: new(int64(0)),
 			}}),
 			want: `{"name":"t","description":"d","mdm":{"windows_updates":{"deadline_days":0,"grace_period_days":0}}}`,
 		},

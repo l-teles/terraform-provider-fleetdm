@@ -574,8 +574,8 @@ func buildMDMSettings(enableDiskEncryption types.Bool, m *fleetMDMModel) *fleetd
 
 	if w := m.WindowsUpdates; w != nil {
 		out.WindowsUpdates = &fleetdm.WindowsUpdates{
-			DeadlineDays:    optionalIntPtr(w.DeadlineDays),
-			GracePeriodDays: optionalIntPtr(w.GracePeriodDays),
+			DeadlineDays:    optionalInt64Ptr(w.DeadlineDays),
+			GracePeriodDays: optionalInt64Ptr(w.GracePeriodDays),
 		}
 	}
 
@@ -745,8 +745,8 @@ func refreshMDM(m *fleetMDMModel, api *fleetdm.TeamMDMSettings) {
 	refreshAppleOSUpdates(m.IPadOSUpdates, api.IPadOSUpdates)
 
 	if w, a := m.WindowsUpdates, api.WindowsUpdates; w != nil && a != nil {
-		w.DeadlineDays = refreshOptionalInt64(w.DeadlineDays, a.DeadlineDays)
-		w.GracePeriodDays = refreshOptionalInt64(w.GracePeriodDays, a.GracePeriodDays)
+		w.DeadlineDays = refreshOptionalInt64Ptr(w.DeadlineDays, a.DeadlineDays)
+		w.GracePeriodDays = refreshOptionalInt64Ptr(w.GracePeriodDays, a.GracePeriodDays)
 	}
 }
 

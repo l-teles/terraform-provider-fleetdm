@@ -136,7 +136,7 @@ Optional:
 Optional:
 
 - `apple_account_provisioning` (Attributes) OAuth identity provider Fleet uses to provision accounts through Platform SSO on macOS. Requires Fleet 4.92.0 or later. Fleet never returns the client secret, so a secret changed outside Terraform is not detected. Removing the block stops managing it but leaves Fleet's settings in place. (see [below for nested schema](#nestedatt--mdm--apple_account_provisioning))
-- `apple_require_hardware_attestation` (Boolean) Whether iPhones and iPads assigned to Fleet in Apple Business prove their hardware with ACME attestation when they enroll. Requires Fleet Premium. **Security:** together with `only_allow_apple_business_enrollment`, Fleet stops issuing SCEP certificates altogether, so only attested devices can enroll or renew.
+- `apple_require_hardware_attestation` (Boolean) Whether iPhones and iPads assigned to Fleet in Apple Business prove their hardware with ACME attestation when they enroll. Requires Fleet Premium. **Security:** together with `only_allow_apple_business_enrollment`, Fleet stops issuing SCEP certificates altogether, so only attested devices can enroll or renew. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management.
 - `apple_server_url` (String) URL Apple devices use to reach Fleet for MDM, when it differs from the server URL. Set to `""` to use the server URL. **Warning:** changing it can leave already-enrolled devices unable to reach Fleet until they re-enroll.
 - `enable_recovery_lock_password` (Boolean) Whether Fleet escrows a recovery lock password for unassigned Apple silicon hosts. Requires Apple MDM to be turned on.
 - `enable_turn_on_windows_mdm_manually` (Boolean) Whether end users turn on Windows MDM themselves from Fleet Desktop instead of Fleet doing it automatically. Requires Windows MDM and Fleet Premium. Cannot be true together with `windows_migration_enabled`.
@@ -154,7 +154,7 @@ Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) t
 
 Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) together with `deadline`, which Fleet validates against Apple's Software Lookup Service. Alternatively set `minimum_version` to `"latest"` together with `deadline_days` to track whatever version Apple currently publishes for each host's hardware, with the deadline computed per version from its release date (requires Fleet 4.91.0 or later). Set both `minimum_version` and `deadline` to `""` to clear the requirement. (see [below for nested schema](#nestedatt--mdm--macos_updates))
 - `name_template` (String) Template Fleet uses to name MDM-enrolled hosts that are not assigned to a fleet, for example `$FLEET_VAR_HOST_HARDWARE_SERIAL`. Set to `""` to clear it. Replaces the deprecated top-level `host_name_template` and conflicts with it. Requires Fleet Premium.
-- `only_allow_apple_business_enrollment` (Boolean) Whether Apple MDM enrollment is limited to devices assigned to Fleet in Apple Business. Manual, OTA and account-driven (BYOD) enrollment are blocked. Requires Fleet Premium and Fleet 4.93.0 or later. **Security:** together with `apple_require_hardware_attestation`, Fleet stops issuing SCEP certificates altogether.
+- `only_allow_apple_business_enrollment` (Boolean) Whether Apple MDM enrollment is limited to devices assigned to Fleet in Apple Business. Manual, OTA and account-driven (BYOD) enrollment are blocked. Requires Fleet Premium and Fleet 4.93.0 or later. **Security:** together with `apple_require_hardware_attestation`, Fleet stops issuing SCEP certificates altogether. Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management.
 - `windows_automatic_enrollment` (Attributes) Settings for user-driven Windows MDM enrollment (Windows Autopilot, Entra join). Requires Fleet Premium and Fleet 4.91.0 or later. (see [below for nested schema](#nestedatt--mdm--windows_automatic_enrollment))
 - `windows_entra_client_ids` (Set of String) Microsoft Entra application (client) IDs accepted for automatic Windows enrollment, as lowercase GUIDs (Fleet stores them in lowercase). An empty set clears the list. Requires Windows MDM and Fleet Premium.
 - `windows_entra_tenant_ids` (Set of String) Microsoft Entra tenant IDs (GUIDs) allowed to enroll Windows hosts automatically. An empty set clears the list. Requires Windows MDM and Fleet Premium.
@@ -168,12 +168,12 @@ Give an exact version Apple still publishes (for example `26.6.1`, not `26.6`) t
 Required:
 
 - `oauth_idp_client_id` (String) Client ID registered with the identity provider.
-- `oauth_idp_token_url` (String) Token endpoint of the identity provider.
+- `oauth_idp_token_url` (String) Token endpoint of the identity provider. Must be https: Fleet sends the client secret to it.
 
 Optional:
 
 - `oauth_idp_client_secret` (String, Sensitive) Client secret registered with the identity provider. Exactly one of `oauth_idp_client_secret` and `oauth_idp_client_secret_wo` must be set. This attribute is stored in Terraform state; prefer the write-only variant on Terraform 1.11 and later.
-- `oauth_idp_client_secret_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only client secret: Terraform never stores it in the plan or state. Requires Terraform 1.11 or later. Changing it has no effect on its own; increment `oauth_idp_client_secret_wo_version` in the same change to send the new value.
+- `oauth_idp_client_secret_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Write-only client secret: Terraform never stores it in the plan or state. Requires Terraform 1.11 or later. Terraform cannot see a change to it, so increment `oauth_idp_client_secret_wo_version` in the same change to send the new value. The secret is also resent on any apply that changes this resource, so an edited value reaches Fleet then even without a version bump.
 - `oauth_idp_client_secret_wo_version` (Number) Any number; change it to send a new `oauth_idp_client_secret_wo`. Terraform cannot see a write-only value, so this is what makes a rotation show up in the plan.
 
 
@@ -185,8 +185,8 @@ Optional:
 - `entity_id` (String) Entity ID Fleet presents to the identity provider.
 - `idp_name` (String) Name of the identity provider, shown to end users.
 - `issuer_uri` (String) Issuer URI of the identity provider.
-- `metadata` (String) Identity provider metadata XML. Alternative to `metadata_url`.
-- `metadata_url` (String) URL Fleet fetches the identity provider metadata from. Alternative to `metadata`.
+- `metadata` (String) Identity provider metadata XML. Alternative to `metadata_url`. Fleet trims surrounding whitespace, so wrap a heredoc in `trimspace()`.
+- `metadata_url` (String) URL Fleet fetches the identity provider metadata from. Alternative to `metadata`. Must be https: the metadata carries the identity provider's signing certificate.
 
 
 <a id="nestedatt--mdm--ios_updates"></a>
