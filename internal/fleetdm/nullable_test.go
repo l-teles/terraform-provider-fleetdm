@@ -2,6 +2,8 @@ package fleetdm
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -28,5 +30,21 @@ func TestNullableMarshal(t *testing.T) {
 				t.Errorf("got %s, want %s", raw, tc.want)
 			}
 		})
+	}
+}
+
+// TestNullableFieldsAreOmitzero guards against a Nullable request field
+// without the omitzero tag: its zero value would go out as null and clear the
+// setting instead of leaving it alone.
+func TestNullableFieldsAreOmitzero(t *testing.T) {
+	typ := reflect.TypeFor[UpdatePolicyRequest]()
+	for i := range typ.NumField() {
+		f := typ.Field(i)
+		if !strings.HasPrefix(f.Type.Name(), "Nullable[") {
+			continue
+		}
+		if !strings.Contains(f.Tag.Get("json"), ",omitzero") {
+			t.Errorf("%s is a Nullable without the omitzero tag", f.Name)
+		}
 	}
 }

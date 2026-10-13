@@ -2026,14 +2026,17 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 	}
 
 	cleared := body(policyPriorAutomations{
-		Critical:         types.BoolValue(true),
-		SoftwareTitleID:  types.Int64Value(7),
-		ScriptID:         types.Int64Value(9),
-		LabelsIncludeAny: types.SetValueMust(types.StringType, []attr.Value{types.StringValue("Macs")}),
-		LabelsExcludeAny: nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
+		Critical:                 types.BoolValue(true),
+		CalendarEventsEnabled:    types.BoolValue(true),
+		ConditionalAccessEnabled: types.BoolValue(true),
+		SoftwareTitleID:          types.Int64Value(7),
+		ScriptID:                 types.Int64Value(9),
+		LabelsIncludeAny:         types.SetValueMust(types.StringType, []attr.Value{types.StringValue("Macs")}),
+		LabelsExcludeAny:         nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
 	})
 	for k, want := range map[string]string{
-		"critical": "false", "software_title_id": "null", "script_id": "null", "labels_include_any": "[]",
+		"critical": "false", "calendar_events_enabled": "false", "conditional_access_enabled": "false",
+		"software_title_id": "null", "script_id": "null", "labels_include_any": "[]",
 	} {
 		if string(cleared[k]) != want {
 			t.Errorf("clearing %s: got %q, want %s", k, cleared[k], want)
@@ -2042,13 +2045,32 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 	if _, ok := cleared["labels_exclude_any"]; ok {
 		t.Error("a label selector that had no value must stay out of the request")
 	}
+
+	// An unchanged software title is still sent: Fleet re-resolves the pinned
+	// package from it. Swapping selectors sends the new one and clears the old.
+	plain.SoftwareTitleID = types.Int64Value(7)
+	plain.LabelsIncludeAll = types.SetValueMust(types.StringType, []attr.Value{types.StringValue("Macs")})
+	swapped := body(policyPriorAutomations{
+		SoftwareTitleID:  types.Int64Value(7),
+		LabelsIncludeAny: types.SetValueMust(types.StringType, []attr.Value{types.StringValue("Macs")}),
+		LabelsExcludeAny: nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
+	})
+	for k, want := range map[string]string{
+		"software_title_id": "7", "labels_include_any": "[]", "labels_include_all": `["Macs"]`,
+	} {
+		if string(swapped[k]) != want {
+			t.Errorf("unchanged title / selector swap, %s: got %q, want %s", k, swapped[k], want)
+		}
+	}
 }
 
 // TestAccPolicyResource_withoutPremiumFeatures creates and updates a global
 // policy using only what Fleet Free supports. Before #175 every update failed
 // on Free because the request carried Premium fields set to false, null or
-// []. Run it against a Free server to check that tier; it passes on Premium
-// too.
+// []. CI's Fleet runs with a Premium dev license, so there it only checks that
+// Premium is unaffected; run it against a Free server (fleet serve --dev,
+// without --dev_license) to check that tier. TestBuildPolicyUpdateRequest_freeTier
+// guards the request body in every run.
 func TestAccPolicyResource_withoutPremiumFeatures(t *testing.T) {
 	name := "tf-acc-test-free-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
 	cfg := func(description, query, platform, resolution string) string {

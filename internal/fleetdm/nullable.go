@@ -4,8 +4,10 @@ import "encoding/json"
 
 // Nullable is a request field with three states, for PATCH endpoints where
 // leaving a key out means "no change" and null means "clear": the zero value
-// is omitted (use it with the omitzero tag), Null sends null, and Value sends
-// the value.
+// is omitted, Null sends null, and Value sends the value.
+//
+// A Nullable field must carry the omitzero tag. Without it the zero value is
+// sent as null, which these endpoints read as "clear".
 type Nullable[T any] struct {
 	set   bool
 	value *T

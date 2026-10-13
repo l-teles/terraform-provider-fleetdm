@@ -859,8 +859,10 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 
 // TestClient_UpdateTeamPolicy_LabelClearVsNoChange documents and asserts
 // the asymmetric label semantics: a nil slice is left out of the request
-// (Fleet keeps the existing labels, and Fleet Free does not reject it),
-// while an empty slice serializes as JSON [] (Fleet clears the labels). The
+// (with no selector sent Fleet keeps the labels, and Fleet Free does not
+// reject it), while an empty slice serializes as JSON [] (Fleet clears the
+// labels). Fleet treats the four selectors as a group, so once any is sent the
+// ones left out are cleared too. The
 // provider relies on this distinction to preserve UI-set labels when a
 // label set is Unknown at plan time, and to actually clear labels when
 // the user removes them from HCL.

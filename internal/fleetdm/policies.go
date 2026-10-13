@@ -168,8 +168,10 @@ type CreatePolicyResponse struct {
 //
 //   - software_title_id, script_id: Nullable, left out when unmanaged,
 //     null to clear, the ID to set.
-//   - Labels: a nil slice is left out ("no change"), an empty slice is sent
-//     as [] and clears them, and values replace them.
+//   - Labels: a nil slice is left out and an empty slice is sent as []. Fleet
+//     treats the four selectors as one group: when any of them is sent, every
+//     selector left out is cleared too, and only a request with none of them
+//     leaves the labels unchanged. Send all four planned values together.
 //   - critical, calendar_events_enabled, conditional_access_enabled and the
 //     automation switches (continuous_automations_enabled, patch_when_closed,
 //     notify_before_patching): sent only when true or when turning off one
