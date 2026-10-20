@@ -188,3 +188,43 @@ func expectFakeTimeout(fake *fakeFleet, want int) error {
 	}
 	return nil
 }
+
+// TestAccFleetResource_agentOptionsUnchangedNotRewritten checks that an update
+// to another attribute does not re-send unchanged agent options, since Fleet
+// logs every write as an activity.
+func TestAccFleetResource_agentOptionsUnchangedNotRewritten(t *testing.T) {
+	fake := newFakeFleet()
+	server := fake.start(t)
+	name := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	config := func(description string) string {
+		return fakeFleetProviderConfig(server.URL) + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name          = %q
+  description   = %q
+  agent_options = jsonencode({
+    script_execution_timeout = 600
+    config = { options = { distributed_interval = 10 } }
+  })
+}
+`, name, description)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("first"),
+				Check:  func(*terraform.State) error { return expectAgentOptionsRequests(fake, 1) },
+			},
+			{
+				Config: config("second"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_fleet.test", "description", "second"),
+					checkAgentOptionsTimeout("fleetdm_fleet.test", 600),
+					func(*terraform.State) error { return expectAgentOptionsRequests(fake, 1) },
+				),
+			},
+		},
+	})
+}

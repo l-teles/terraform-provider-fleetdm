@@ -387,13 +387,33 @@ func (r *FleetResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	team, err = r.applyAgentOptions(ctx, team, &plan)
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"Error Updating FleetDM Fleet Agent Options",
-			"Could not update fleet agent options, unexpected error: "+err.Error(),
-		)
+	// Fleet logs every agent options write as an activity, so skip it when
+	// only other attributes changed.
+	var prior FleetResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+	if resp.Diagnostics.HasError() {
 		return
+	}
+	unchanged := false
+	if !prior.AgentOptions.IsNull() && !prior.AgentOptions.IsUnknown() &&
+		!plan.AgentOptions.IsNull() && !plan.AgentOptions.IsUnknown() {
+		equal, diags := prior.AgentOptions.StringSemanticEquals(ctx, plan.AgentOptions)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		unchanged = equal
+	}
+
+	if !unchanged {
+		team, err = r.applyAgentOptions(ctx, team, &plan)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error Updating FleetDM Fleet Agent Options",
+				"Could not update fleet agent options, unexpected error: "+err.Error(),
+			)
+			return
+		}
 	}
 
 	// Map response to model
