@@ -39,15 +39,24 @@ import (
 // the provider's refresh logic has to survive a server that reports a concrete
 // value for every field regardless of what was sent, which is what Fleet does.
 type fakeFleet struct {
-	mu     sync.Mutex
-	state  map[string]any
-	bodies []string
+	mu                 sync.Mutex
+	state              map[string]any
+	bodies             []string
+	agentOptionsBodies []string
+	// agentOptionsStatus, when non-zero, makes the agent options endpoint fail.
+	agentOptionsStatus int
 }
 
 func newFakeFleet() *fakeFleet {
 	return &fakeFleet{state: map[string]any{
-		"id":          float64(1),
-		"name":        "placeholder",
+		"id":   float64(1),
+		"name": "placeholder",
+		// A new fleet starts with a copy of the global agent options.
+		"agent_options": map[string]any{
+			"config": map[string]any{
+				"options": map[string]any{"distributed_interval": float64(10)},
+			},
+		},
 		"description": "",
 		"user_count":  float64(0),
 		"host_count":  float64(0),
@@ -128,6 +137,13 @@ func (f *fakeFleet) patchBodies() []string {
 	return append([]string(nil), f.bodies...)
 }
 
+// agentOptionsRequests returns every body sent to the agent options endpoint.
+func (f *fakeFleet) agentOptionsRequests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.agentOptionsBodies...)
+}
+
 func (f *fakeFleet) start(t *testing.T) *httptest.Server {
 	t.Helper()
 
@@ -175,6 +191,31 @@ func (f *fakeFleet) start(t *testing.T) *httptest.Server {
 				}
 				return
 			}
+			f.respond(t, w)
+
+		case r.URL.Path == "/api/v1/fleet/fleets/1/agent_options" && r.Method == http.MethodPost:
+			var raw json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+				t.Errorf("failed to decode agent options body: %v", err)
+			}
+			f.agentOptionsBodies = append(f.agentOptionsBodies, string(raw))
+			if f.agentOptionsStatus != 0 {
+				w.WriteHeader(f.agentOptionsStatus)
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"message": "Bad request",
+					"errors":  []map[string]string{{"name": "base", "reason": "invalid agent options"}},
+				}); err != nil {
+					t.Errorf("failed to encode error response: %v", err)
+				}
+				return
+			}
+			// Stored as a map, so the response comes back with its keys
+			// re-ordered, as Fleet's JSON column does.
+			var options any
+			if err := json.Unmarshal(raw, &options); err != nil {
+				t.Errorf("failed to unmarshal agent options body: %v", err)
+			}
+			f.state["agent_options"] = options
 			f.respond(t, w)
 
 		case r.URL.Path == "/api/v1/fleet/fleets/1" && r.Method == http.MethodDelete:

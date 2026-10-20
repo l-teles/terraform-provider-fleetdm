@@ -105,3 +105,24 @@ resource "fleetdm_fleet" "managed_laptops" {
     }
   }
 }
+
+# Manage a fleet's agent options.
+#
+# agent_options is opt-in like the blocks above: leave it out and the fleet
+# keeps the copy of the global agent options it was created with. Once
+# declared, Fleet replaces the fleet's agent options with this value as a
+# whole. Key order and whitespace do not cause a diff.
+resource "fleetdm_fleet" "long_running_scripts" {
+  name = "Long-running scripts"
+
+  agent_options = jsonencode({
+    # Allow scripts to run for up to 20 minutes instead of the 5-minute default.
+    script_execution_timeout = 1200
+    config = {
+      options = {
+        distributed_interval = 10
+        logger_tls_period    = 10
+      }
+    }
+  })
+}

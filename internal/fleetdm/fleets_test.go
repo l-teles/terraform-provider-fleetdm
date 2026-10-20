@@ -3,6 +3,7 @@ package fleetdm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -268,5 +269,52 @@ func TestClient_ModifyTeamEnrollSecrets(t *testing.T) {
 
 	if secrets[0].Secret != "new-secret" {
 		t.Errorf("Expected secret 'new-secret', got: %s", secrets[0].Secret)
+	}
+}
+
+func TestClient_ModifyTeamAgentOptions(t *testing.T) {
+	// Key order and the top-level script_execution_timeout are both part of
+	// what must reach Fleet unchanged.
+	const options = `{"script_execution_timeout":600,"config":{"options":{"distributed_interval":10}}}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/fleets/1/agent_options" {
+			t.Errorf("Expected path '/api/v1/fleet/fleets/1/agent_options', got '%s'", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("Expected method 'POST', got '%s'", r.Method)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read request body: %v", err)
+		}
+		if string(body) != options {
+			t.Errorf("Expected body %s, got %s", options, body)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"fleet":{"id":1,"name":"engineering","agent_options":{"config":{"options":{"distributed_interval":10}},"script_execution_timeout":600}}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{
+		ServerAddress: server.URL,
+		APIKey:        "test-key",
+	})
+
+	team, err := client.ModifyTeamAgentOptions(context.Background(), 1, json.RawMessage(options))
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	if team.AgentOptions == nil {
+		t.Fatal("Expected agent options in the response, got nil")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(*team.AgentOptions, &got); err != nil {
+		t.Fatalf("failed to decode agent options: %v", err)
+	}
+	if got["script_execution_timeout"] != float64(600) {
+		t.Errorf("Expected script_execution_timeout 600 to survive the round trip, got: %v", got["script_execution_timeout"])
 	}
 }

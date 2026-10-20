@@ -429,3 +429,49 @@ func clearWindowsAutomaticEnrollmentOutOfBand(t *testing.T) {
 		t.Logf("failed to clear windows_automatic_enrollment.default_fleet: %v", err)
 	}
 }
+
+// TestAccConfigurationResource_agentOptions sets the global agent options,
+// including a top-level key, and checks that Fleet's copy causes no drift.
+func TestAccConfigurationResource_agentOptions(t *testing.T) {
+	config := providerConfig() + `
+resource "fleetdm_configuration" "test" {
+  org_name = "Terraform Acc Test Org"
+  agent_options = jsonencode({
+    script_execution_timeout = 600
+    config = {
+      options = {
+        pack_delimiter               = "/"
+        logger_tls_period            = 10
+        distributed_plugin           = "tls"
+        disable_distributed          = false
+        logger_tls_endpoint          = "/api/osquery/log"
+        distributed_interval         = 10
+        distributed_tls_max_attempts = 3
+      }
+      decorators = {
+        load = [
+          "SELECT uuid AS host_uuid FROM system_info;",
+          "SELECT hostname AS hostname FROM system_info;",
+        ]
+      }
+    }
+    overrides = {}
+  })
+}
+`
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check:  checkAgentOptionsTimeout("fleetdm_configuration.test", 600),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+}
