@@ -435,6 +435,7 @@ func clearWindowsAutomaticEnrollmentOutOfBand(t *testing.T) {
 func TestAccConfigurationResource_agentOptions(t *testing.T) {
 	config := providerConfig() + `
 resource "fleetdm_configuration" "test" {
+  org_name = "Terraform Acc Test Org"
   agent_options = jsonencode({
     script_execution_timeout = 600
     config = {
