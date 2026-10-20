@@ -157,3 +157,46 @@ resource "fleetdm_fleet" "test" {
 }
 `, name, description)
 }
+
+// TestAccFleetResource_agentOptionsLive writes agent options with a top-level
+// key through Fleet's dedicated endpoint and checks that what Fleet stores
+// and returns causes no drift.
+func TestAccFleetResource_agentOptionsLive(t *testing.T) {
+	fleetName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	config := func(timeout int) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %q
+  agent_options = jsonencode({
+    script_execution_timeout = %d
+    config = {
+      options = {
+        distributed_interval = 10
+        logger_tls_period    = 10
+      }
+    }
+  })
+}
+`, fleetName, timeout)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(600),
+				Check:  checkAgentOptionsTimeout("fleetdm_fleet.test", 600),
+			},
+			{
+				Config:   config(600),
+				PlanOnly: true,
+			},
+			{
+				Config: config(1200),
+				Check:  checkAgentOptionsTimeout("fleetdm_fleet.test", 1200),
+			},
+		},
+	})
+}

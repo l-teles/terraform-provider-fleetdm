@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/boolvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -71,6 +73,9 @@ type FleetResourceModel struct {
 	Integrations    *fleetIntegrationsModel    `tfsdk:"integrations"`
 	Features        *fleetFeaturesModel        `tfsdk:"features"`
 
+	// Opt-in like the blocks above: null means Fleet's agent options are left alone.
+	AgentOptions jsontypes.Normalized `tfsdk:"agent_options"`
+
 	// Computed fields
 	UserCount types.Int64 `tfsdk:"user_count"`
 	HostCount types.Int64 `tfsdk:"host_count"`
@@ -99,7 +104,8 @@ func (r *FleetResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"Fleets are available in Fleet Premium and allow you to group hosts and apply specific configurations, policies, and settings to them.\n\n" +
 			"The `webhook_settings`, `mdm`, `integrations` and `features` blocks are opt-in: a block you do not declare is neither written to Fleet nor read into state, so this resource can coexist with settings managed in the Fleet UI or through GitOps. " +
 			"Within a block, attributes you omit are left alone too, with one exception: inside a declared `webhook_settings` sub-block or inside `integrations.google_calendar`, Fleet replaces the whole object, so every attribute of that sub-block goes on the wire and the ones you omit are sent as zero values. Declare those sub-blocks in full. " +
-			"One consequence of the opt-in design is that `terraform import` brings a fleet in with all four blocks null, since which of them you intend to manage is only expressed in your configuration.",
+			"One consequence of the opt-in design is that `terraform import` brings a fleet in with all four blocks null, since which of them you intend to manage is only expressed in your configuration. " +
+			"`agent_options` is opt-in in the same way.",
 		Attributes: fleetSchemaAttributes(),
 	}
 }
@@ -166,6 +172,14 @@ func fleetSchemaAttributes() map[string]schema.Attribute {
 		"mdm":              fleetMDMAttribute(),
 		"integrations":     fleetIntegrationsAttribute(),
 		"features":         fleetFeaturesAttribute(),
+		"agent_options": schema.StringAttribute{
+			CustomType: jsontypes.NormalizedType{},
+			Description: "The fleet's agent options as a JSON string, typically built with jsonencode(). Fleet replaces the fleet's agent options with this value as a whole. Key order and whitespace are ignored when comparing it with what Fleet returns. " +
+				"Opt-in: when omitted, the agent options Fleet holds (a copy of the global ones for a new fleet) are neither written nor read into state, and removing the attribute later leaves Fleet's current value in place. terraform import brings it in as null.",
+			MarkdownDescription: "The fleet's agent options as a JSON string, typically built with `jsonencode()`. Fleet replaces the fleet's agent options with this value as a whole. Key order and whitespace are ignored when comparing it with what Fleet returns. See [Agent configuration](https://fleetdm.com/docs/configuration/agent-configuration) for the keys Fleet accepts.\n\n" +
+				"Opt-in: when omitted, the agent options Fleet holds (a copy of the global ones for a new fleet) are neither written nor read into state, and removing the attribute later leaves Fleet's current value in place. `terraform import` brings it in as null.",
+			Optional: true,
+		},
 		"user_count": schema.Int64Attribute{
 			Description:         "The number of users in the fleet.",
 			MarkdownDescription: "The number of users in the fleet.",
@@ -279,6 +293,15 @@ func (r *FleetResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	team, err = r.applyAgentOptions(ctx, team, &plan)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Updating FleetDM Fleet Agent Options",
+			"Fleet was created but agent options could not be applied (fleet ID saved to state). Run 'terraform apply' again to retry. Error: "+err.Error(),
+		)
+		return
+	}
+
 	// Map final response to model
 	r.mapTeamToModel(ctx, team, &plan, &resp.Diagnostics)
 
@@ -364,6 +387,15 @@ func (r *FleetResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
+	team, err = r.applyAgentOptions(ctx, team, &plan)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Error Updating FleetDM Fleet Agent Options",
+			"Could not update fleet agent options, unexpected error: "+err.Error(),
+		)
+		return
+	}
+
 	// Map response to model
 	r.mapTeamToModel(ctx, team, &plan, &resp.Diagnostics)
 
@@ -434,6 +466,23 @@ func buildUpdateTeamRequest(ctx context.Context, plan *FleetResourceModel, confi
 	return req
 }
 
+// applyAgentOptions writes agent_options through its own endpoint, since
+// PATCH /fleets/{id} ignores it, and returns team with the agent options Fleet
+// saved. Nothing is sent when the attribute is not declared.
+func (r *FleetResource) applyAgentOptions(ctx context.Context, team *fleetdm.Team, plan *FleetResourceModel) (*fleetdm.Team, error) {
+	if plan.AgentOptions.IsNull() || plan.AgentOptions.IsUnknown() {
+		return team, nil
+	}
+
+	updated, err := r.client.ModifyTeamAgentOptions(ctx, team.ID, json.RawMessage(plan.AgentOptions.ValueString()))
+	if err != nil {
+		return nil, err
+	}
+
+	team.AgentOptions = updated.AgentOptions
+	return team, nil
+}
+
 // mapTeamToModel maps a FleetDM Team to the Terraform model.
 func (r *FleetResource) mapTeamToModel(ctx context.Context, team *fleetdm.Team, model *FleetResourceModel, diags *diag.Diagnostics) {
 	model.ID = types.Int64Value(team.ID)
@@ -463,6 +512,15 @@ func (r *FleetResource) mapTeamToModel(ctx context.Context, team *fleetdm.Team, 
 	refreshMDM(model.MDM, team.MDM)
 	refreshIntegrations(model.Integrations, team.Integrations)
 	refreshFeatures(model.Features, team.Features)
+
+	// Opt-in: only read back once agent_options is in state.
+	if !model.AgentOptions.IsNull() {
+		if team.AgentOptions != nil {
+			model.AgentOptions = jsontypes.NewNormalizedValue(string(*team.AgentOptions))
+		} else {
+			model.AgentOptions = jsontypes.NewNormalizedNull()
+		}
+	}
 }
 
 // ImportState imports an existing resource by ID.

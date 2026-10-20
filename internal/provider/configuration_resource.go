@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -18,6 +19,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -27,6 +30,7 @@ var (
 	_ resource.Resource                     = &ConfigurationResource{}
 	_ resource.ResourceWithImportState      = &ConfigurationResource{}
 	_ resource.ResourceWithConfigValidators = &ConfigurationResource{}
+	_ resource.ResourceWithUpgradeState     = &ConfigurationResource{}
 )
 
 // ConfigValidators implements resource.ResourceWithConfigValidators.
@@ -88,7 +92,7 @@ type ConfigurationResourceModel struct {
 	MDM          *configurationMDMModel          `tfsdk:"mdm"`
 
 	// Agent Options (JSON)
-	AgentOptions types.String `tfsdk:"agent_options"`
+	AgentOptions jsontypes.Normalized `tfsdk:"agent_options"`
 }
 
 // Metadata returns the resource type name.
@@ -99,6 +103,8 @@ func (r *ConfigurationResource) Metadata(ctx context.Context, req resource.Metad
 // Schema defines the schema for the resource.
 func (r *ConfigurationResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		// Version 1: agent_options became jsontypes.Normalized; see UpgradeState.
+		Version:     1,
 		Description: "Manages the FleetDM server configuration.",
 		MarkdownDescription: `Manages the FleetDM server configuration.
 
@@ -300,12 +306,54 @@ resource "fleetdm_configuration" "main" {
 			"mdm":          configurationMDMSchema(),
 			// Agent Options
 			"agent_options": schema.StringAttribute{
+				CustomType:          jsontypes.NormalizedType{},
 				Optional:            true,
 				Computed:            true,
-				MarkdownDescription: "JSON-encoded osquery agent options.",
+				MarkdownDescription: "JSON-encoded agent options, typically built with `jsonencode()`. Key order and whitespace are ignored when comparing it with what Fleet returns.",
 			},
 		},
 	}
+}
+
+// UpgradeState upgrades version 0 state, which stored missing agent options
+// as "". jsontypes.Normalized cannot compare "" (it is not JSON), so it becomes
+// null. The rest of the schema is unchanged between the two versions.
+func (r *ConfigurationResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {StateUpgrader: upgradeConfigurationStateV0},
+	}
+}
+
+func upgradeConfigurationStateV0(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+	raw, err := req.RawState.UnmarshalWithOpts(
+		resp.State.Schema.Type().TerraformType(ctx),
+		tfprotov6.UnmarshalOpts{ValueFromJSONOpts: tftypes.ValueFromJSONOpts{IgnoreUndefinedAttributes: true}},
+	)
+	if err != nil {
+		resp.Diagnostics.AddError("Error Upgrading FleetDM Configuration State", "Could not read the prior state: "+err.Error())
+		return
+	}
+
+	agentOptionsPath := tftypes.NewAttributePath().WithAttributeName("agent_options")
+	upgraded, err := tftypes.Transform(raw, func(p *tftypes.AttributePath, v tftypes.Value) (tftypes.Value, error) {
+		if !p.Equal(agentOptionsPath) || !v.IsKnown() || v.IsNull() {
+			return v, nil
+		}
+		var s string
+		if err := v.As(&s); err != nil {
+			return v, err
+		}
+		if s == "" {
+			return tftypes.NewValue(tftypes.String, nil), nil
+		}
+		return v, nil
+	})
+	if err != nil {
+		resp.Diagnostics.AddError("Error Upgrading FleetDM Configuration State", "Could not upgrade agent_options: "+err.Error())
+		return
+	}
+
+	resp.State.Raw = upgraded
 }
 
 // Configure adds the provider configured client to the resource.
@@ -726,8 +774,8 @@ func (r *ConfigurationResource) updateModelFromConfig(data *ConfigurationResourc
 
 	// Agent Options
 	if config.AgentOptions != nil {
-		data.AgentOptions = types.StringValue(string(*config.AgentOptions))
+		data.AgentOptions = jsontypes.NewNormalizedValue(string(*config.AgentOptions))
 	} else {
-		data.AgentOptions = types.StringValue("")
+		data.AgentOptions = jsontypes.NewNormalizedNull()
 	}
 }

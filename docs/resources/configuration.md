@@ -92,7 +92,7 @@ resource "fleetdm_configuration" "main" {
 
 - `activity_expiry_enabled` (Boolean) Whether to automatically remove old activities.
 - `activity_expiry_window` (Number) Number of days after which activities are removed.
-- `agent_options` (String) JSON-encoded osquery agent options.
+- `agent_options` (String) JSON-encoded agent options, typically built with `jsonencode()`. Key order and whitespace are ignored when comparing it with what Fleet returns.
 - `ai_features_disabled` (Boolean) Whether AI features are disabled.
 - `contact_url` (String) URL for contacting support.
 - `enable_analytics` (Boolean) Whether usage analytics are enabled.

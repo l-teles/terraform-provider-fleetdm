@@ -2,6 +2,7 @@ package fleetdm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 )
@@ -14,8 +15,10 @@ type Team struct {
 	UserCount   int    `json:"user_count,omitempty"`
 	HostCount   int    `json:"host_count,omitempty"`
 
-	// AgentOptions contains osquery agent configuration for this fleet
-	AgentOptions *AgentOptions `json:"agent_options,omitempty"`
+	// AgentOptions contains the fleet's agent options as Fleet stores them.
+	// Kept raw so top-level keys such as script_execution_timeout survive a
+	// round trip.
+	AgentOptions *json.RawMessage `json:"agent_options,omitempty"`
 
 	// Secrets contains enrollment secrets for this fleet
 	Secrets []EnrollSecret `json:"secrets,omitempty"`
@@ -34,13 +37,6 @@ type Team struct {
 
 	// HostExpirySettings contains host expiry configuration
 	HostExpirySettings *HostExpirySettings `json:"host_expiry_settings,omitempty"`
-}
-
-// AgentOptions represents osquery agent configuration options.
-type AgentOptions struct {
-	Config           map[string]interface{} `json:"config,omitempty"`
-	Overrides        map[string]interface{} `json:"overrides,omitempty"`
-	CommandLineFlags map[string]interface{} `json:"command_line_flags,omitempty"`
 }
 
 // EnrollSecret represents an enrollment secret.
@@ -239,19 +235,19 @@ type GetTeamResponse struct {
 	Team Team `json:"fleet"`
 }
 
-// CreateTeamRequest represents the request to create a fleet.
+// CreateTeamRequest represents the request to create a fleet. Fleet ignores
+// agent options here and copies the global ones; see ModifyTeamAgentOptions.
 type CreateTeamRequest struct {
-	Name         string         `json:"name"`
-	Description  string         `json:"description,omitempty"`
-	Secrets      []EnrollSecret `json:"secrets,omitempty"`
-	AgentOptions *AgentOptions  `json:"agent_options,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Secrets     []EnrollSecret `json:"secrets,omitempty"`
 }
 
-// UpdateTeamRequest represents the request to update a fleet.
+// UpdateTeamRequest represents the request to update a fleet. Agent options
+// have their own endpoint; see ModifyTeamAgentOptions.
 type UpdateTeamRequest struct {
 	Name               string               `json:"name"`
 	Description        string               `json:"description"`
-	AgentOptions       *AgentOptions        `json:"agent_options,omitempty"`
 	WebhookSettings    *TeamWebhookSettings `json:"webhook_settings,omitempty"`
 	MDM                *TeamMDMSettings     `json:"mdm,omitempty"`
 	Integrations       *TeamIntegrations    `json:"integrations,omitempty"`
@@ -319,6 +315,18 @@ func (c *Client) DeleteTeam(ctx context.Context, teamID int64) error {
 	}
 
 	return nil
+}
+
+// ModifyTeamAgentOptions replaces a fleet's agent options with options, via
+// the dedicated endpoint (PATCH /fleets/{id} ignores agent_options).
+func (c *Client) ModifyTeamAgentOptions(ctx context.Context, teamID int64, options json.RawMessage) (*Team, error) {
+	var response GetTeamResponse
+	err := c.Post(ctx, fmt.Sprintf("/fleets/%d/agent_options", teamID), options, &response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to modify fleet %d agent options: %w", teamID, err)
+	}
+
+	return &response.Team, nil
 }
 
 // GetTeamEnrollSecrets retrieves the enrollment secrets for a fleet.
