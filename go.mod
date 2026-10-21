@@ -50,7 +50,7 @@ require (
 	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/go-git/go-billy/v5 v5.9.2 // indirect
-	github.com/go-test/deep v1.1.1 // indirect
+	github.com/go-test/deep v1.1.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
