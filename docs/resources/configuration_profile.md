@@ -112,11 +112,21 @@ resource "fleetdm_configuration_profile" "wifi_settings" {
   profile_content = file("${path.module}/profiles/wifi-settings.mobileconfig")
 }
 
-# Create a Windows configuration profile with a display name
+# Create a Windows configuration profile (name is required for Windows)
 resource "fleetdm_configuration_profile" "windows_bitlocker" {
   team_id         = fleetdm_team.workstations.id
-  display_name    = "BitLocker Policy"
+  name            = "BitLocker Policy"
   profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
+}
+
+# Name and describe a profile, and let end users install it from My device
+# (Fleet 4.94+, Premium; self_service is macOS .mobileconfig only)
+resource "fleetdm_configuration_profile" "vpn" {
+  team_id         = fleetdm_team.workstations.id
+  name            = "Corporate VPN"
+  description     = "Optional VPN for remote work"
+  self_service    = true
+  profile_content = file("${path.module}/profiles/vpn.mobileconfig")
 }
 
 # Create a profile with label targeting
@@ -141,7 +151,7 @@ output "wifi_profile_uuid" {
 }
 
 output "wifi_profile_name" {
-  description = "Name extracted from the profile content"
+  description = "Name derived from the profile content (PayloadDisplayName)"
   value       = fleetdm_configuration_profile.wifi_settings.name
 }
 ```
@@ -155,10 +165,14 @@ output "wifi_profile_name" {
 
 ### Optional
 
-- `display_name` (String) The display name for the profile. **Required for Windows (`.xml`) profiles** — controls the profile name shown in Fleet. Must not contain path separators (`/` or `\`) or file extensions. Only applicable to Windows profiles; for macOS and declaration profiles the name is derived from the profile content.
+- `description` (String) A description of the profile, shown in Fleet. Requires Fleet 4.94+.
+- `display_name` (String, Deprecated) **Deprecated:** use `name`. The name of a Windows (`.xml`) profile. Only applicable to Windows profiles. Changing it forces replacement; changing `name` renames in place instead.
+- `hidden` (Boolean) Hide the profile from end users on **My device > Controls** unless they turn on "Show hidden profiles". Cannot be combined with `self_service`. Requires Fleet 4.94+ (Premium).
 - `labels_exclude_any` (List of String) Labels where hosts with **ANY** of these will **NOT** receive this profile. Updated in place on Fleet 4.90+.
 - `labels_include_all` (List of String) Labels that hosts must have **ALL** of to receive this profile. Updated in place on Fleet 4.90+.
 - `labels_include_any` (List of String) Labels where hosts must have **ANY** of to receive this profile. Updated in place on Fleet 4.90+.
+- `name` (String) The profile name shown in Fleet. **Required for Windows (`.xml`) profiles.** When omitted, Fleet derives it: `PayloadDisplayName` for `.mobileconfig`, the `Identifier` for declarations (`.json`), at creation; on Fleet 4.94+ later content changes keep the stored name. Renaming updates the profile in place without re-sending it to hosts (Fleet 4.94+). On older Fleet, a name only works for Windows and declaration profiles and only at creation. Removing `name` from the configuration keeps the current name.
+- `self_service` (Boolean) Make the profile available for end users to install from the **My device** page instead of deploying it automatically. Only supported for macOS `.mobileconfig` profiles. Requires Fleet 4.94+ (Premium).
 - `team_id` (Number) The ID of the team this profile belongs to. Use `0` or omit for 'No team'.
 
 ### Read-Only
@@ -166,7 +180,6 @@ output "wifi_profile_name" {
 - `checksum` (String) The checksum of the profile content.
 - `created_at` (String) The timestamp when the profile was created.
 - `identifier` (String) The identifier of the profile (extracted from the profile content, macOS only).
-- `name` (String) The name of the profile (extracted from the profile content).
 - `platform` (String) The platform this profile targets (`darwin`, `windows`).
 - `profile_uuid` (String) The unique identifier (UUID) of the configuration profile.
 - `uploaded_at` (String) The timestamp when the profile was last uploaded.

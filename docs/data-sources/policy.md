@@ -70,6 +70,7 @@ output "compliance_rate" {
 - `description` (String) A description of the policy.
 - `failing_host_count` (Number) The number of hosts failing this policy.
 - `fleet_maintained` (Boolean) Whether the policy is maintained by Fleet.
+- `hidden` (Boolean) Whether the policy is hidden from end users in Fleet Desktop. Always `false` on Fleet versions before 4.94.
 - `host_count_updated_at` (String) Timestamp when the passing/failing host counts were last refreshed.
 - `install_software` (Attributes) Echo of the install-software automation attached to this policy. (see [below for nested schema](#nestedatt--install_software))
 - `labels_exclude_all` (Set of String) Labels whose hosts are excluded from this policy (all-of semantics). _Fleet 4.90+._

@@ -6,11 +6,21 @@ resource "fleetdm_configuration_profile" "wifi_settings" {
   profile_content = file("${path.module}/profiles/wifi-settings.mobileconfig")
 }
 
-# Create a Windows configuration profile with a display name
+# Create a Windows configuration profile (name is required for Windows)
 resource "fleetdm_configuration_profile" "windows_bitlocker" {
   team_id         = fleetdm_team.workstations.id
-  display_name    = "BitLocker Policy"
+  name            = "BitLocker Policy"
   profile_content = file("${path.module}/profiles/bitlocker-policy.xml")
+}
+
+# Name and describe a profile, and let end users install it from My device
+# (Fleet 4.94+, Premium; self_service is macOS .mobileconfig only)
+resource "fleetdm_configuration_profile" "vpn" {
+  team_id         = fleetdm_team.workstations.id
+  name            = "Corporate VPN"
+  description     = "Optional VPN for remote work"
+  self_service    = true
+  profile_content = file("${path.module}/profiles/vpn.mobileconfig")
 }
 
 # Create a profile with label targeting
@@ -35,6 +45,6 @@ output "wifi_profile_uuid" {
 }
 
 output "wifi_profile_name" {
-  description = "Name extracted from the profile content"
+  description = "Name derived from the profile content (PayloadDisplayName)"
   value       = fleetdm_configuration_profile.wifi_settings.name
 }

@@ -57,6 +57,13 @@ func isConflict(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.StatusCode == 409
 }
 
+// isBadRequest returns true if the error (or any error it wraps) is a FleetDM
+// API 400 response.
+func isBadRequest(err error) bool {
+	var apiErr *fleetdm.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 400
+}
+
 // parseIDFromString parses a numeric string ID and adds a diagnostic error on failure.
 // Returns the parsed int and true on success, or 0 and false on failure.
 //
@@ -352,4 +359,37 @@ func mapUserTeamsToList(_ context.Context, teams []fleetdm.UserTeam, diags *diag
 	}
 
 	return teamList
+}
+
+// fleetServerBefore reports whether the server is known to run a Fleet older
+// than major.minor. An unreadable or unparsable version, or a 0.0.0 dev
+// build, counts as not known.
+func fleetServerBefore(ctx context.Context, client *fleetdm.Client, major, minor int64) bool {
+	before, _ := fleetServerVersionBefore(ctx, client, major, minor)
+	return before
+}
+
+// fleetServerVersionBefore is fleetServerBefore that also reports whether the
+// version could be determined.
+func fleetServerVersionBefore(ctx context.Context, client *fleetdm.Client, major, minor int64) (before, known bool) {
+	v, err := client.GetVersion(ctx)
+	if err != nil {
+		return false, false
+	}
+	gotMajor, gotMinor, ok := parseMajorMinor(v.Version)
+	if !ok || gotMajor < 1 {
+		return false, false
+	}
+	return gotMajor < major || (gotMajor == major && gotMinor < minor), true
+}
+
+// parseMajorMinor reads the major and minor numbers from "4.93.0", "v4.93.0-rc1" and the like.
+func parseMajorMinor(version string) (major, minor int64, ok bool) {
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err1 := strconv.ParseInt(parts[0], 10, 64)
+	minor, err2 := strconv.ParseInt(parts[1], 10, 64)
+	return major, minor, err1 == nil && err2 == nil
 }

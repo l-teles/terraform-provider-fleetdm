@@ -1368,7 +1368,7 @@ resource "fleetdm_policy" "test" {
 // license" to any of them being present, even as false, so a switch that is
 // off and was off must be left out entirely.
 func TestBuildPolicyUpdateRequest_premiumFlags(t *testing.T) {
-	keys := []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching"}
+	keys := []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching", "hidden"}
 	tests := []struct {
 		name    string
 		planned bool
@@ -1391,11 +1391,13 @@ func TestBuildPolicyUpdateRequest_premiumFlags(t *testing.T) {
 				ContinuousAutomationsEnabled: types.BoolValue(tt.planned),
 				PatchWhenClosed:              types.BoolValue(tt.planned),
 				NotifyBeforePatching:         types.BoolValue(tt.planned),
+				Hidden:                       types.BoolValue(tt.planned),
 			}
 			prior := policyPriorAutomations{
 				ContinuousAutomationsEnabled: tt.prior,
 				PatchWhenClosed:              tt.prior,
 				NotifyBeforePatching:         tt.prior,
+				Hidden:                       tt.prior,
 			}
 			var diags diag.Diagnostics
 			req := buildPolicyUpdateRequest(context.Background(), data, prior, &diags)
@@ -1972,7 +1974,7 @@ func TestCheckPatchOptionsAtApply(t *testing.T) {
 // sends the explicit null or [].
 func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 	premiumKeys := []string{
-		"critical", "calendar_events_enabled", "conditional_access_enabled", "software_title_id", "script_id", "labels_include_any", "labels_exclude_any",
+		"critical", "hidden", "calendar_events_enabled", "conditional_access_enabled", "software_title_id", "script_id", "labels_include_any", "labels_exclude_any",
 		"labels_include_all", "labels_exclude_all", "continuous_automations_enabled", "patch_when_closed",
 		"notify_before_patching", "software_package_id", "profile_uuid",
 	}
@@ -1983,6 +1985,7 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 		Type:                         types.StringValue("dynamic"),
 		Platform:                     types.ListNull(types.StringType),
 		Critical:                     types.BoolValue(false),
+		Hidden:                       types.BoolValue(false),
 		CalendarEventsEnabled:        types.BoolValue(false),
 		ConditionalAccessEnabled:     types.BoolValue(false),
 		SoftwareTitleID:              types.Int64Null(),
@@ -2016,7 +2019,7 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 	}
 
 	got := body(policyPriorAutomations{
-		Critical: types.BoolValue(false), SoftwareTitleID: types.Int64Null(), ScriptID: types.Int64Null(),
+		Critical: types.BoolValue(false), Hidden: types.BoolValue(false), SoftwareTitleID: types.Int64Null(), ScriptID: types.Int64Null(),
 		LabelsIncludeAny: nullSet, LabelsExcludeAny: nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
 	})
 	for _, k := range premiumKeys {
@@ -2027,6 +2030,7 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 
 	cleared := body(policyPriorAutomations{
 		Critical:                 types.BoolValue(true),
+		Hidden:                   types.BoolValue(true),
 		CalendarEventsEnabled:    types.BoolValue(true),
 		ConditionalAccessEnabled: types.BoolValue(true),
 		SoftwareTitleID:          types.Int64Value(7),
@@ -2035,7 +2039,7 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 		LabelsExcludeAny:         nullSet, LabelsIncludeAll: nullSet, LabelsExcludeAll: nullSet,
 	})
 	for k, want := range map[string]string{
-		"critical": "false", "calendar_events_enabled": "false", "conditional_access_enabled": "false",
+		"critical": "false", "hidden": "false", "calendar_events_enabled": "false", "conditional_access_enabled": "false",
 		"software_title_id": "null", "script_id": "null", "labels_include_any": "[]",
 	} {
 		if string(cleared[k]) != want {

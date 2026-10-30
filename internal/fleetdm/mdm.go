@@ -19,6 +19,9 @@ type MDMConfigProfile struct {
 	ProfileUUID      string                      `json:"profile_uuid"`
 	TeamID           *int                        `json:"team_id,omitempty"`
 	Name             string                      `json:"name"`
+	Description      *string                     `json:"description,omitempty"`  // Fleet 4.94+; nil on older Fleet
+	Hidden           *bool                       `json:"hidden,omitempty"`       // Fleet 4.94+; nil on older Fleet
+	SelfService      *bool                       `json:"self_service,omitempty"` // Fleet 4.94+; nil on older Fleet
 	Platform         string                      `json:"platform"`
 	Identifier       string                      `json:"identifier,omitempty"`
 	Checksum         string                      `json:"checksum,omitempty"`
@@ -243,8 +246,12 @@ func plistTopLevelString(content []byte, key string) (string, error) {
 // CreateConfigProfileRequest contains the parameters for creating a configuration profile.
 type CreateConfigProfileRequest struct {
 	TeamID           *int     // Optional team ID
-	Filename         string   // Upload filename; Fleet derives the Windows profile name from this
+	Filename         string   // Upload filename; Fleet derives the Windows/DDM profile name from this when Name is empty
 	Profile          []byte   // Profile content (mobileconfig XML, Windows XML, or Apple declaration JSON)
+	Name             string   // Fleet 4.94+; empty lets Fleet derive the name
+	Description      string   // Fleet 4.94+
+	Hidden           bool     // Fleet 4.94+, Premium
+	SelfService      bool     // Fleet 4.94+, Premium, .mobileconfig only
 	Labels           []string // Deprecated: use LabelsIncludeAll instead
 	LabelsIncludeAll []string // Labels that must all match
 	LabelsIncludeAny []string // Labels where any can match
@@ -271,6 +278,19 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 	}
 	if len(req.LabelsExcludeAny) > 0 {
 		fields["labels_exclude_any"] = req.LabelsExcludeAny
+	}
+	if req.Name != "" {
+		fields["name"] = []string{req.Name}
+	}
+	if req.Description != "" {
+		fields["description"] = []string{req.Description}
+	}
+	// Only sent when true so Fleet Free and pre-4.94 servers see no new fields.
+	if req.Hidden {
+		fields["hidden"] = []string{"true"}
+	}
+	if req.SelfService {
+		fields["self_service"] = []string{"true"}
 	}
 
 	filename := req.Filename
@@ -302,13 +322,18 @@ func (c *Client) CreateConfigProfile(ctx context.Context, req *CreateConfigProfi
 //
 // Label targeting is FULL-REPLACE on every PATCH: Fleet clears any label
 // fields absent from the request (a content-only PATCH wipes targeting), so
-// callers must always pass the complete desired label set.
+// callers must always pass the complete desired label set. The Fleet 4.94
+// fields are tri-state instead: nil leaves the stored value alone.
 type UpdateConfigProfileRequest struct {
 	Profile          []byte // Optional new profile content; nil = labels-only update
 	Filename         string // Upload filename when Profile is set
 	LabelsIncludeAll []string
 	LabelsIncludeAny []string
 	LabelsExcludeAny []string
+	Name             string  // Fleet 4.94+; empty keeps the stored name
+	Description      *string // Fleet 4.94+; "" clears it
+	Hidden           *bool   // Fleet 4.94+
+	SelfService      *bool   // Fleet 4.94+
 }
 
 // UpdateConfigProfile updates an existing MDM configuration profile in place
@@ -326,6 +351,18 @@ func (c *Client) UpdateConfigProfile(ctx context.Context, profileUUID string, re
 	}
 	if len(req.LabelsExcludeAny) > 0 {
 		fields["labels_exclude_any"] = req.LabelsExcludeAny
+	}
+	if req.Name != "" {
+		fields["name"] = []string{req.Name}
+	}
+	if req.Description != nil {
+		fields["description"] = []string{*req.Description}
+	}
+	if req.Hidden != nil {
+		fields["hidden"] = []string{strconv.FormatBool(*req.Hidden)}
+	}
+	if req.SelfService != nil {
+		fields["self_service"] = []string{strconv.FormatBool(*req.SelfService)}
 	}
 
 	endpoint := fmt.Sprintf("/configuration_profiles/%s", profileUUID)

@@ -138,6 +138,7 @@ resource "fleetdm_policy" "vpn_ready" {
 - `continuous_automations_enabled` (Boolean) Whether the policy's automations re-run on every failing check instead of only on the transition into failing. Requires `team_id` — Fleet rejects the field on global policies. _Available in Fleet Premium 4.90+._
 - `critical` (Boolean) Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._
 - `description` (String) A description of the policy. Fleet generates one for `type = "patch"` policies, so leaving it unset on a patch policy adopts Fleet's text. Once set, removing the attribute keeps the stored value rather than clearing it.
+- `hidden` (Boolean) Whether to hide the policy from end users in Fleet Desktop. Cannot be `true` together with `conditional_access_enabled`, since end users must be able to see why their sign-in is blocked. Works on global and team policies. _Available in Fleet Premium 4.94+._
 - `labels_exclude_all` (Set of String) Exclude hosts that have all of the specified labels. Mutually exclusive with `labels_exclude_any`. Order-insensitive. _Available in Fleet Premium 4.90+._
 - `labels_exclude_any` (Set of String) Target only hosts that do not have any of the specified labels. Mutually exclusive with `labels_exclude_all`. Order-insensitive. _Available in Fleet Premium._
 - `labels_include_all` (Set of String) Target only hosts that have all of the specified labels. Mutually exclusive with `labels_include_any`. Order-insensitive. _Available in Fleet Premium 4.90+._

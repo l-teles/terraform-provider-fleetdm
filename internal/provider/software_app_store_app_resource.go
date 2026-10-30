@@ -159,9 +159,13 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 			"provider performs whatever encoding Fleet's API requires. Do **not** wrap it in `jsonencode()`. " +
 			"Configuration keys vary per app, so consult the app vendor's documentation; the provider does not " +
 			"validate the contents beyond requiring the value to be non-empty and, for a value that looks like " +
-			"JSON, that it parses. For Android, Fleet accepts only the `managedConfiguration` " +
-			"and `workProfileWidgets` keys from Google's " +
-			"[application policy](https://developers.google.com/android/management/reference/rest/v1/enterprises.policies#ApplicationPolicy). " +
+			"JSON, that it parses. For Android, the top-level keys are fields of Google's " +
+			"[application policy](https://developers.google.com/android/management/reference/rest/v1/enterprises.policies#ApplicationPolicy): " +
+			"Fleet 4.94 and later accept any of them (e.g. `managedConfiguration`, `workProfileWidgets`, " +
+			"`credentialProviderPolicy`) except `packageName` and `installType`, which Fleet sets itself, and " +
+			"`customAppConfig`; Fleet 4.90 to 4.93 accept only `managedConfiguration` and `workProfileWidgets`. " +
+			"Fleet drops `installConstraint` from self-service apps (Google rejects it there), so it only applies " +
+			"to apps Fleet installs automatically. " +
 			"Use `file()` to keep the payload in its own file. Whitespace and JSON key ordering are not significant: " +
 			"the provider compares your value against Fleet's semantically, so a differently-formatted response " +
 			"does not produce a diff. " +

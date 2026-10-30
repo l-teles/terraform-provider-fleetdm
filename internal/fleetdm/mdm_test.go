@@ -1068,3 +1068,145 @@ func TestClient_UpdateConfigProfile_NotFound(t *testing.T) {
 		t.Errorf("expected APIError with 404, got %v", err)
 	}
 }
+
+func TestClient_CreateConfigProfile_Fleet494Fields(t *testing.T) {
+	cases := []struct {
+		name string
+		req  CreateConfigProfileRequest
+		want map[string][]string // nil value = field must be absent
+	}{
+		{
+			name: "all set",
+			req:  CreateConfigProfileRequest{Name: "My Profile", Description: "Why it exists", Hidden: true},
+			want: map[string][]string{"name": {"My Profile"}, "description": {"Why it exists"}, "hidden": {"true"}, "self_service": nil},
+		},
+		{
+			name: "self service",
+			req:  CreateConfigProfileRequest{SelfService: true},
+			want: map[string][]string{"self_service": {"true"}, "hidden": nil, "name": nil, "description": nil},
+		},
+		{
+			// Fleet Free and pre-4.94 servers must see no new fields.
+			name: "defaults send nothing",
+			req:  CreateConfigProfileRequest{},
+			want: map[string][]string{"name": nil, "description": nil, "hidden": nil, "self_service": nil},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					json.NewEncoder(w).Encode(MDMConfigProfile{ProfileUUID: "p-1"})
+					return
+				}
+				if err := r.ParseMultipartForm(10 << 20); err != nil {
+					t.Fatalf("failed to parse multipart form: %v", err)
+				}
+				for field, want := range tc.want {
+					got, present := r.MultipartForm.Value[field]
+					if want == nil {
+						if present {
+							t.Errorf("expected %s absent, got %v", field, got)
+						}
+						continue
+					}
+					if len(got) != len(want) || got[0] != want[0] {
+						t.Errorf("%s: expected %v, got %v", field, want, got)
+					}
+				}
+				json.NewEncoder(w).Encode(map[string]string{"profile_uuid": "p-1"})
+			}))
+			defer server.Close()
+
+			client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			req := tc.req
+			req.Profile = []byte(`<plist version="1.0"><dict></dict></plist>`)
+			req.Filename = "p.mobileconfig"
+			if _, err := client.CreateConfigProfile(context.Background(), &req); err != nil {
+				t.Fatalf("CreateConfigProfile failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestClient_UpdateConfigProfile_Fleet494Fields(t *testing.T) {
+	var got map[string][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			t.Fatalf("failed to parse multipart form: %v", err)
+		}
+		got = r.MultipartForm.Value
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	empty, f := "", false
+	if err := client.UpdateConfigProfile(context.Background(), "p-1", &UpdateConfigProfileRequest{
+		Name: "Renamed", Description: &empty, Hidden: &f, SelfService: &f,
+	}); err != nil {
+		t.Fatalf("UpdateConfigProfile failed: %v", err)
+	}
+	for field, want := range map[string]string{"name": "Renamed", "description": "", "hidden": "false", "self_service": "false"} {
+		if v, ok := got[field]; !ok || len(v) != 1 || v[0] != want {
+			t.Errorf("%s: expected [%q], got %v (present=%v)", field, want, v, ok)
+		}
+	}
+
+	// nil pointers and an empty name leave the stored values alone.
+	if err := client.UpdateConfigProfile(context.Background(), "p-1", &UpdateConfigProfileRequest{}); err != nil {
+		t.Fatalf("UpdateConfigProfile failed: %v", err)
+	}
+	for _, field := range []string{"name", "description", "hidden", "self_service"} {
+		if v, ok := got[field]; ok {
+			t.Errorf("expected %s absent, got %v", field, v)
+		}
+	}
+}
+
+func TestClient_GetMDMConfigProfile_Fleet494FieldPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		wantNil  bool
+		wantDesc string
+	}{
+		{name: "fleet 4.94", body: `{"profile_uuid":"p-1","description":"","hidden":true,"self_service":false}`, wantDesc: ""},
+		{name: "older fleet", body: `{"profile_uuid":"p-1"}`, wantNil: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			p, err := client.GetMDMConfigProfile(context.Background(), "p-1")
+			if err != nil {
+				t.Fatalf("GetMDMConfigProfile failed: %v", err)
+			}
+			if tc.wantNil {
+				if p.Description != nil || p.Hidden != nil || p.SelfService != nil {
+					t.Errorf("expected nil 4.94 fields, got %v %v %v", p.Description, p.Hidden, p.SelfService)
+				}
+				return
+			}
+			if p.Description == nil || *p.Description != tc.wantDesc || p.Hidden == nil || !*p.Hidden || p.SelfService == nil || *p.SelfService {
+				t.Errorf("unexpected decode: %+v", p)
+			}
+		})
+	}
+}

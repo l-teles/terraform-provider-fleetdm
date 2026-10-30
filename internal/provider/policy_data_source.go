@@ -30,6 +30,7 @@ type PolicyDataSourceModel struct {
 	Description                  types.String `tfsdk:"description"`
 	Query                        types.String `tfsdk:"query"`
 	Critical                     types.Bool   `tfsdk:"critical"`
+	Hidden                       types.Bool   `tfsdk:"hidden"`
 	Resolution                   types.String `tfsdk:"resolution"`
 	Platform                     types.List   `tfsdk:"platform"`
 	TeamID                       types.Int64  `tfsdk:"team_id"`
@@ -92,6 +93,10 @@ func (d *PolicyDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 			"critical": schema.BoolAttribute{
 				Computed:            true,
 				MarkdownDescription: "Whether the policy is critical.",
+			},
+			"hidden": schema.BoolAttribute{
+				Computed:            true,
+				MarkdownDescription: "Whether the policy is hidden from end users in Fleet Desktop. Always `false` on Fleet versions before 4.94.",
 			},
 			"resolution": schema.StringAttribute{
 				Computed:            true,
@@ -254,6 +259,7 @@ func (d *PolicyDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	data.Description = types.StringValue(policy.Description)
 	data.Query = types.StringValue(policy.Query)
 	data.Critical = types.BoolValue(policy.Critical)
+	data.Hidden = types.BoolValue(policy.Hidden)
 	data.Resolution = types.StringValue(policy.Resolution)
 	data.Platform = platformStringToList(policy.Platform)
 	data.AuthorID = types.Int64Value(int64(policy.AuthorID))

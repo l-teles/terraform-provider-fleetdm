@@ -306,3 +306,191 @@ resource "fleetdm_fleet" "test" {
 		},
 	})
 }
+
+// TestAccConfigurationProfileResource_fleet494Live covers the Fleet 4.94
+// profile settings end to end: name, description and hidden at creation, then
+// a rename plus self_service in place (same profile_uuid), then import.
+func TestAccConfigurationProfileResource_fleet494Live(t *testing.T) {
+	const res = "fleetdm_configuration_profile.test"
+	suffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	fleetName := "tf-acc-494-" + suffix
+	content := appleLiveMobileConfig("com.example.tfacc494."+suffix, "Payload Display "+suffix)
+
+	cfg := func(attrs string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+}
+
+resource "fleetdm_configuration_profile" "test" {
+  team_id         = fleetdm_fleet.test.id
+  profile_content = %[2]q
+%[3]s
+}
+`, fleetName, content, attrs)
+	}
+
+	var firstUUID string
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(fmt.Sprintf(`
+  name        = "TF Acc 494 %[1]s"
+  description = "Created by Terraform"
+  hidden      = true
+`, suffix)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "TF Acc 494 "+suffix),
+					resource.TestCheckResourceAttr(res, "description", "Created by Terraform"),
+					resource.TestCheckResourceAttr(res, "hidden", "true"),
+					resource.TestCheckResourceAttr(res, "self_service", "false"),
+					resource.TestCheckResourceAttrWith(res, "profile_uuid", func(v string) error {
+						firstUUID = v
+						return nil
+					}),
+				),
+			},
+			{
+				Config: cfg(fmt.Sprintf(`
+  name        = "TF Acc 494 %[1]s"
+  description = "Created by Terraform"
+  hidden      = true
+`, suffix)),
+				PlanOnly: true,
+			},
+			{
+				Config: cfg(fmt.Sprintf(`
+  name         = "TF Acc 494 Renamed %[1]s"
+  self_service = true
+`, suffix)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "TF Acc 494 Renamed "+suffix),
+					resource.TestCheckNoResourceAttr(res, "description"),
+					resource.TestCheckResourceAttr(res, "hidden", "false"),
+					resource.TestCheckResourceAttr(res, "self_service", "true"),
+					resource.TestCheckResourceAttrWith(res, "profile_uuid", func(v string) error {
+						if v != firstUUID {
+							return fmt.Errorf("rename replaced the profile: uuid %s -> %s", firstUUID, v)
+						}
+						return nil
+					}),
+				),
+			},
+			{
+				ResourceName:                         res,
+				ImportState:                          true,
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "profile_uuid",
+				ImportStateIdFunc: func(state *terraform.State) (string, error) {
+					rs, ok := state.RootModule().Resources[res]
+					if !ok {
+						return "", errors.New(res + " not found in state")
+					}
+					return rs.Primary.Attributes["profile_uuid"], nil
+				},
+				ImportStateVerifyIgnore: []string{"team_id", "profile_content"},
+			},
+		},
+	})
+}
+
+// TestAccConfigurationProfileResource_declarationsWithoutNameLive guards the
+// fix for unnamed declarations: each used to be uploaded as profile.json, so
+// Fleet named them all "profile" and refused the second one in a fleet (409).
+func TestAccConfigurationProfileResource_declarationsWithoutNameLive(t *testing.T) {
+	suffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	ddm := func(id string) string {
+		return fmt.Sprintf(`{"Type": "com.apple.configuration.passcode.settings", "Identifier": %q, "Payload": {"RequireAlphanumericPasscode": true}}`, id)
+	}
+	idA, idB := "com.example.tfacc.ddm-a."+suffix, "com.example.tfacc.ddm-b."+suffix
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+}
+
+resource "fleetdm_configuration_profile" "a" {
+  team_id         = fleetdm_fleet.test.id
+  profile_content = %[2]q
+}
+
+resource "fleetdm_configuration_profile" "b" {
+  team_id         = fleetdm_fleet.test.id
+  profile_content = %[3]q
+  depends_on      = [fleetdm_configuration_profile.a]
+}
+`, "tf-acc-ddm-"+suffix, ddm(idA), ddm(idB)),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.a", "name", idA),
+					resource.TestCheckResourceAttr("fleetdm_configuration_profile.b", "name", idB),
+				),
+			},
+		},
+	})
+}
+
+// windowsLiveProfile is a Windows profile Fleet accepts; Fleet rejects XML
+// with a processing instruction such as <?xml ...?>.
+const windowsLiveProfile = `<Replace><Item><Meta><Format xmlns="syncml:metinf">int</Format></Meta>` +
+	`<Target><LocURI>./Device/Vendor/MSFT/Policy/Config/DeviceLock/MaxInactivityTimeDeviceLock</LocURI></Target>` +
+	`<Data>5</Data></Item></Replace>`
+
+// TestAccConfigurationProfileResource_windowsRenameLive verifies a Windows
+// profile named through name renames in place on Fleet 4.94.
+func TestAccConfigurationProfileResource_windowsRenameLive(t *testing.T) {
+	const res = "fleetdm_configuration_profile.test"
+	suffix := acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	cfg := func(name string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+}
+
+resource "fleetdm_configuration_profile" "test" {
+  team_id         = fleetdm_fleet.test.id
+  name            = %[2]q
+  profile_content = %[3]q
+}
+`, "tf-acc-winname-"+suffix, name, windowsLiveProfile)
+	}
+
+	var firstUUID string
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("TF Win " + suffix),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "TF Win "+suffix),
+					resource.TestCheckResourceAttr(res, "display_name", "TF Win "+suffix),
+					resource.TestCheckResourceAttrWith(res, "profile_uuid", func(v string) error {
+						firstUUID = v
+						return nil
+					}),
+				),
+			},
+			{
+				Config: cfg("TF Win Renamed " + suffix),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "TF Win Renamed "+suffix),
+					resource.TestCheckResourceAttr(res, "display_name", "TF Win Renamed "+suffix),
+					resource.TestCheckResourceAttrWith(res, "profile_uuid", func(v string) error {
+						if v != firstUUID {
+							return fmt.Errorf("rename replaced the profile: uuid %s -> %s", firstUUID, v)
+						}
+						return nil
+					}),
+				),
+			},
+		},
+	})
+}

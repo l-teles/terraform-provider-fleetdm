@@ -31,6 +31,8 @@ Read-Only:
 
 - `checksum` (String) The checksum of the profile content.
 - `created_at` (String) When the profile was created.
+- `description` (String) The description of the profile. Null on Fleet older than 4.94.
+- `hidden` (Boolean) Whether the profile is hidden from end users on My device. Null on Fleet older than 4.94.
 - `identifier` (String) The profile identifier (macOS only).
 - `labels_exclude_any` (Attributes List) Labels that will exclude the profile if any match. (see [below for nested schema](#nestedatt--profiles--labels_exclude_any))
 - `labels_include_all` (Attributes List) Labels that must all match for the profile to apply. (see [below for nested schema](#nestedatt--profiles--labels_include_all))
@@ -38,6 +40,7 @@ Read-Only:
 - `name` (String) The name of the profile.
 - `platform` (String) The platform (darwin, windows, ios, ipados).
 - `profile_uuid` (String) The unique identifier of the profile.
+- `self_service` (Boolean) Whether end users install the profile from My device instead of it deploying automatically. Null on Fleet older than 4.94.
 - `team_id` (Number) The ID of the team the profile belongs to.
 - `uploaded_at` (String) When the profile was last uploaded.
 

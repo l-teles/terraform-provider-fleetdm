@@ -122,7 +122,7 @@ func (untrimmedNameValidator) ValidateString(_ context.Context, req validator.St
 	resp.Diagnostics.AddAttributeError(
 		req.Path,
 		"Invalid Attribute Value",
-		fmt.Sprintf("Attribute %s must not be empty or have leading/trailing whitespace: Fleet trims the name, "+
+		fmt.Sprintf("Attribute %s must not be empty or have leading/trailing whitespace: Fleet trims the value, "+
 			"which would leave the applied value different from the planned one. Got: %q",
 			req.Path, value),
 	)
