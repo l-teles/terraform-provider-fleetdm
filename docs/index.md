@@ -36,6 +36,7 @@ Supports both **FleetDM Free** and **Premium** editions. Not affiliated with Fle
 | `fleetdm_bootstrap_package` | Bootstrap packages for DEP enrollment (Premium) |
 | `fleetdm_configuration_profile` | MDM configuration profiles (Premium) |
 | `fleetdm_setup_experience` | macOS setup experience settings (Premium) |
+| `fleetdm_mdm_eula` | MDM enrollment EULA for macOS (PDF) and Windows (Markdown, Fleet 4.94+) (Premium) |
 | `fleetdm_certificate_authority` | Certificate authorities for issuing client certificates (Premium) |
 | `fleetdm_certificate` | Certificate templates binding a CA to a subject name — Premium, Fleet 4.90+ |
 | `fleetdm_team` *(deprecated)* | Deprecated alias for `fleetdm_fleet` |
