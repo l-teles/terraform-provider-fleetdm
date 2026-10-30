@@ -159,9 +159,6 @@ func (d *SoftwareTitlesDataSource) Read(ctx context.Context, req datasource.Read
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	titles, count, err := d.client.ListSoftwareTitles(ctx, opts)
 	if err != nil {

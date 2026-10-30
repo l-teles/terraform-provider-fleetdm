@@ -365,12 +365,22 @@ func mapUserTeamsToList(_ context.Context, teams []fleetdm.UserTeam, diags *diag
 // than major.minor. An unreadable or unparsable version, or a 0.0.0 dev
 // build, counts as not known.
 func fleetServerBefore(ctx context.Context, client *fleetdm.Client, major, minor int64) bool {
+	before, _ := fleetServerVersionBefore(ctx, client, major, minor)
+	return before
+}
+
+// fleetServerVersionBefore is fleetServerBefore that also reports whether the
+// version could be determined.
+func fleetServerVersionBefore(ctx context.Context, client *fleetdm.Client, major, minor int64) (before, known bool) {
 	v, err := client.GetVersion(ctx)
 	if err != nil {
-		return false
+		return false, false
 	}
 	gotMajor, gotMinor, ok := parseMajorMinor(v.Version)
-	return ok && gotMajor >= 1 && (gotMajor < major || (gotMajor == major && gotMinor < minor))
+	if !ok || gotMajor < 1 {
+		return false, false
+	}
+	return gotMajor < major || (gotMajor == major && gotMinor < minor), true
 }
 
 // parseMajorMinor reads the major and minor numbers from "4.93.0", "v4.93.0-rc1" and the like.

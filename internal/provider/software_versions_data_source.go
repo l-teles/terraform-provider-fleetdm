@@ -151,9 +151,6 @@ func (d *SoftwareVersionsDataSource) Read(ctx context.Context, req datasource.Re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	versions, count, err := d.client.ListSoftwareVersions(ctx, opts)
 	if err != nil {

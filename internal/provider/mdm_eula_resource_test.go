@@ -57,6 +57,8 @@ type mockEULAServer struct {
 	nextTok int
 	posts   int
 	deletes int
+	// failMetadata makes the next n metadata reads answer 500.
+	failMetadata int
 }
 
 func newMockEULAServer(t *testing.T, legacy bool) (*mockEULAServer, *httptest.Server) {
@@ -132,6 +134,10 @@ func (m *mockEULAServer) handle(w http.ResponseWriter, r *http.Request) {
 		m.slots[platform] = &mockEULA{name: hdr.Filename, token: fmt.Sprintf("tok-%d", m.nextTok), content: content}
 		_, _ = w.Write([]byte(`{}`))
 
+	case r.Method == http.MethodGet && r.URL.Path == base+"/metadata" && m.failMetadata > 0:
+		m.failMetadata--
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"transient"}`))
 	case r.Method == http.MethodGet && r.URL.Path == base+"/metadata":
 		platform := m.platformOf(r.URL.Query().Get("platform"))
 		e, ok := m.slots[platform]
@@ -611,4 +617,32 @@ func TestAccMDMEULAResource_darwin(t *testing.T) {
 
 func TestAccMDMEULAResource_windows(t *testing.T) {
 	testAccMDMEULALifecycle(t, "windows", ".md", testEULAMD1, testEULAMD2)
+}
+
+// TestMDMEULAResource_mockReadAfterUploadFails: when the read-back after an
+// upload fails, the EULA already exists in Fleet, so the resource must be
+// saved (tainted) and replaced on the next apply instead of orphaned, which
+// would 409 on every retry.
+func TestMDMEULAResource_mockReadAfterUploadFails(t *testing.T) {
+	m, srv := newMockEULAServer(t, false)
+	src := writeEULAFixture(t, t.TempDir(), "terms.pdf", testEULAPDF1)
+	cfg := testMockEULAConfig(srv.URL, "darwin", src, "")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				PreConfig:   func() { m.mu.Lock(); m.failMetadata = 1; m.mu.Unlock() },
+				Config:      cfg,
+				ExpectError: regexp.MustCompile(`(?s)Error\s+reading\s+EULA\s+after\s+upload`),
+			},
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_mdm_eula.test", "sha256", sha256Hex(testEULAPDF1)),
+					checkEULACounts(m, 2, 1),
+				),
+			},
+		},
+	})
 }

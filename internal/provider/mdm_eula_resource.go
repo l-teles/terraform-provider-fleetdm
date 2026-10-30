@@ -82,7 +82,9 @@ func (r *mdmEULAResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"source": schema.StringAttribute{
 				Description: "Path to the local EULA file. The content is hashed at plan time and is not stored in state; " +
-					"a content change (a different `sha256`) replaces the EULA. Moving the file without changing it does not.",
+					"a content change (a different `sha256`) replaces the EULA. Moving the file without changing it does not. " +
+					"A `source` that is only known at apply time (for example, a file another resource writes) replaces the EULA on every change to it, " +
+					"because its content cannot be compared at plan time.",
 				Required: true,
 			},
 			"name": schema.StringAttribute{
@@ -251,18 +253,25 @@ func (r *mdmEULAResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
+	// From here on the EULA exists in Fleet, so state is saved before any
+	// error: the resource is tainted and replaced rather than orphaned, which
+	// would otherwise 409 on every later apply.
 	eula, err := r.client.GetEULAMetadata(ctx, platform)
 	if err != nil {
+		plan.ID = plan.Platform
+		plan.Sha256 = types.StringValue(localSha)
+		plan.Token = types.StringValue("")
+		plan.CreatedAt = types.StringValue("")
+		resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
 		resp.Diagnostics.AddError("Error reading EULA after upload", err.Error())
-		return
-	}
-	if eula.Sha256Hex() != localSha {
-		resp.Diagnostics.AddError("EULA hash mismatch",
-			fmt.Sprintf("Fleet reports SHA-256 %s for the uploaded EULA, but the file hashes to %s.", eula.Sha256Hex(), localSha))
 		return
 	}
 	setEULAState(&plan, eula)
 	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	if eula.Sha256Hex() != localSha {
+		resp.Diagnostics.AddError("EULA hash mismatch",
+			fmt.Sprintf("Fleet reports SHA-256 %s for the uploaded EULA, but the file hashes to %s.", eula.Sha256Hex(), localSha))
+	}
 }
 
 func (r *mdmEULAResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

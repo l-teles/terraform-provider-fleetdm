@@ -40,7 +40,7 @@ resource "fleetdm_mdm_eula" "windows" {
 ### Required
 
 - `platform` (String) The platform the EULA is for: `darwin` (a PDF) or `windows` (a Markdown file, Fleet 4.94+).
-- `source` (String) Path to the local EULA file. The content is hashed at plan time and is not stored in state; a content change (a different `sha256`) replaces the EULA. Moving the file without changing it does not.
+- `source` (String) Path to the local EULA file. The content is hashed at plan time and is not stored in state; a content change (a different `sha256`) replaces the EULA. Moving the file without changing it does not. A `source` that is only known at apply time (for example, a file another resource writes) replaces the EULA on every change to it, because its content cannot be compared at plan time.
 
 ### Optional
 

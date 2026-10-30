@@ -157,11 +157,13 @@ terraform import fleetdm_configuration_profile.vpn_config abc123-def456-ghi789
 			},
 			"name": schema.StringAttribute{
 				Description: "The profile name shown in Fleet. Required for Windows (.xml) profiles. When omitted, Fleet derives it: " +
-					"PayloadDisplayName for .mobileconfig, the Identifier for declarations (.json). Renaming updates the profile in place " +
+					"PayloadDisplayName for .mobileconfig, the Identifier for declarations (.json), at creation; on Fleet 4.94+ later content " +
+					"changes keep the stored name. Renaming updates the profile in place " +
 					"without re-sending it to hosts (Fleet 4.94+). On older Fleet, a name only works for Windows and declaration profiles " +
 					"and only at creation. Removing name from the configuration keeps the current name.",
 				MarkdownDescription: "The profile name shown in Fleet. **Required for Windows (`.xml`) profiles.** When omitted, Fleet derives it: " +
-					"`PayloadDisplayName` for `.mobileconfig`, the `Identifier` for declarations (`.json`). Renaming updates the profile in place " +
+					"`PayloadDisplayName` for `.mobileconfig`, the `Identifier` for declarations (`.json`), at creation; on Fleet 4.94+ later content " +
+					"changes keep the stored name. Renaming updates the profile in place " +
 					"without re-sending it to hosts (Fleet 4.94+). On older Fleet, a name only works for Windows and declaration profiles " +
 					"and only at creation. Removing `name` from the configuration keeps the current name.",
 				Optional: true,
@@ -504,9 +506,14 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 	profileContent := []byte(plan.ProfileContent.ValueString())
 	ext := fleetdm.ProfileExtensionFromContent(profileContent)
 
+	// Only a configured display_name is checked: ModifyPlan also mirrors name
+	// into it, and name follows Fleet's rules rather than filename rules.
+	var cfgDisplayName types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("display_name"), &cfgDisplayName)...)
+
 	// Apply-time guard: reject display_name for non-Windows profiles
 	// (ValidateConfig skips this when display_name is unknown at plan time)
-	if ext != ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
+	if ext != ".xml" && !cfgDisplayName.IsNull() && !cfgDisplayName.IsUnknown() {
 		resp.Diagnostics.AddError(
 			"display_name is not supported for this profile type",
 			"display_name only controls the profile name for Windows (.xml) profiles. "+
@@ -524,8 +531,8 @@ func (r *ConfigurationProfileResource) Create(ctx context.Context, req resource.
 		)
 		return
 	}
-	if ext == ".xml" && !plan.DisplayName.IsNull() && !plan.DisplayName.IsUnknown() {
-		resp.Diagnostics.Append(validateDisplayName(plan.DisplayName.ValueString())...)
+	if ext == ".xml" && !cfgDisplayName.IsNull() && !cfgDisplayName.IsUnknown() {
+		resp.Diagnostics.Append(validateDisplayName(cfgDisplayName.ValueString())...)
 		if resp.Diagnostics.HasError() {
 			return
 		}

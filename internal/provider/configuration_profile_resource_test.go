@@ -1002,3 +1002,32 @@ func TestAccConfigurationProfileResource_fleet494Validation(t *testing.T) {
 		},
 	})
 }
+
+// TestAccConfigurationProfileResource_windowsNameWithSeparator verifies a
+// Windows name that can't be a filename stem is still accepted: the filename
+// rules apply only to the deprecated display_name.
+func TestAccConfigurationProfileResource_windowsNameWithSeparator(t *testing.T) {
+	const res = "fleetdm_configuration_profile.test"
+	st := &profileMockState{}
+	server := newProfileMockServer(t, "uuid-win-sep", "", "windows", st)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testProfileMockConfig(server.URL, testWindowsXMLProfile, `  name = "Wi-Fi / VPN"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "Wi-Fi / VPN"),
+					resource.TestCheckResourceAttr(res, "display_name", "Wi-Fi / VPN"),
+					func(*terraform.State) error {
+						if st.uploadFilename != "profile.xml" {
+							return fmt.Errorf("expected fallback filename profile.xml, got %q", st.uploadFilename)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}

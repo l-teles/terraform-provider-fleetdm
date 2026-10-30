@@ -171,7 +171,7 @@ output "wifi_profile_name" {
 - `labels_exclude_any` (List of String) Labels where hosts with **ANY** of these will **NOT** receive this profile. Updated in place on Fleet 4.90+.
 - `labels_include_all` (List of String) Labels that hosts must have **ALL** of to receive this profile. Updated in place on Fleet 4.90+.
 - `labels_include_any` (List of String) Labels where hosts must have **ANY** of to receive this profile. Updated in place on Fleet 4.90+.
-- `name` (String) The profile name shown in Fleet. **Required for Windows (`.xml`) profiles.** When omitted, Fleet derives it: `PayloadDisplayName` for `.mobileconfig`, the `Identifier` for declarations (`.json`). Renaming updates the profile in place without re-sending it to hosts (Fleet 4.94+). On older Fleet, a name only works for Windows and declaration profiles and only at creation. Removing `name` from the configuration keeps the current name.
+- `name` (String) The profile name shown in Fleet. **Required for Windows (`.xml`) profiles.** When omitted, Fleet derives it: `PayloadDisplayName` for `.mobileconfig`, the `Identifier` for declarations (`.json`), at creation; on Fleet 4.94+ later content changes keep the stored name. Renaming updates the profile in place without re-sending it to hosts (Fleet 4.94+). On older Fleet, a name only works for Windows and declaration profiles and only at creation. Removing `name` from the configuration keeps the current name.
 - `self_service` (Boolean) Make the profile available for end users to install from the **My device** page instead of deploying it automatically. Only supported for macOS `.mobileconfig` profiles. Requires Fleet 4.94+ (Premium).
 - `team_id` (Number) The ID of the team this profile belongs to. Use `0` or omit for 'No team'.
 

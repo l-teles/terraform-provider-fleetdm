@@ -144,7 +144,15 @@ func checkSoftwareTypeFilterSupported(ctx context.Context, client *fleetdm.Clien
 	if len(filter.Sources) == 0 && len(filter.ExtensionFor) == 0 {
 		return
 	}
-	if fleetServerBefore(ctx, client, 4, 94) {
+	before, known := fleetServerVersionBefore(ctx, client, 4, 94)
+	if !known {
+		diags.AddWarning(
+			"Could Not Confirm Software Type Filter Support",
+			"The Fleet server version could not be read. Filtering by source or extension_for requires Fleet 4.94 or "+
+				"later; older Fleet ignores the filter and returns every item.",
+		)
+	}
+	if before {
 		diags.AddError(
 			"Software Type Filter Not Supported by This Fleet Server",
 			"Filtering by source or extension_for requires Fleet 4.94 or later. Older Fleet ignores the filter "+
