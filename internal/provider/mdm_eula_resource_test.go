@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
 // Minimal fixtures that pass Fleet's checks: the PDF magic bytes, and
@@ -116,6 +118,11 @@ func (m *mockEULAServer) handle(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"message":"Bad request","errors":[{"name":"base","reason":"invalid file type"}]}`))
 			return
 		}
+		if platform == "windows" && strings.Contains(string(content), "<div") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Bad request","errors":[{"name":"base","reason":"The file contains HTML other than tables and text styles."}]}`))
+			return
+		}
 		if _, ok := m.slots[platform]; ok {
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"message":"Resource Already Exists"}`))
@@ -146,10 +153,10 @@ func (m *mockEULAServer) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(body)
 
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, base+"/"):
-		m.deletes++
 		token := strings.TrimPrefix(r.URL.Path, base+"/")
 		for p, e := range m.slots {
 			if e.token == token {
+				m.deletes++
 				delete(m.slots, p)
 				_, _ = w.Write([]byte(`{}`))
 				return
@@ -158,8 +165,27 @@ func (m *mockEULAServer) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"Resource Not Found"}`))
 
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/fleet/version":
+		version := "4.94.0"
+		if m.legacy {
+			version = "4.93.0"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": version})
+
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+// checkMockEULAsGone is a CheckDestroy that every slot is empty.
+func checkMockEULAsGone(m *mockEULAServer) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if len(m.slots) != 0 {
+			return fmt.Errorf("expected no EULAs after destroy, got %d", len(m.slots))
+		}
+		return nil
 	}
 }
 
@@ -267,12 +293,10 @@ func TestMDMEULAResource_mockDarwinLifecycle(t *testing.T) {
 				ImportStateVerifyIgnore: []string{"source"},
 			},
 		},
-		CheckDestroy: func(*terraform.State) error {
-			if _, deletes := m.counts(); deletes != 3 {
-				return fmt.Errorf("expected 3 deletes after destroy, got %d", deletes)
-			}
-			return nil
-		},
+		CheckDestroy: resource.ComposeAggregateTestCheckFunc(
+			checkMockEULAsGone(m),
+			checkEULACounts(m, 3, 3),
+		),
 	})
 }
 
@@ -314,6 +338,7 @@ func TestMDMEULAResource_mockWindowsLifecycle(t *testing.T) {
 				ImportStateVerifyIgnore: []string{"source"},
 			},
 		},
+		CheckDestroy: checkMockEULAsGone(m),
 	})
 }
 
@@ -326,6 +351,7 @@ func TestMDMEULAResource_mockDrift(t *testing.T) {
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             checkMockEULAsGone(m),
 		Steps: []resource.TestStep{
 			{Config: cfg},
 			{
@@ -397,6 +423,60 @@ func TestMDMEULAResource_mockPre494Windows(t *testing.T) {
 	})
 	if _, deletes := m.counts(); deletes != 0 {
 		t.Fatalf("expected no deletes against a pre-4.94 server, got %d", deletes)
+	}
+}
+
+// TestMDMEULAResource_mock494MarkdownRejected: Fleet's own reason for
+// rejecting the Markdown reaches the practitioner.
+func TestMDMEULAResource_mock494MarkdownRejected(t *testing.T) {
+	m, srv := newMockEULAServer(t, false)
+	src := writeEULAFixture(t, t.TempDir(), "terms.md", "# Terms\n\n<div>x</div>\n")
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testMockEULAConfig(srv.URL, "windows", src, ""),
+				ExpectError: regexp.MustCompile(`(?s)contains\s+HTML`),
+			},
+		},
+	})
+	if posts, _ := m.counts(); posts != 1 {
+		t.Fatalf("expected one upload attempt, got %d", posts)
+	}
+}
+
+// TestMDMEULAResource_serverBefore494 checks the version gate on the
+// pre-4.94 hint, so a 4.94 rejection is not blamed on the Fleet version.
+func TestMDMEULAResource_serverBefore494(t *testing.T) {
+	cases := []struct {
+		version string
+		status  int
+		want    bool
+	}{
+		{"4.93.0", http.StatusOK, true},
+		{"v4.80.1-rc1", http.StatusOK, true},
+		{"4.94.0", http.StatusOK, false},
+		{"5.0.0", http.StatusOK, false},
+		{"0.0.0-SNAPSHOT-abc", http.StatusOK, false},
+		{"dev", http.StatusOK, false},
+		{"", http.StatusInternalServerError, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.version, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(map[string]string{"version": tc.version})
+			}))
+			defer srv.Close()
+			client, err := fleetdm.NewClient(fleetdm.ClientConfig{ServerAddress: srv.URL, APIKey: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &mdmEULAResource{client: client}
+			if got := r.serverBefore494(t.Context()); got != tc.want {
+				t.Errorf("serverBefore494(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -503,7 +583,26 @@ func testAccMDMEULALifecycle(t *testing.T, platform, ext, v1Content, v2Content s
 				ImportStateVerifyIgnore: []string{"source"},
 			},
 		},
+		CheckDestroy: testAccCheckMDMEULADestroyed(platform),
 	})
+}
+
+// testAccCheckMDMEULADestroyed asserts Fleet has no EULA left for the platform.
+func testAccCheckMDMEULADestroyed(platform string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		client, err := certificateIntegrationsTestClient()
+		if err != nil {
+			return err
+		}
+		_, err = client.GetEULAMetadata(context.Background(), platform)
+		if isNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("checking %s EULA after destroy: %w", platform, err)
+		}
+		return fmt.Errorf("%s EULA still exists after destroy", platform)
+	}
 }
 
 func TestAccMDMEULAResource_darwin(t *testing.T) {

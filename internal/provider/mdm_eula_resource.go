@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -243,7 +244,8 @@ func (r *mdmEULAResource) Create(ctx context.Context, req resource.CreateRequest
 		case isConflict(err):
 			detail = fmt.Sprintf("Fleet already has a %s EULA, and it allows only one per platform. "+
 				"Import it with `terraform import <address> %s`, or delete it in Fleet first.\n\n%s", platform, platform, detail)
-		case platform == fleetdm.EULAPlatformWindows && isBadRequest(err):
+		case platform == fleetdm.EULAPlatformWindows && isBadRequest(err) && r.serverBefore494(ctx):
+			// Older Fleet ignores the platform and rejects the file as "not a PDF".
 			detail += "\n\nFleet before 4.94 does not support Windows EULAs."
 		}
 		resp.Diagnostics.AddError("Error uploading EULA", detail)
@@ -315,6 +317,28 @@ func (r *mdmEULAResource) ImportState(ctx context.Context, req resource.ImportSt
 	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("platform"), req.ID)...)
+}
+
+// serverBefore494 reports whether the server is known to run Fleet before 4.94.
+// An unreadable or unparsable version, or a 0.0.0 dev build, counts as not known.
+func (r *mdmEULAResource) serverBefore494(ctx context.Context) bool {
+	v, err := r.client.GetVersion(ctx)
+	if err != nil {
+		return false
+	}
+	major, minor, ok := parseMajorMinor(v.Version)
+	return ok && major >= 1 && (major < 4 || (major == 4 && minor < 94))
+}
+
+// parseMajorMinor reads the major and minor numbers from "4.93.0", "v4.93.0-rc1" and the like.
+func parseMajorMinor(version string) (major, minor int64, ok bool) {
+	parts := strings.SplitN(strings.TrimPrefix(version, "v"), ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err1 := strconv.ParseInt(parts[0], 10, 64)
+	minor, err2 := strconv.ParseInt(parts[1], 10, 64)
+	return major, minor, err1 == nil && err2 == nil
 }
 
 func setEULAState(m *mdmEULAResourceModel, eula *fleetdm.EULA) {
