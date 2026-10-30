@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
@@ -206,7 +208,7 @@ resource "fleetdm_configuration_profile" "t" {
 		Steps: []resource.TestStep{
 			{
 				Config:      windowsProfileConfig(""),
-				ExpectError: regexp.MustCompile(`display_name is required for Windows profiles`),
+				ExpectError: regexp.MustCompile(`name is required for Windows profiles`),
 			},
 			{
 				Config:      windowsProfileConfig(`display_name = ""`),
@@ -248,6 +250,37 @@ type profileMockState struct {
 	labelsIncludeAny []string
 	labelsExcludeAny []string
 	patchCount       int
+
+	// Fleet 4.94 profile fields. legacy mimics older Fleet, which ignores
+	// them on write and omits them from GET.
+	legacy         bool
+	name           string
+	description    string
+	hidden         bool
+	selfService    bool
+	uploadFilename string
+	createFields   map[string][]string
+	patchFields    map[string][]string
+}
+
+// applyProfile494Fields applies the 4.94 multipart fields with Fleet's
+// tri-state semantics (absent keeps the stored value).
+func (st *profileMockState) applyProfile494Fields(form map[string][]string) {
+	if st.legacy {
+		return
+	}
+	if v, ok := form["name"]; ok {
+		st.name = strings.TrimSpace(v[0])
+	}
+	if v, ok := form["description"]; ok {
+		st.description = strings.TrimSpace(v[0])
+	}
+	if v, ok := form["hidden"]; ok {
+		st.hidden = v[0] == "true"
+	}
+	if v, ok := form["self_service"]; ok {
+		st.selfService = v[0] == "true"
+	}
 }
 
 // newProfileMockServer returns a stateful mock that supports POST (create),
@@ -272,10 +305,19 @@ func newProfileMockServer(t *testing.T, uuid, name, platform string, st *profile
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				t.Errorf("create: parse multipart: %v", err)
 			}
-			file, _, err := r.FormFile("profile")
+			st.createFields = r.MultipartForm.Value
+			file, header, err := r.FormFile("profile")
 			if err != nil {
 				t.Errorf("create: missing profile file: %v", err)
 			} else {
+				st.uploadFilename = header.Filename
+				// Fleet names Windows and declaration profiles after the
+				// filename stem unless a name is given.
+				if ext := filepath.Ext(header.Filename); ext == ".xml" || ext == ".json" {
+					st.name = strings.TrimSuffix(header.Filename, ext)
+				} else {
+					st.name = name
+				}
 				buf := new(bytes.Buffer)
 				buf.ReadFrom(file)
 				file.Close()
@@ -288,12 +330,15 @@ func newProfileMockServer(t *testing.T, uuid, name, platform string, st *profile
 			st.labelsIncludeAll = r.MultipartForm.Value["labels_include_all"]
 			st.labelsIncludeAny = r.MultipartForm.Value["labels_include_any"]
 			st.labelsExcludeAny = r.MultipartForm.Value["labels_exclude_any"]
+			st.applyProfile494Fields(r.MultipartForm.Value)
 			json.NewEncoder(w).Encode(map[string]interface{}{"profile_uuid": uuid})
 		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+uuid && r.Method == "PATCH":
 			st.patchCount++
 			if err := r.ParseMultipartForm(10 << 20); err != nil {
 				t.Errorf("patch: parse multipart: %v", err)
 			}
+			st.patchFields = r.MultipartForm.Value
+			st.applyProfile494Fields(r.MultipartForm.Value)
 			if file, _, err := r.FormFile("profile"); err == nil {
 				buf := new(bytes.Buffer)
 				buf.ReadFrom(file)
@@ -309,9 +354,9 @@ func newProfileMockServer(t *testing.T, uuid, name, platform string, st *profile
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Write([]byte(st.content))
 		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+uuid && r.Method == "GET":
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			body := map[string]interface{}{
 				"profile_uuid":       uuid,
-				"name":               name,
+				"name":               st.name,
 				"platform":           platform,
 				"identifier":         st.identifier,
 				"checksum":           fmt.Sprintf("checksum-%d", st.patchCount),
@@ -320,7 +365,13 @@ func newProfileMockServer(t *testing.T, uuid, name, platform string, st *profile
 				"labels_include_all": labelObjs(st.labelsIncludeAll),
 				"labels_include_any": labelObjs(st.labelsIncludeAny),
 				"labels_exclude_any": labelObjs(st.labelsExcludeAny),
-			})
+			}
+			if !st.legacy {
+				body["description"] = st.description
+				body["hidden"] = st.hidden
+				body["self_service"] = st.selfService
+			}
+			json.NewEncoder(w).Encode(body)
 		case r.URL.Path == "/api/v1/fleet/configuration_profiles/"+uuid && r.Method == "DELETE":
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -702,4 +753,252 @@ EOT
 			})
 		})
 	}
+}
+
+func testProfileMockConfig(serverURL, content, attrs string) string {
+	return `
+provider "fleetdm" {
+  server_address = "` + serverURL + `"
+  api_key        = "test-token"
+}
+
+resource "fleetdm_configuration_profile" "test" {
+  profile_content = <<-EOT
+` + content + `
+EOT
+` + attrs + `
+}
+`
+}
+
+// TestAccConfigurationProfileResource_fleet494Fields covers name, description,
+// hidden and self_service: set at creation, then changed in place (a rename
+// must not replace the profile), then name removed from config (kept).
+func TestAccConfigurationProfileResource_fleet494Fields(t *testing.T) {
+	const uuid = "uuid-494-fields"
+	const res = "fleetdm_configuration_profile.test"
+	st := &profileMockState{}
+	server := newProfileMockServer(t, uuid, "Test Profile", "darwin", st)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testProfileMockConfig(server.URL, testMobileConfig, `
+  name        = "Custom Name"
+  description = "Why it exists"
+  hidden      = true
+`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "Custom Name"),
+					resource.TestCheckResourceAttr(res, "description", "Why it exists"),
+					resource.TestCheckResourceAttr(res, "hidden", "true"),
+					resource.TestCheckResourceAttr(res, "self_service", "false"),
+					resource.TestCheckNoResourceAttr(res, "display_name"),
+					func(*terraform.State) error {
+						if got := st.createFields["name"]; len(got) != 1 || got[0] != "Custom Name" {
+							return fmt.Errorf("create: expected name field, got %v", got)
+						}
+						if _, ok := st.createFields["self_service"]; ok {
+							return fmt.Errorf("create: self_service=false must not be sent")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: testProfileMockConfig(server.URL, testMobileConfig, `
+  name         = "Renamed"
+  self_service = true
+`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(res, plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "profile_uuid", uuid),
+					resource.TestCheckResourceAttr(res, "name", "Renamed"),
+					resource.TestCheckNoResourceAttr(res, "description"),
+					resource.TestCheckResourceAttr(res, "hidden", "false"),
+					resource.TestCheckResourceAttr(res, "self_service", "true"),
+					func(*terraform.State) error {
+						if _, ok := st.patchFields["profile"]; ok {
+							return fmt.Errorf("rename must not upload content")
+						}
+						if got := st.patchFields["description"]; len(got) != 1 || got[0] != "" {
+							return fmt.Errorf("removed description must be cleared with \"\", got %v", got)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// Removing name keeps the current name rather than planning a diff.
+				Config: testProfileMockConfig(server.URL, testMobileConfig, `
+  self_service = true
+`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				Check: resource.TestCheckResourceAttr(res, "name", "Renamed"),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationProfileResource_displayNameMigration verifies the move
+// from the deprecated display_name to name: same value is a no-op, and a
+// later rename through name updates in place with display_name following.
+func TestAccConfigurationProfileResource_displayNameMigration(t *testing.T) {
+	const uuid = "uuid-dn-migration"
+	const res = "fleetdm_configuration_profile.test"
+	st := &profileMockState{}
+	server := newProfileMockServer(t, uuid, "", "windows", st)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testProfileMockConfig(server.URL, testWindowsXMLProfile, `  display_name = "Win A"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "Win A"),
+					resource.TestCheckResourceAttr(res, "display_name", "Win A"),
+				),
+			},
+			{
+				Config: testProfileMockConfig(server.URL, testWindowsXMLProfile, `  name = "Win A"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				Config: testProfileMockConfig(server.URL, testWindowsXMLProfile, `  name = "Win B"`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction(res, plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "profile_uuid", uuid),
+					resource.TestCheckResourceAttr(res, "name", "Win B"),
+					resource.TestCheckResourceAttr(res, "display_name", "Win B"),
+				),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationProfileResource_windowsNameCreate verifies a Windows
+// profile created with name (no display_name) carries it as both the name
+// field and the upload filename, so pre-4.94 Fleet derives the same name.
+func TestAccConfigurationProfileResource_windowsNameCreate(t *testing.T) {
+	const res = "fleetdm_configuration_profile.test"
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			st := &profileMockState{legacy: legacy}
+			server := newProfileMockServer(t, "uuid-win-name", "", "windows", st)
+			defer server.Close()
+
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: testProfileMockConfig(server.URL, testWindowsXMLProfile, `  name = "BitLocker Policy"`),
+						Check: resource.ComposeAggregateTestCheckFunc(
+							resource.TestCheckResourceAttr(res, "name", "BitLocker Policy"),
+							resource.TestCheckResourceAttr(res, "display_name", "BitLocker Policy"),
+							func(*terraform.State) error {
+								if st.uploadFilename != "BitLocker Policy.xml" {
+									return fmt.Errorf("expected upload filename %q, got %q", "BitLocker Policy.xml", st.uploadFilename)
+								}
+								return nil
+							},
+						),
+					},
+				},
+			})
+		})
+	}
+}
+
+// TestAccConfigurationProfileResource_declarationDefaultName verifies an
+// unnamed declaration is uploaded under its Identifier, not a fixed
+// "profile.json" that would give every declaration the same name.
+func TestAccConfigurationProfileResource_declarationDefaultName(t *testing.T) {
+	const res = "fleetdm_configuration_profile.test"
+	st := &profileMockState{}
+	server := newProfileMockServer(t, "uuid-ddm-name", "", "darwin", st)
+	defer server.Close()
+
+	ddm := `{"Type": "com.apple.configuration.passcode.settings", "Identifier": "com.example.passcode", "Payload": {"RequireAlphanumericPasscode": true}}`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testProfileMockConfig(server.URL, ddm, ""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(res, "name", "com.example.passcode"),
+					func(*terraform.State) error {
+						if st.uploadFilename != "com.example.passcode.json" {
+							return fmt.Errorf("expected upload filename com.example.passcode.json, got %q", st.uploadFilename)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationProfileResource_fleet494FieldsOnOldFleet verifies the
+// named error when a pre-4.94 Fleet silently ignores the new fields.
+func TestAccConfigurationProfileResource_fleet494FieldsOnOldFleet(t *testing.T) {
+	st := &profileMockState{legacy: true}
+	server := newProfileMockServer(t, "uuid-494-old", "Test Profile", "darwin", st)
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testProfileMockConfig(server.URL, testMobileConfig, `  hidden = true`),
+				ExpectError: regexp.MustCompile(`(?s)Fleet\s+did\s+not\s+apply:\s+hidden.*Fleet\s+4\.94\s+or\s+later`),
+			},
+			{
+				Config:      testProfileMockConfig(server.URL, testMobileConfig, `  name = "Not Applied"`),
+				ExpectError: regexp.MustCompile(`(?s)Fleet\s+did\s+not\s+apply:\s+name`),
+			},
+		},
+	})
+}
+
+func TestAccConfigurationProfileResource_fleet494Validation(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testProfileMockConfig("http://localhost:0", testMobileConfig, "  hidden = true\n  self_service = true"),
+				ExpectError: regexp.MustCompile(`(?s)hidden\s+and\s+self_service\s+cannot\s+both\s+be\s+true`),
+			},
+			{
+				Config:      testProfileMockConfig("http://localhost:0", testWindowsXMLProfile, "  name = \"Win\"\n  self_service = true"),
+				ExpectError: regexp.MustCompile(`(?s)self_service\s+is\s+not\s+supported\s+for\s+this\s+profile\s+type`),
+			},
+			{
+				Config:      testProfileMockConfig("http://localhost:0", testWindowsXMLProfile, "  name = \"Win\"\n  display_name = \"Win\""),
+				ExpectError: regexp.MustCompile(`(?s)Invalid\s+Attribute\s+Combination`),
+			},
+			{
+				Config:      testProfileMockConfig("http://localhost:0", testMobileConfig, `  name = " padded"`),
+				ExpectError: regexp.MustCompile(`(?s)leading/trailing\s+whitespace`),
+			},
+			{
+				Config:      testProfileMockConfig("http://localhost:0", testMobileConfig, `  description = ""`),
+				ExpectError: regexp.MustCompile(`(?s)must\s+not\s+be\s+empty`),
+			},
+		},
+	})
 }

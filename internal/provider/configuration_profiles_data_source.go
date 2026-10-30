@@ -39,6 +39,9 @@ type ConfigurationProfileModel struct {
 	ProfileUUID      types.String        `tfsdk:"profile_uuid"`
 	TeamID           types.Int64         `tfsdk:"team_id"`
 	Name             types.String        `tfsdk:"name"`
+	Description      types.String        `tfsdk:"description"`
+	Hidden           types.Bool          `tfsdk:"hidden"`
+	SelfService      types.Bool          `tfsdk:"self_service"`
 	Platform         types.String        `tfsdk:"platform"`
 	Identifier       types.String        `tfsdk:"identifier"`
 	Checksum         types.String        `tfsdk:"checksum"`
@@ -89,6 +92,18 @@ func (d *ConfigurationProfilesDataSource) Schema(_ context.Context, _ datasource
 						},
 						"name": schema.StringAttribute{
 							Description: "The name of the profile.",
+							Computed:    true,
+						},
+						"description": schema.StringAttribute{
+							Description: "The description of the profile. Null on Fleet older than 4.94.",
+							Computed:    true,
+						},
+						"hidden": schema.BoolAttribute{
+							Description: "Whether the profile is hidden from end users on My device. Null on Fleet older than 4.94.",
+							Computed:    true,
+						},
+						"self_service": schema.BoolAttribute{
+							Description: "Whether end users install the profile from My device instead of it deploying automatically. Null on Fleet older than 4.94.",
 							Computed:    true,
 						},
 						"platform": schema.StringAttribute{
@@ -192,6 +207,9 @@ func (d *ConfigurationProfilesDataSource) Read(ctx context.Context, req datasour
 		state.Profiles[i] = ConfigurationProfileModel{
 			ProfileUUID: types.StringValue(profile.ProfileUUID),
 			Name:        types.StringValue(profile.Name),
+			Description: types.StringPointerValue(profile.Description),
+			Hidden:      types.BoolPointerValue(profile.Hidden),
+			SelfService: types.BoolPointerValue(profile.SelfService),
 			Platform:    types.StringValue(profile.Platform),
 			Identifier:  types.StringValue(profile.Identifier),
 			Checksum:    types.StringValue(profile.Checksum),
