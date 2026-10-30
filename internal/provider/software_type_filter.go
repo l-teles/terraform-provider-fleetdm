@@ -108,6 +108,12 @@ func validateSoftwareTypeFilter(sources, extensionFor types.Set, diags *diag.Dia
 	if sources.IsUnknown() || extensionFor.IsNull() || extensionFor.IsUnknown() {
 		return
 	}
+	// A known set can still hold unknown elements; the selection isn't known yet.
+	for _, elem := range sources.Elements() {
+		if elem.IsUnknown() {
+			return
+		}
+	}
 	selected := knownStringSetValues(sources)
 	for _, ext := range knownStringSetValues(extensionFor) {
 		source, ok := softwareSourceByExtensionFor[ext]

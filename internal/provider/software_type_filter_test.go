@@ -12,6 +12,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -289,4 +292,28 @@ data "fleetdm_software_titles" "test" {
 			},
 		},
 	})
+}
+
+// TestValidateSoftwareTypeFilter_unknownSourceElement: a known source set can
+// hold an element that is unknown until apply (e.g. from another resource),
+// so the extension_for cross-check must defer instead of failing.
+func TestValidateSoftwareTypeFilter_unknownSourceElement(t *testing.T) {
+	extensionFor := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("brave")})
+	for _, tc := range []struct {
+		name    string
+		sources types.Set
+		wantErr bool
+	}{
+		{name: "unknown element", sources: types.SetValueMust(types.StringType, []attr.Value{types.StringUnknown()})},
+		{name: "selected", sources: types.SetValueMust(types.StringType, []attr.Value{types.StringValue("chrome_extensions")})},
+		{name: "not selected", sources: types.SetValueMust(types.StringType, []attr.Value{types.StringValue("apps")}), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			validateSoftwareTypeFilter(tc.sources, extensionFor, &diags)
+			if diags.HasError() != tc.wantErr {
+				t.Fatalf("HasError = %v, want %v: %v", diags.HasError(), tc.wantErr, diags)
+			}
+		})
+	}
 }

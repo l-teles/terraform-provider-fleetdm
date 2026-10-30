@@ -164,6 +164,8 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 			"Fleet 4.94 and later accept any of them (e.g. `managedConfiguration`, `workProfileWidgets`, " +
 			"`credentialProviderPolicy`) except `packageName` and `installType`, which Fleet sets itself, and " +
 			"`customAppConfig`; Fleet 4.90 to 4.93 accept only `managedConfiguration` and `workProfileWidgets`. " +
+			"Fleet drops `installConstraint` from self-service apps (Google rejects it there), so it only applies " +
+			"to apps Fleet installs automatically. " +
 			"Use `file()` to keep the payload in its own file. Whitespace and JSON key ordering are not significant: " +
 			"the provider compares your value against Fleet's semantically, so a differently-formatted response " +
 			"does not produce a diff. " +

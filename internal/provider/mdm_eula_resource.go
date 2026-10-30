@@ -82,7 +82,7 @@ func (r *mdmEULAResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			},
 			"source": schema.StringAttribute{
 				Description: "Path to the local EULA file. The content is hashed at plan time and is not stored in state; " +
-					"a content change (a different `sha256`) replaces the EULA. Moving the file without changing it does not. " +
+					"a content change (a different `sha256`) replaces the EULA. Moving the file without changing it does not, unless `name` is unset and the file name changes, since `name` then follows it. " +
 					"A `source` that is only known at apply time (for example, a file another resource writes) replaces the EULA on every change to it, " +
 					"because its content cannot be compared at plan time.",
 				Required: true,
