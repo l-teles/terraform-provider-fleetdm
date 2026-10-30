@@ -23,7 +23,7 @@ require (
 	github.com/gookit/color v1.6.3 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
-	github.com/openai/openai-go/v3 v3.85.1 // indirect
+	github.com/openai/openai-go/v3 v3.86.0 // indirect
 	github.com/pb33f/go-yaml v0.1.1 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.2 // indirect
 	github.com/securego/gosec/v2 v2.29.0 // indirect
@@ -50,7 +50,7 @@ require (
 	golang.org/x/tools v0.52.0 // indirect
 	golang.org/x/vuln v1.9.0 // indirect
 	google.golang.org/api v0.308.0 // indirect
-	google.golang.org/genai v1.75.0 // indirect
+	google.golang.org/genai v1.76.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b // indirect
 	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
