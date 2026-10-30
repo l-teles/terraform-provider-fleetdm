@@ -72,6 +72,7 @@ Read-Only:
 - `critical` (Boolean) Whether the policy is critical.
 - `description` (String) A description of the policy.
 - `failing_host_count` (Number) The number of hosts failing this policy.
+- `hidden` (Boolean) Whether the policy is hidden from end users in Fleet Desktop. Always `false` on Fleet versions before 4.94.
 - `id` (String) The unique identifier of the policy.
 - `name` (String) The name of the policy.
 - `passing_host_count` (Number) The number of hosts passing this policy.

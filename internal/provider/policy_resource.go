@@ -71,6 +71,7 @@ type PolicyResourceModel struct {
 	Description                    types.String `tfsdk:"description"`
 	Query                          types.String `tfsdk:"query"`
 	Critical                       types.Bool   `tfsdk:"critical"`
+	Hidden                         types.Bool   `tfsdk:"hidden"`
 	Resolution                     types.String `tfsdk:"resolution"`
 	Platform                       types.List   `tfsdk:"platform"`
 	TeamID                         types.Int64  `tfsdk:"team_id"`
@@ -154,6 +155,12 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Whether the policy is critical. Critical policies are highlighted in the UI. _Available in Fleet Premium._",
+			},
+			"hidden": schema.BoolAttribute{
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(false),
+				MarkdownDescription: "Whether to hide the policy from end users in Fleet Desktop. Cannot be `true` together with `conditional_access_enabled`, since end users must be able to see why their sign-in is blocked. Works on global and team policies. _Available in Fleet Premium 4.94+._",
 			},
 			"resolution": schema.StringAttribute{
 				Optional: true,
@@ -410,6 +417,7 @@ func knownStringSetValues(set types.Set) []string {
 //     require `team_id` to be set.
 //   - `profile_uuid` requires a platform list that includes darwin or windows,
 //     or no platform at all.
+//   - `hidden` and `conditional_access_enabled` cannot both be true.
 //
 // Catching these at plan time (instead of letting the API reject them at
 // apply time) saves users a wasted apply cycle and produces clearer errors.
@@ -625,6 +633,16 @@ func (r *PolicyResource) ValidateConfig(ctx context.Context, req resource.Valida
 			)
 		}
 	}
+	// Fleet rejects this pair with `"hidden" and "conditional_access_enabled"
+	// cannot both be set` (fleet.PolicyVerifyHidden, 4.94).
+	if boolKnownTrue(data.Hidden) && boolKnownTrue(data.ConditionalAccessEnabled) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("hidden"),
+			"Conflicting policy options",
+			"hidden and conditional_access_enabled cannot both be true: end users must be able to see a policy that blocks their sign-in.",
+		)
+	}
+
 	if patchWhenClosedOn && notifyBeforePatchingOn {
 		resp.Diagnostics.AddAttributeError(
 			path.Root("notify_before_patching"),
@@ -723,6 +741,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		ContinuousAutomationsEnabled: data.ContinuousAutomationsEnabled.ValueBool(),
 		PatchWhenClosed:              data.PatchWhenClosed.ValueBool(),
 		NotifyBeforePatching:         data.NotifyBeforePatching.ValueBool(),
+		Hidden:                       data.Hidden.ValueBool(),
 		LabelsIncludeAny:             stringSetToSlice(ctx, data.LabelsIncludeAny, &resp.Diagnostics),
 		LabelsExcludeAny:             stringSetToSlice(ctx, data.LabelsExcludeAny, &resp.Diagnostics),
 		LabelsIncludeAll:             stringSetToSlice(ctx, data.LabelsIncludeAll, &resp.Diagnostics),
@@ -821,6 +840,7 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("patch_when_closed"), &prior.PatchWhenClosed)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("notify_before_patching"), &prior.NotifyBeforePatching)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("critical"), &prior.Critical)...)
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("hidden"), &prior.Hidden)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("calendar_events_enabled"), &prior.CalendarEventsEnabled)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("conditional_access_enabled"), &prior.ConditionalAccessEnabled)...)
 	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("software_title_id"), &prior.SoftwareTitleID)...)
@@ -956,6 +976,7 @@ func (r *PolicyResource) mapPolicyToModel(ctx context.Context, policy *fleetdm.P
 	data.LabelsExcludeAll = policyLabelsToSet(policy.LabelsExcludeAll)
 	data.CalendarEventsEnabled = types.BoolValue(policy.CalendarEventsEnabled)
 	data.ConditionalAccessEnabled = types.BoolValue(policy.ConditionalAccessEnabled)
+	data.Hidden = types.BoolValue(policy.Hidden)
 	data.ContinuousAutomationsEnabled = types.BoolValue(policy.ContinuousAutomationsEnabled)
 	data.PatchWhenClosed = types.BoolValue(policy.PatchWhenClosed)
 	data.NotifyBeforePatching = types.BoolValue(policy.NotifyBeforePatching)
@@ -1101,6 +1122,7 @@ type policyPriorAutomations struct {
 	PatchWhenClosed              types.Bool
 	NotifyBeforePatching         types.Bool
 	Critical                     types.Bool
+	Hidden                       types.Bool
 	CalendarEventsEnabled        types.Bool
 	ConditionalAccessEnabled     types.Bool
 	SoftwareTitleID              types.Int64
@@ -1179,6 +1201,7 @@ func buildPolicyUpdateRequest(ctx context.Context, data PolicyResourceModel, pri
 		ContinuousAutomationsEnabled:   premiumFlagForUpdate(data.ContinuousAutomationsEnabled, prior.ContinuousAutomationsEnabled),
 		PatchWhenClosed:                premiumFlagForUpdate(data.PatchWhenClosed, prior.PatchWhenClosed),
 		NotifyBeforePatching:           premiumFlagForUpdate(data.NotifyBeforePatching, prior.NotifyBeforePatching),
+		Hidden:                         premiumFlagForUpdate(data.Hidden, prior.Hidden),
 		LabelsIncludeAny:               labelsForUpdate(ctx, data.LabelsIncludeAny, prior.LabelsIncludeAny, diags),
 		LabelsExcludeAny:               labelsForUpdate(ctx, data.LabelsExcludeAny, prior.LabelsExcludeAny, diags),
 		LabelsIncludeAll:               labelsForUpdate(ctx, data.LabelsIncludeAll, prior.LabelsIncludeAll, diags),

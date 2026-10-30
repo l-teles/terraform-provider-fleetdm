@@ -89,6 +89,7 @@ type Policy struct {
 	LabelsExcludeAll             []PolicyLabel                  `json:"labels_exclude_all,omitempty"`
 	CalendarEventsEnabled        bool                           `json:"calendar_events_enabled"`
 	ConditionalAccessEnabled     bool                           `json:"conditional_access_enabled"`
+	Hidden                       bool                           `json:"hidden"`
 	ContinuousAutomationsEnabled bool                           `json:"continuous_automations_enabled"`
 	PatchWhenClosed              bool                           `json:"patch_when_closed"`
 	NotifyBeforePatching         bool                           `json:"notify_before_patching"`
@@ -132,6 +133,9 @@ type GetPolicyResponse struct {
 // SoftwarePackageID and ProfileUUID (Fleet 4.92+, team policies only) are
 // omitted when nil: Fleet then installs the title's first-added package and
 // resends no profile.
+//
+// Hidden (Fleet Premium 4.94+) is omitted while false, so Fleet Free and older
+// servers never see the key.
 type CreatePolicyRequest struct {
 	Name                         string   `json:"name"`
 	Description                  string   `json:"description,omitempty"`
@@ -148,6 +152,7 @@ type CreatePolicyRequest struct {
 	ContinuousAutomationsEnabled bool     `json:"continuous_automations_enabled,omitempty"`
 	PatchWhenClosed              bool     `json:"patch_when_closed,omitempty"`
 	NotifyBeforePatching         bool     `json:"notify_before_patching,omitempty"`
+	Hidden                       bool     `json:"hidden,omitempty"`
 	LabelsIncludeAny             []string `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny             []string `json:"labels_exclude_any,omitempty"`
 	LabelsIncludeAll             []string `json:"labels_include_all,omitempty"`
@@ -172,8 +177,8 @@ type CreatePolicyResponse struct {
 //     treats the four selectors as one group: when any of them is sent, every
 //     selector left out is cleared too, and only a request with none of them
 //     leaves the labels unchanged. Send all four planned values together.
-//   - critical, calendar_events_enabled, conditional_access_enabled and the
-//     automation switches (continuous_automations_enabled, patch_when_closed,
+//   - critical, hidden, calendar_events_enabled, conditional_access_enabled and
+//     the automation switches (continuous_automations_enabled, patch_when_closed,
 //     notify_before_patching): sent only when true or when turning off one
 //     that was on.
 //   - conditional_access_bypass_enabled is not Premium-gated: a nil pointer
@@ -203,6 +208,7 @@ type UpdatePolicyRequest struct {
 	ContinuousAutomationsEnabled   *bool           `json:"continuous_automations_enabled,omitempty"`
 	PatchWhenClosed                *bool           `json:"patch_when_closed,omitempty"`
 	NotifyBeforePatching           *bool           `json:"notify_before_patching,omitempty"`
+	Hidden                         *bool           `json:"hidden,omitempty"`
 	LabelsIncludeAny               []string        `json:"labels_include_any,omitzero"`
 	LabelsExcludeAny               []string        `json:"labels_exclude_any,omitzero"`
 	LabelsIncludeAll               []string        `json:"labels_include_all,omitzero"`

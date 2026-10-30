@@ -67,6 +67,32 @@ data "fleetdm_policy" "test" {
 	})
 }
 
+// TestAccPolicyDataSource_hiddenMock checks the Fleet 4.94 `hidden` flag
+// surfaces through the single-policy data source.
+func TestAccPolicyDataSource_hiddenMock(t *testing.T) {
+	f := newFakeHiddenPolicyServer(t, nil)
+	f.hidden = true
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+data "fleetdm_policy" "test" {
+  id = 42
+}
+`, f.srv.URL),
+				Check: resource.TestCheckResourceAttr("data.fleetdm_policy.test", "hidden", "true"),
+			},
+		},
+	})
+}
+
 // TestAccPolicyDataSource_labelScopingAndContinuousAutomations verifies the
 // Fleet 4.90 fields surface through the data source. Uses a team policy
 // because continuous_automations_enabled is team-only, and keeps the include
