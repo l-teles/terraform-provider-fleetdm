@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -12,7 +13,10 @@ import (
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
-var _ datasource.DataSource = &SoftwareVersionsDataSource{}
+var (
+	_ datasource.DataSource                   = &SoftwareVersionsDataSource{}
+	_ datasource.DataSourceWithValidateConfig = &SoftwareVersionsDataSource{}
+)
 
 // NewSoftwareVersionsDataSource creates a new software versions data source.
 func NewSoftwareVersionsDataSource() datasource.DataSource {
@@ -28,6 +32,8 @@ type SoftwareVersionsDataSource struct {
 type SoftwareVersionsDataSourceModel struct {
 	TeamID           types.Int64                `tfsdk:"team_id"`
 	Query            types.String               `tfsdk:"query"`
+	Source           types.Set                  `tfsdk:"source"`
+	ExtensionFor     types.Set                  `tfsdk:"extension_for"`
 	VulnerableOnly   types.Bool                 `tfsdk:"vulnerable_only"`
 	TotalCount       types.Int64                `tfsdk:"total_count"`
 	SoftwareVersions []SoftwareVersionListModel `tfsdk:"software_versions"`
@@ -107,6 +113,16 @@ func (d *SoftwareVersionsDataSource) Schema(ctx context.Context, req datasource.
 			},
 		},
 	}
+	maps.Copy(resp.Schema.Attributes, softwareTypeFilterAttributes())
+}
+
+func (d *SoftwareVersionsDataSource) ValidateConfig(ctx context.Context, req datasource.ValidateConfigRequest, resp *datasource.ValidateConfigResponse) {
+	var data SoftwareVersionsDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	validateSoftwareTypeFilter(data.Source, data.ExtensionFor, &resp.Diagnostics)
 }
 
 func (d *SoftwareVersionsDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
@@ -129,6 +145,10 @@ func (d *SoftwareVersionsDataSource) Read(ctx context.Context, req datasource.Re
 	}
 	if !data.VulnerableOnly.IsNull() && !data.VulnerableOnly.IsUnknown() {
 		opts.VulnerableOnly = data.VulnerableOnly.ValueBool()
+	}
+	opts.SoftwareTypeFilter = softwareTypeFilterFromConfig(ctx, data.Source, data.ExtensionFor, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	versions, count, err := d.client.ListSoftwareVersions(ctx, opts)

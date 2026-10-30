@@ -49,7 +49,9 @@ output "browser_software" {
 ### Optional
 
 - `available_for_install` (Boolean) Only return software available for install.
+- `extension_for` (Set of String) Narrow an extension or plugin source to the browsers or IDEs it is for, e.g. `["brave"]` with `source = ["chrome_extensions"]`. Each value's own source must be listed in `source`; a source without any of its values here matches all of its software. One of: `brave`, `chrome`, `chromium`, `clion`, `cursor`, `datagrip`, `edge`, `edge_beta`, `firefox`, `goland`, `intellij_idea`, `intellij_idea_community_edition`, `opera`, `phpstorm`, `pycharm`, `pycharm_community_edition`, `resharper`, `rider`, `rubymine`, `rust_rov`, `trae`, `vscode`, `vscode_insiders`, `vscodium`, `vscodium_insiders`, `webstorm`, `windsurf`, `yandex`. _Requires Fleet 4.94+._
 - `query` (String) Search query to filter software titles by name.
+- `source` (Set of String) Only return software from any of these sources (osquery tables), e.g. `["apps", "chrome_extensions"]`. One of: `adobe_plugins`, `android_apps`, `apps`, `chocolatey_packages`, `chrome_extensions`, `deb_packages`, `firefox_addons`, `go_binaries`, `homebrew_packages`, `ie_extensions`, `ios_apps`, `ipados_apps`, `jetbrains_plugins`, `nix_packages`, `npm_packages`, `pacman_packages`, `pkg_packages`, `portage_packages`, `programs`, `ps1_packages`, `py_packages`, `python_packages`, `rpm_packages`, `safari_extensions`, `sh_packages`, `tgz_packages`, `vscode_extensions`. _Requires Fleet 4.94+._
 - `team_id` (Number) Filter by team ID.
 - `vulnerable_only` (Boolean) Only return software with known vulnerabilities.
 

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strconv"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -12,7 +13,10 @@ import (
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
-var _ datasource.DataSource = &SoftwareTitlesDataSource{}
+var (
+	_ datasource.DataSource                   = &SoftwareTitlesDataSource{}
+	_ datasource.DataSourceWithValidateConfig = &SoftwareTitlesDataSource{}
+)
 
 // NewSoftwareTitlesDataSource creates a new software titles data source.
 func NewSoftwareTitlesDataSource() datasource.DataSource {
@@ -28,6 +32,8 @@ type SoftwareTitlesDataSource struct {
 type SoftwareTitlesDataSourceModel struct {
 	TeamID              types.Int64              `tfsdk:"team_id"`
 	Query               types.String             `tfsdk:"query"`
+	Source              types.Set                `tfsdk:"source"`
+	ExtensionFor        types.Set                `tfsdk:"extension_for"`
 	VulnerableOnly      types.Bool               `tfsdk:"vulnerable_only"`
 	AvailableForInstall types.Bool               `tfsdk:"available_for_install"`
 	TotalCount          types.Int64              `tfsdk:"total_count"`
@@ -112,6 +118,16 @@ func (d *SoftwareTitlesDataSource) Schema(ctx context.Context, req datasource.Sc
 			},
 		},
 	}
+	maps.Copy(resp.Schema.Attributes, softwareTypeFilterAttributes())
+}
+
+func (d *SoftwareTitlesDataSource) ValidateConfig(ctx context.Context, req datasource.ValidateConfigRequest, resp *datasource.ValidateConfigResponse) {
+	var data SoftwareTitlesDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	validateSoftwareTypeFilter(data.Source, data.ExtensionFor, &resp.Diagnostics)
 }
 
 func (d *SoftwareTitlesDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
@@ -137,6 +153,10 @@ func (d *SoftwareTitlesDataSource) Read(ctx context.Context, req datasource.Read
 	}
 	if !data.AvailableForInstall.IsNull() && !data.AvailableForInstall.IsUnknown() {
 		opts.AvailableForInstall = data.AvailableForInstall.ValueBool()
+	}
+	opts.SoftwareTypeFilter = softwareTypeFilterFromConfig(ctx, data.Source, data.ExtensionFor, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	titles, count, err := d.client.ListSoftwareTitles(ctx, opts)

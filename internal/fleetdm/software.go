@@ -378,6 +378,7 @@ type SoftwareTitleListOptions struct {
 	AvailableForInstall bool
 	SelfService         bool
 	VulnerableOnly      bool
+	SoftwareTypeFilter
 }
 
 // SoftwareVersionListOptions represents options for listing software versions.
@@ -386,6 +387,23 @@ type SoftwareVersionListOptions struct {
 	TeamID         *int
 	Query          string
 	VulnerableOnly bool
+	SoftwareTypeFilter
+}
+
+// SoftwareTypeFilter is Fleet 4.94's `source` / `extension_for` filter. Each
+// is sent as one comma-separated parameter, and only when non-empty.
+type SoftwareTypeFilter struct {
+	Sources      []string
+	ExtensionFor []string
+}
+
+func (f SoftwareTypeFilter) applyParams(params map[string]string) {
+	if len(f.Sources) > 0 {
+		params["source"] = strings.Join(f.Sources, ",")
+	}
+	if len(f.ExtensionFor) > 0 {
+		params["extension_for"] = strings.Join(f.ExtensionFor, ",")
+	}
 }
 
 // listSoftwareTitlesResponse is the API response for listing software titles.
@@ -433,6 +451,7 @@ func (c *Client) ListSoftwareTitles(ctx context.Context, opts SoftwareTitleListO
 	if opts.VulnerableOnly {
 		params["vulnerable"] = "true"
 	}
+	opts.applyParams(params)
 	opts.applyListParams(params)
 
 	var resp listSoftwareTitlesResponse
@@ -487,6 +506,7 @@ func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionL
 		if opts.VulnerableOnly {
 			params["vulnerable"] = "true"
 		}
+		opts.applyParams(params)
 		listOpts := opts.ListOptions
 		listOpts.Page = page
 		listOpts.PerPage = softwareVersionsPerPage
