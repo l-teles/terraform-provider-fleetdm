@@ -436,6 +436,12 @@ resource "fleetdm_configuration_profile" "b" {
 	})
 }
 
+// windowsLiveProfile is a Windows profile Fleet accepts; Fleet rejects XML
+// with a processing instruction such as <?xml ...?>.
+const windowsLiveProfile = `<Replace><Item><Meta><Format xmlns="syncml:metinf">int</Format></Meta>` +
+	`<Target><LocURI>./Device/Vendor/MSFT/Policy/Config/DeviceLock/MaxInactivityTimeDeviceLock</LocURI></Target>` +
+	`<Data>5</Data></Item></Replace>`
+
 // TestAccConfigurationProfileResource_windowsRenameLive verifies a Windows
 // profile named through name renames in place on Fleet 4.94.
 func TestAccConfigurationProfileResource_windowsRenameLive(t *testing.T) {
@@ -453,7 +459,7 @@ resource "fleetdm_configuration_profile" "test" {
   name            = %[2]q
   profile_content = %[3]q
 }
-`, "tf-acc-winname-"+suffix, name, testWindowsXMLProfile)
+`, "tf-acc-winname-"+suffix, name, windowsLiveProfile)
 	}
 
 	var firstUUID string
