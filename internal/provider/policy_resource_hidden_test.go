@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -332,4 +334,30 @@ resource "fleetdm_policy" "team" {
 			{Config: cfg(false), PlanOnly: true},
 		},
 	})
+}
+
+// TestCheckPolicyAutomationsEchoed_hidden checks the named error when Fleet
+// (before 4.94) accepts a policy but drops hidden.
+func TestCheckPolicyAutomationsEchoed_hidden(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		planned, echoed bool
+		wantErr         bool
+	}{
+		{name: "dropped", planned: true, echoed: false, wantErr: true},
+		{name: "applied", planned: true, echoed: true},
+		{name: "not planned", planned: false, echoed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			checkPolicyAutomationsEchoed(
+				policyPriorAutomations{SoftwarePackageID: types.Int64Null(), ProfileUUID: types.StringNull(), Hidden: types.BoolValue(tc.planned)},
+				PolicyResourceModel{SoftwarePackageID: types.Int64Null(), ProfileUUID: types.StringNull(), Hidden: types.BoolValue(tc.echoed)},
+				&diags,
+			)
+			if diags.HasError() != tc.wantErr {
+				t.Fatalf("HasError = %v, want %v: %v", diags.HasError(), tc.wantErr, diags)
+			}
+		})
+	}
 }

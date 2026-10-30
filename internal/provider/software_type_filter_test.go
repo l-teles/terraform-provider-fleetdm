@@ -242,3 +242,51 @@ func checkSourceFilteredTitles(source, wantRes, notRes string) resource.TestChec
 		return nil
 	}
 }
+
+// TestAccSoftwareDataSources_typeFilterOldFleet checks that a type filter on
+// Fleet older than 4.94, which ignores it, fails instead of returning every
+// title, while an unfiltered read still works.
+func TestAccSoftwareDataSources_typeFilterOldFleet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/fleet/version":
+			fmt.Fprint(w, `{"version": "4.93.0"}`)
+		case "/api/v1/fleet/software/titles":
+			if r.URL.Query().Has("source") {
+				t.Errorf("filtered request reached a pre-4.94 server: %s", r.URL.RawQuery)
+			}
+			fmt.Fprint(w, `{"count": 0, "software_titles": []}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg := func(attrs string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+data "fleetdm_software_titles" "test" {
+%s
+}
+`, server.URL, attrs)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      cfg(`  source = ["chrome_extensions"]`),
+				ExpectError: regexp.MustCompile(`(?s)requires\s+Fleet\s+4\.94\s+or\s+later`),
+			},
+			{
+				Config: cfg(""),
+				Check:  resource.TestCheckResourceAttr("data.fleetdm_software_titles.test", "software_titles.#", "0"),
+			},
+		},
+	})
+}

@@ -136,3 +136,19 @@ func softwareTypeFilterFromConfig(ctx context.Context, sources, extensionFor typ
 	}
 	return fleetdm.SoftwareTypeFilter{Sources: toSorted(sources), ExtensionFor: toSorted(extensionFor)}
 }
+
+// checkSoftwareTypeFilterSupported rejects a type filter on Fleet older than
+// 4.94, which ignores the source and extension_for parameters and would
+// return the unfiltered list.
+func checkSoftwareTypeFilterSupported(ctx context.Context, client *fleetdm.Client, filter fleetdm.SoftwareTypeFilter, diags *diag.Diagnostics) {
+	if len(filter.Sources) == 0 && len(filter.ExtensionFor) == 0 {
+		return
+	}
+	if fleetServerBefore(ctx, client, 4, 94) {
+		diags.AddError(
+			"Software Type Filter Not Supported by This Fleet Server",
+			"Filtering by source or extension_for requires Fleet 4.94 or later. Older Fleet ignores the filter "+
+				"and would return every item. Upgrade Fleet or remove source and extension_for.",
+		)
+	}
+}

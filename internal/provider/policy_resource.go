@@ -778,7 +778,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		policy = updated
 	}
 
-	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID, NotifyBeforePatching: data.NotifyBeforePatching}
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID, NotifyBeforePatching: data.NotifyBeforePatching, Hidden: data.Hidden}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
@@ -867,7 +867,7 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID, NotifyBeforePatching: data.NotifyBeforePatching}
+	planned := policyPriorAutomations{SoftwarePackageID: data.SoftwarePackageID, ProfileUUID: data.ProfileUUID, NotifyBeforePatching: data.NotifyBeforePatching, Hidden: data.Hidden}
 	r.mapPolicyToModel(ctx, policy, &data, &resp.Diagnostics)
 	checkPolicyAutomationsEchoed(planned, data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
@@ -1257,6 +1257,11 @@ func checkPolicyAutomationsEchoed(planned policyPriorAutomations, got PolicyReso
 		diags.AddAttributeError(path.Root("notify_before_patching"),
 			"Notify before patching was not applied",
 			"Fleet accepted the policy but did not report notify_before_patching as on. This needs Fleet 4.93.0 or later. Remove notify_before_patching or upgrade Fleet.")
+	}
+	if boolKnownTrue(planned.Hidden) && !boolKnownTrue(got.Hidden) {
+		diags.AddAttributeError(path.Root("hidden"),
+			"Hidden was not applied",
+			"Fleet accepted the policy but did not report it as hidden. This needs Fleet 4.94.0 or later (Premium). Remove hidden or upgrade Fleet.")
 	}
 }
 

@@ -155,6 +155,10 @@ func (d *SoftwareTitlesDataSource) Read(ctx context.Context, req datasource.Read
 		opts.AvailableForInstall = data.AvailableForInstall.ValueBool()
 	}
 	opts.SoftwareTypeFilter = softwareTypeFilterFromConfig(ctx, data.Source, data.ExtensionFor, &resp.Diagnostics)
+	checkSoftwareTypeFilterSupported(ctx, d.client, opts.SoftwareTypeFilter, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}

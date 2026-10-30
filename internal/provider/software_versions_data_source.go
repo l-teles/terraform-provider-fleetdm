@@ -147,6 +147,10 @@ func (d *SoftwareVersionsDataSource) Read(ctx context.Context, req datasource.Re
 		opts.VulnerableOnly = data.VulnerableOnly.ValueBool()
 	}
 	opts.SoftwareTypeFilter = softwareTypeFilterFromConfig(ctx, data.Source, data.ExtensionFor, &resp.Diagnostics)
+	checkSoftwareTypeFilterSupported(ctx, d.client, opts.SoftwareTypeFilter, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
