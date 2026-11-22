@@ -1,6 +1,6 @@
 module security-tools
 
-go 1.27.3
+go 1.27.4
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
