@@ -199,6 +199,7 @@ func TestAccConfigurationResource_mdmMovesFlatAttributes(t *testing.T) {
 // exact version, Windows updates and per-platform disk encryption escrow.
 func TestAccConfigurationResource_mdmSharedSettings(t *testing.T) {
 	snapshotConfigurationMDM(t)
+	macOSVersion := liveSupportedMacOSVersion(t)
 	const attr = "fleetdm_configuration.test"
 	latest := `mdm = {
     apple_server_url = ""
@@ -218,10 +219,10 @@ func TestAccConfigurationResource_mdmSharedSettings(t *testing.T) {
     macos_settings = { enable_escrow_disk_encryption_key = true }
     linux_settings = { enable_escrow_disk_encryption_key = true }
   }`
-	exact := `mdm = {
+	exact := fmt.Sprintf(`mdm = {
     apple_server_url = ""
     macos_updates = {
-      minimum_version  = "26.6.1"
+      minimum_version  = %q
       deadline         = "2030-01-01"
       update_new_hosts = false
     }
@@ -235,7 +236,7 @@ func TestAccConfigurationResource_mdmSharedSettings(t *testing.T) {
     }
     macos_settings = { enable_escrow_disk_encryption_key = false }
     linux_settings = { enable_escrow_disk_encryption_key = false }
-  }`
+  }`, macOSVersion)
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -255,7 +256,7 @@ func TestAccConfigurationResource_mdmSharedSettings(t *testing.T) {
 			{
 				Config: configurationMDMConfig(exact),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr(attr, "mdm.macos_updates.minimum_version", "26.6.1"),
+					resource.TestCheckResourceAttr(attr, "mdm.macos_updates.minimum_version", macOSVersion),
 					resource.TestCheckNoResourceAttr(attr, "mdm.macos_updates.deadline_days"),
 					resource.TestCheckResourceAttr(attr, "mdm.ios_updates.minimum_version", ""),
 					resource.TestCheckResourceAttr(attr, "mdm.windows_updates.deadline_days", "0"),
@@ -267,7 +268,7 @@ func TestAccConfigurationResource_mdmSharedSettings(t *testing.T) {
 				Config: configurationMDMConfig(""),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckNoResourceAttr(attr, "mdm"),
-					checkGlobalMDMInFleet("macos_updates", `"minimum_version":"26.6.1"`),
+					checkGlobalMDMInFleet("macos_updates", fmt.Sprintf(`"minimum_version":%q`, macOSVersion)),
 				),
 			},
 		},
