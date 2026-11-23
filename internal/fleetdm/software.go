@@ -105,6 +105,17 @@ type AppStoreAppInfo struct {
 	// json.RawMessage so both survive the round trip; use
 	// DecodeAppConfiguration to turn it back into the provider's raw string.
 	Configuration json.RawMessage `json:"configuration,omitempty"`
+	// VPPToken is the VPP token the app was added from (Fleet 4.95+). Null for
+	// Android apps and absent on older Fleet versions.
+	VPPToken *VPPTokenSummary `json:"vpp_token,omitempty"`
+}
+
+// VPPTokenSummary identifies the VPP token an App Store app was added from.
+type VPPTokenSummary struct {
+	ID          int64  `json:"id"`
+	OrgName     string `json:"org_name"`
+	Location    string `json:"location"`
+	CountryCode string `json:"country_code"`
 }
 
 // AddAppStoreAppRequest represents the request body for adding a VPP app.
@@ -120,6 +131,9 @@ type AddAppStoreAppRequest struct {
 	DisplayName string `json:"display_name,omitempty"`
 	// Configuration is the app's managed app configuration. Omitted when nil.
 	Configuration json.RawMessage `json:"configuration,omitempty"`
+	// VPPTokenID picks the VPP token to add the app from (Fleet 4.95+). Fleet
+	// requires it when the team has more than one token. Omitted when nil.
+	VPPTokenID *int64 `json:"vpp_token_id,omitempty"`
 }
 
 // UpdateAppStoreAppRequest represents the request body for updating a VPP app.
@@ -1065,10 +1079,15 @@ type AppStoreAppListItem struct {
 	LatestVersion string `json:"latest_version,omitempty"`
 }
 
-// ListAppStoreApps lists available App Store (VPP) apps for a team.
-func (c *Client) ListAppStoreApps(ctx context.Context, teamID int) ([]AppStoreAppListItem, error) {
+// ListAppStoreApps lists available App Store (VPP) apps for a team. A nil
+// vppTokenID lets Fleet pick the team's only token; Fleet 4.95+ requires it
+// when the team has more than one.
+func (c *Client) ListAppStoreApps(ctx context.Context, teamID int, vppTokenID *int64) ([]AppStoreAppListItem, error) {
 	params := map[string]string{
 		"team_id": strconv.Itoa(teamID),
+	}
+	if vppTokenID != nil {
+		params["vpp_token_id"] = strconv.FormatInt(*vppTokenID, 10)
 	}
 	var resp ListAppStoreAppsResponse
 	if err := c.Get(ctx, "/software/app_store_apps", params, &resp); err != nil {

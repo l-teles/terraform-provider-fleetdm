@@ -62,6 +62,48 @@ func TestAccAppStoreAppsDataSource_basic(t *testing.T) {
 	})
 }
 
+// TestAccAppStoreAppsDataSource_vppTokenID checks vpp_token_id reaches Fleet
+// as a query parameter, which Fleet 4.95 needs for a team with several tokens.
+func TestAccAppStoreAppsDataSource_vppTokenID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/fleet/software/app_store_apps" && r.Method == "GET" {
+			q := r.URL.Query()
+			if q.Get("team_id") != "5" || q.Get("vpp_token_id") != "3" {
+				http.Error(w, `{"message":"This fleet has more than one VPP token. Please specify vpp_token_id."}`, http.StatusUnprocessableEntity)
+				return
+			}
+			_, _ = w.Write([]byte(`{"app_store_apps":[{"app_store_id":"1","name":"Example App","platform":"ios"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+provider "fleetdm" {
+  server_address = "` + server.URL + `"
+  api_key        = "test-token"
+}
+
+data "fleetdm_app_store_apps" "test" {
+  team_id      = 5
+  vpp_token_id = 3
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("data.fleetdm_app_store_apps.test", "vpp_token_id", "3"),
+					resource.TestCheckResourceAttr("data.fleetdm_app_store_apps.test", "app_store_apps.#", "1"),
+				),
+			},
+		},
+	})
+}
+
 func testAccAppStoreAppsDataSourceConfig(serverURL string) string {
 	return `
 provider "fleetdm" {

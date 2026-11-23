@@ -34,6 +34,10 @@ output "vpp_app_names" {
 
 - `team_id` (Number) The team to list available App Store apps for.
 
+### Optional
+
+- `vpp_token_id` (Number) ID of the VPP token to list apps from (see `fleetdm_vpp_tokens`). Fleet 4.95 or later requires it when the team has more than one VPP token; omit it to use the team's only token.
+
 ### Read-Only
 
 - `app_store_apps` (Attributes List) List of available App Store apps. (see [below for nested schema](#nestedatt--app_store_apps))

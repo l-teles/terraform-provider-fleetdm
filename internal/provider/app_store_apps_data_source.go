@@ -26,6 +26,7 @@ type AppStoreAppsDataSource struct {
 // AppStoreAppsDataSourceModel describes the data source data model.
 type AppStoreAppsDataSourceModel struct {
 	TeamID       types.Int64        `tfsdk:"team_id"`
+	VPPTokenID   types.Int64        `tfsdk:"vpp_token_id"`
 	AppStoreApps []AppStoreAppModel `tfsdk:"app_store_apps"`
 }
 
@@ -50,6 +51,11 @@ func (d *AppStoreAppsDataSource) Schema(ctx context.Context, req datasource.Sche
 			"team_id": schema.Int64Attribute{
 				Required:            true,
 				MarkdownDescription: "The team to list available App Store apps for.",
+			},
+			"vpp_token_id": schema.Int64Attribute{
+				Optional: true,
+				MarkdownDescription: "ID of the VPP token to list apps from (see `fleetdm_vpp_tokens`). Fleet 4.95 or later requires it " +
+					"when the team has more than one VPP token; omit it to use the team's only token.",
 			},
 			"app_store_apps": schema.ListNestedAttribute{
 				Computed:            true,
@@ -97,7 +103,7 @@ func (d *AppStoreAppsDataSource) Read(ctx context.Context, req datasource.ReadRe
 
 	teamID := int(data.TeamID.ValueInt64())
 
-	apps, err := d.client.ListAppStoreApps(ctx, teamID)
+	apps, err := d.client.ListAppStoreApps(ctx, teamID, data.VPPTokenID.ValueInt64Pointer())
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list App Store apps: %s", err))
 		return

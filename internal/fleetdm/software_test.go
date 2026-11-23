@@ -1230,6 +1230,9 @@ func TestClient_ListAppStoreApps(t *testing.T) {
 		if r.URL.Query().Get("team_id") != "5" {
 			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
 		}
+		if r.URL.Query().Has("vpp_token_id") {
+			t.Errorf("vpp_token_id must be omitted when unset, got: %s", r.URL.RawQuery)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ListAppStoreAppsResponse{
@@ -1242,7 +1245,7 @@ func TestClient_ListAppStoreApps(t *testing.T) {
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
-	apps, err := client.ListAppStoreApps(context.Background(), 5)
+	apps, err := client.ListAppStoreApps(context.Background(), 5, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1257,6 +1260,67 @@ func TestClient_ListAppStoreApps(t *testing.T) {
 	}
 	if apps[1].Name != "Xcode" {
 		t.Errorf("expected second app name 'Xcode', got: %s", apps[1].Name)
+	}
+}
+
+// TestClient_ListAppStoreApps_VPPTokenID checks the Fleet 4.95 vpp_token_id
+// query parameter (server/service/vpp.go listAppStoreAppsRequest).
+func TestClient_ListAppStoreApps_VPPTokenID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("vpp_token_id"); got != "3" {
+			t.Errorf("expected vpp_token_id=3, got: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"app_store_apps":[]}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	tokenID := int64(3)
+	if _, err := client.ListAppStoreApps(context.Background(), 5, &tokenID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_AddAppStoreApp_VPPTokenWire asserts the exact add body with and
+// without vpp_token_id, and that the title's vpp_token echo is decoded.
+func TestClient_AddAppStoreApp_VPPTokenWire(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tokenID  *int64
+		wantBody string
+	}{
+		{"unset", nil, `{"app_store_id":"1","team_id":5,"platform":"ios"}`},
+		{"set", new(int64(3)), `{"app_store_id":"1","team_id":5,"platform":"ios","vpp_token_id":3}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost {
+					body, _ := io.ReadAll(r.Body)
+					if string(body) != tc.wantBody {
+						t.Errorf("body mismatch:\n got: %s\nwant: %s", body, tc.wantBody)
+					}
+					_, _ = w.Write([]byte(`{"software_title_id":100}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"software_title":{"id":100,"name":"App","app_store_app":{"app_store_id":"1","platform":"ios",
+					"vpp_token":{"id":3,"org_name":"Example Org","location":"Example Unit","country_code":"us"}}}}`))
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			title, err := client.AddAppStoreApp(context.Background(), &AddAppStoreAppRequest{
+				AppStoreID: "1", TeamID: 5, Platform: "ios", VPPTokenID: tc.tokenID,
+			})
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			want := VPPTokenSummary{ID: 3, OrgName: "Example Org", Location: "Example Unit", CountryCode: "us"}
+			if title.AppStoreApp == nil || title.AppStoreApp.VPPToken == nil || *title.AppStoreApp.VPPToken != want {
+				t.Errorf("vpp_token echo not decoded: %+v", title.AppStoreApp)
+			}
+		})
 	}
 }
 

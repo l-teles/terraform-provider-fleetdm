@@ -24,11 +24,13 @@ Retrieves all Volume Purchase Program (VPP) tokens from FleetDM. This is a Premi
 
 Read-Only:
 
+- `country_code` (String) Lowercase ISO 3166-1 alpha-2 country code of the Apple Business account that owns the token (e.g. `us`). Null when Fleet has not recorded it.
+- `created_at` (String) When the token was uploaded to Fleet. Fleet 4.95 or later; null on older versions.
 - `id` (Number) The unique identifier of the VPP token.
 - `location` (String) The location/content token name in Apple Business Manager.
 - `organization_name` (String) The organization name associated with the VPP token.
 - `renew_date` (String) When the token needs to be renewed.
-- `teams` (Attributes List) Teams associated with this VPP token. (see [below for nested schema](#nestedatt--tokens--teams))
+- `teams` (Attributes List) Teams associated with this VPP token. An empty list means the token is available to every team; null means it is assigned to none. Use the token `id` as `vpp_token_id` on `fleetdm_software_app_store_app` when a team has more than one token. (see [below for nested schema](#nestedatt--tokens--teams))
 
 <a id="nestedatt--tokens--teams"></a>
 ### Nested Schema for `tokens.teams`

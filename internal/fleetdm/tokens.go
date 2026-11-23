@@ -68,7 +68,17 @@ type VPPToken struct {
 	OrganizationName string `json:"org_name"`
 	Location         string `json:"location,omitempty"`
 	RenewDate        string `json:"renew_date,omitempty"`
-	Teams            []Team `json:"teams,omitempty"`
+	CountryCode      string `json:"country_code,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	// Teams is nil when the token is assigned to no team and empty when it is
+	// assigned to all teams.
+	Teams []VPPTokenTeam `json:"teams"`
+}
+
+// VPPTokenTeam is a team a VPP token is assigned to. Team 0 is "No team".
+type VPPTokenTeam struct {
+	ID   int64  `json:"team_id"`
+	Name string `json:"name"`
 }
 
 // listVPPTokensResponse is the API response for listing VPP tokens.

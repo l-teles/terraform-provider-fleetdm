@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -28,6 +29,7 @@ var caSecretFields = map[string]bool{
 	"password":      true,
 	"api_token":     true,
 	"client_secret": true,
+	"api_key_json":  true,
 }
 
 // fakeCAServer is a stateful stand-in for Fleet's /certificate_authorities
@@ -48,6 +50,7 @@ type caWrite struct {
 	method string
 	caType string
 	block  map[string]interface{}
+	raw    string
 }
 
 func newFakeCAServer() (*httptest.Server, *fakeCAServer) {
@@ -106,30 +109,35 @@ func (f *fakeCAServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// decodeBlock extracts the single CA type key and its configuration.
-func decodeBlock(r *http.Request) (string, map[string]interface{}, error) {
+// decodeBlock extracts the single CA type key and its configuration, and keeps
+// the raw body so tests can assert the exact wire JSON.
+func decodeBlock(r *http.Request) (string, map[string]interface{}, string, error) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return "", nil, "", err
+	}
 	var body map[string]map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		return "", nil, err
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return "", nil, "", err
 	}
 	if len(body) != 1 {
-		return "", nil, fmt.Errorf("expected exactly one CA type key, got %d", len(body))
+		return "", nil, "", fmt.Errorf("expected exactly one CA type key, got %d", len(body))
 	}
 	for caType, block := range body {
-		return caType, block, nil
+		return caType, block, string(raw), nil
 	}
-	return "", nil, fmt.Errorf("unreachable")
+	return "", nil, "", fmt.Errorf("unreachable")
 }
 
 func (f *fakeCAServer) create(w http.ResponseWriter, r *http.Request) {
-	caType, block, err := decodeBlock(r)
+	caType, block, raw, err := decodeBlock(r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]interface{}{"message": err.Error()})
 		return
 	}
 
-	f.writes = append(f.writes, caWrite{method: http.MethodPost, caType: caType, block: block})
+	f.writes = append(f.writes, caWrite{method: http.MethodPost, caType: caType, block: block, raw: raw})
 
 	id := f.nextID
 	f.nextID++
@@ -157,7 +165,7 @@ func (f *fakeCAServer) patch(w http.ResponseWriter, r *http.Request, id int) {
 		})
 		return
 	}
-	caType, block, err := decodeBlock(r)
+	caType, block, raw, err := decodeBlock(r)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]interface{}{"message": err.Error()})
@@ -185,7 +193,7 @@ func (f *fakeCAServer) patch(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
-	f.writes = append(f.writes, caWrite{method: http.MethodPatch, caType: caType, block: block})
+	f.writes = append(f.writes, caWrite{method: http.MethodPatch, caType: caType, block: block, raw: raw})
 
 	for k, v := range block {
 		detail[k] = v
@@ -209,22 +217,43 @@ func (f *fakeCAServer) get(w http.ResponseWriter, id int) {
 	}
 	masked := map[string]interface{}{}
 	for k, v := range detail {
+		// Fleet 4.95 never serializes the EJBCA PKCS#12 or its password
+		// (MTLSCertPEM/MTLSKeyPEM are `json:"-"`), and omits empty optional
+		// fields, which it stores as NULL.
+		if detail["type"] == fleetdm.CATypeEJBCA {
+			if k == "client_p12" || k == "password" {
+				continue
+			}
+			if s, ok := v.(string); ok && s == "" {
+				continue
+			}
+		}
 		if caSecretFields[k] {
 			masked[k] = "********"
 			continue
 		}
 		masked[k] = v
 	}
+	if detail["type"] == fleetdm.CATypeEJBCA {
+		masked["mtls_cert_expires_at"] = fakeMTLSCertExpiry
+	}
 	json.NewEncoder(w).Encode(masked)
 }
+
+// fakeMTLSCertExpiry is the client certificate expiry the fake reports for EJBCA CAs.
+const fakeMTLSCertExpiry = "2030-01-01T00:00:00Z"
 
 func (f *fakeCAServer) list(w http.ResponseWriter) {
 	summaries := []map[string]interface{}{}
 	for id, detail := range f.cas {
 		name, _ := detail["name"].(string)
-		summaries = append(summaries, map[string]interface{}{
+		summary := map[string]interface{}{
 			"id": id, "name": name, "type": detail["type"],
-		})
+		}
+		if detail["type"] == fleetdm.CATypeEJBCA {
+			summary["mtls_cert_expires_at"] = fakeMTLSCertExpiry
+		}
+		summaries = append(summaries, summary)
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"certificate_authorities": summaries})
 }
