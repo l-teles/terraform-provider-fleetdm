@@ -1733,13 +1733,13 @@ func (r *softwarePackageResource) Delete(ctx context.Context, req resource.Delet
 }
 
 // ImportState imports an existing resource by ID.
-// Import format: title_id or title_id:team_id
+// Import format: title_id (Unassigned) or title_id:team_id
 func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, ":")
 	if len(parts) < 1 || len(parts) > 2 {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			"Import ID must be in format: title_id or title_id:team_id",
+			"Import ID must be in format: title_id (Unassigned) or title_id:team_id",
 		)
 		return
 	}

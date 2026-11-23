@@ -807,7 +807,7 @@ func (r *softwareCustomPackageResource) Delete(ctx context.Context, req resource
 }
 
 // ImportState imports an existing custom-package title by ID. Format:
-// `title_id` or `title_id:team_id`. Users must set `package_path` or
+// `title_id` (Unassigned) or `title_id:team_id`. Users must set `package_path` or
 // `package_s3` in HCL after import — Fleet doesn't store those, so the
 // provider can't reconstruct them from the GET response.
 func (r *softwareCustomPackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -815,7 +815,7 @@ func (r *softwareCustomPackageResource) ImportState(ctx context.Context, req res
 	if len(parts) < 1 || len(parts) > 2 {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			"Import ID must be in format: title_id or title_id:team_id",
+			"Import ID must be in format: title_id (Unassigned) or title_id:team_id",
 		)
 		return
 	}

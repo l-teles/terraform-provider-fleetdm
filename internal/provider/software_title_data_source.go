@@ -61,7 +61,7 @@ func (d *SoftwareTitleDataSource) Schema(ctx context.Context, req datasource.Sch
 			},
 			"team_id": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "Filter by team ID. Use `0` for \"Unassigned\". Since Fleet 4.95, `software_package` and `app_store_app` are only returned when this is set.",
+				MarkdownDescription: "Filter by team ID. Use `0` for \"Unassigned\".",
 			},
 			"name": schema.StringAttribute{
 				Computed:            true,
