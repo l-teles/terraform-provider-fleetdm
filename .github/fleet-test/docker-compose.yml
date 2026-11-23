@@ -159,7 +159,7 @@ services:
         condition: service_completed_successfully
 
   fleet-migrate:
-    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.94.0}
+    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.95.0}
     network_mode: "host"
     command: fleet prepare db
     environment:
@@ -177,7 +177,7 @@ services:
     # Exits 0 on success; compose treats it as a one-shot service.
 
   fleet:
-    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.94.0}
+    image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.95.0}
     network_mode: "host"
     # --dev    : sets Fleet development defaults (logging, TLS cert, etc.)
     # --dev_license: enables Fleet Premium via the built-in development license
