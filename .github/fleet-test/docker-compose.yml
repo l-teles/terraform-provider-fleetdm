@@ -108,8 +108,8 @@ services:
           chmod 644 /certs/apns-cert.pem /certs/apns-key.pem
         fi
         # TLS for the fake-idp service. Fleet requires an https token URL and
-        # trusts this self-signed cert through SSL_CERT_DIR. Its own directory
-        # holds only the cert, since every file there is read as a CA.
+        # trusts this self-signed cert through SSL_CERT_DIR, which points at a
+        # directory holding only this cert.
         if [ ! -f /certs/fake-idp-ca/cert.pem ] || [ ! -f /certs/fake-idp-key.pem ]; then
           mkdir -p /certs/fake-idp-ca
           openssl req -x509 -newkey rsa:2048 -keyout /certs/fake-idp-key.pem \

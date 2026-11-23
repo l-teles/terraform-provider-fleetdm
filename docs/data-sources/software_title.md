@@ -44,7 +44,7 @@ output "hosts_count" {
 
 ### Optional
 
-- `team_id` (Number) Filter by team ID.
+- `team_id` (Number) Filter by team ID. Use `0` for "Unassigned". Since Fleet 4.95, `software_package` and `app_store_app` are only returned when this is set.
 
 ### Read-Only
 
