@@ -93,6 +93,7 @@ type Policy struct {
 	ContinuousAutomationsEnabled bool                           `json:"continuous_automations_enabled"`
 	PatchWhenClosed              bool                           `json:"patch_when_closed"`
 	NotifyBeforePatching         bool                           `json:"notify_before_patching"`
+	PatchDeadline                bool                           `json:"patch_deadline"`
 	FleetMaintained              bool                           `json:"fleet_maintained"`
 	HostCountUpdatedAt           *string                        `json:"host_count_updated_at"`
 	CreatedAt                    string                         `json:"created_at,omitempty"`
@@ -152,6 +153,7 @@ type CreatePolicyRequest struct {
 	ContinuousAutomationsEnabled bool     `json:"continuous_automations_enabled,omitempty"`
 	PatchWhenClosed              bool     `json:"patch_when_closed,omitempty"`
 	NotifyBeforePatching         bool     `json:"notify_before_patching,omitempty"`
+	PatchDeadline                bool     `json:"patch_deadline,omitempty"`
 	Hidden                       bool     `json:"hidden,omitempty"`
 	LabelsIncludeAny             []string `json:"labels_include_any,omitempty"`
 	LabelsExcludeAny             []string `json:"labels_exclude_any,omitempty"`
@@ -179,8 +181,8 @@ type CreatePolicyResponse struct {
 //     leaves the labels unchanged. Send all four planned values together.
 //   - critical, hidden, calendar_events_enabled, conditional_access_enabled and
 //     the automation switches (continuous_automations_enabled, patch_when_closed,
-//     notify_before_patching): sent only when true or when turning off one
-//     that was on.
+//     notify_before_patching, patch_deadline): sent only when true or when
+//     turning off one that was on.
 //   - conditional_access_bypass_enabled is not Premium-gated: a nil pointer
 //     is sent as null, which resets it to Fleet's default.
 //   - software_package_id: Fleet re-resolves the package whenever
@@ -208,6 +210,7 @@ type UpdatePolicyRequest struct {
 	ContinuousAutomationsEnabled   *bool           `json:"continuous_automations_enabled,omitempty"`
 	PatchWhenClosed                *bool           `json:"patch_when_closed,omitempty"`
 	NotifyBeforePatching           *bool           `json:"notify_before_patching,omitempty"`
+	PatchDeadline                  *bool           `json:"patch_deadline,omitempty"`
 	Hidden                         *bool           `json:"hidden,omitempty"`
 	LabelsIncludeAny               []string        `json:"labels_include_any,omitzero"`
 	LabelsExcludeAny               []string        `json:"labels_exclude_any,omitzero"`

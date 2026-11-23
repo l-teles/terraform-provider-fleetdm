@@ -37,6 +37,7 @@ type SoftwareVersionDataSourceModel struct {
 	GeneratedCPE     types.String                 `tfsdk:"generated_cpe"`
 	HostsCount       types.Int64                  `tfsdk:"hosts_count"`
 	TitleID          types.Int64                  `tfsdk:"title_id"`
+	AITool           types.Bool                   `tfsdk:"ai_tool"`
 	Vulnerabilities  []SoftwareVulnerabilityModel `tfsdk:"vulnerabilities"`
 }
 
@@ -103,6 +104,7 @@ func (d *SoftwareVersionDataSource) Schema(ctx context.Context, req datasource.S
 				Computed:            true,
 				MarkdownDescription: "The ID of the parent software title.",
 			},
+			"ai_tool": aiToolItemAttribute(),
 			"vulnerabilities": schema.ListNestedAttribute{
 				Computed:            true,
 				MarkdownDescription: "List of vulnerabilities for this software version.",
@@ -176,6 +178,7 @@ func (d *SoftwareVersionDataSource) Read(ctx context.Context, req datasource.Rea
 	data.GeneratedCPE = types.StringValue(version.GeneratedCPE)
 	data.HostsCount = types.Int64Value(int64(version.HostsCount))
 	data.TitleID = types.Int64Value(int64(version.TitleID))
+	data.AITool = types.BoolPointerValue(version.AITool)
 
 	// Map vulnerabilities
 	if version.Vulnerabilities != nil {

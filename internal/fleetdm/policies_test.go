@@ -849,7 +849,7 @@ func TestClient_UpdateTeamPolicy_PointerFieldsSerializeNullToClear(t *testing.T)
 	}
 	// The premium-only switches, critical and the labels are omitted rather
 	// than sent as null: Fleet Free rejects them whenever they are present.
-	for _, key := range []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching",
+	for _, key := range []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching", "patch_deadline",
 		"critical", "calendar_events_enabled", "conditional_access_enabled", "labels_include_any", "labels_exclude_any", "labels_include_all", "labels_exclude_all"} {
 		if strings.Contains(rawBody, `"`+key+`"`) {
 			t.Errorf("expected request body to omit %q, body was: %s", key, rawBody)
@@ -1057,6 +1057,49 @@ func TestClient_CreatePolicy_OmitsFalseContinuousAutomations(t *testing.T) {
 	}
 	if strings.Contains(rawBody, "continuous_automations_enabled") {
 		t.Errorf("expected request body to omit continuous_automations_enabled, body was: %s", rawBody)
+	}
+}
+
+// TestClient_PolicyPatchDeadlineWire pins Fleet 4.95's patch_deadline: omitted
+// from create while false (Fleet Free rejects present premium fields), sent
+// when true, and decoded from the response.
+func TestClient_PolicyPatchDeadlineWire(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		rawBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"policy":{"id":1,"name":"p","type":"patch","patch_deadline":true}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	ctx := context.Background()
+
+	if _, err := client.CreateTeamPolicy(ctx, 7, CreatePolicyRequest{Name: "p", Type: "patch"}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if strings.Contains(rawBody, "patch_deadline") {
+		t.Errorf("expected create body to omit patch_deadline while false, body was: %s", rawBody)
+	}
+
+	policy, err := client.CreateTeamPolicy(ctx, 7, CreatePolicyRequest{Name: "p", Type: "patch", ContinuousAutomationsEnabled: true, PatchDeadline: true})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(rawBody, `"patch_deadline":true`) {
+		t.Errorf("expected create body to carry patch_deadline=true, body was: %s", rawBody)
+	}
+	if !policy.PatchDeadline {
+		t.Error("expected patch_deadline true decoded from the response")
+	}
+
+	off := false
+	if _, err := client.UpdateTeamPolicy(ctx, 7, 1, UpdatePolicyRequest{Name: "p", PatchDeadline: &off}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(rawBody, `"patch_deadline":false`) {
+		t.Errorf("expected update body to carry patch_deadline=false, body was: %s", rawBody)
 	}
 }
 

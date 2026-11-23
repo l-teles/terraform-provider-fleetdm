@@ -35,6 +35,7 @@ type SoftwareTitleDataSourceModel struct {
 	HostsCount       types.Int64                 `tfsdk:"hosts_count"`
 	VersionsCount    types.Int64                 `tfsdk:"versions_count"`
 	BundleIdentifier types.String                `tfsdk:"bundle_identifier"`
+	AITool           types.Bool                  `tfsdk:"ai_tool"`
 	Versions         []SoftwareTitleVersionModel `tfsdk:"versions"`
 }
 
@@ -91,6 +92,7 @@ func (d *SoftwareTitleDataSource) Schema(ctx context.Context, req datasource.Sch
 				Computed:            true,
 				MarkdownDescription: "The bundle identifier (for macOS apps).",
 			},
+			"ai_tool": aiToolItemAttribute(),
 			"versions": schema.ListNestedAttribute{
 				Computed:            true,
 				MarkdownDescription: "List of versions for this software title.",
@@ -155,6 +157,7 @@ func (d *SoftwareTitleDataSource) Read(ctx context.Context, req datasource.ReadR
 	data.HostsCount = types.Int64Value(int64(title.HostsCount))
 	data.VersionsCount = types.Int64Value(int64(title.VersionsCount))
 	data.BundleIdentifier = types.StringValue(title.BundleIdentifier)
+	data.AITool = types.BoolPointerValue(title.AITool)
 
 	// Map versions
 	if title.Versions != nil {

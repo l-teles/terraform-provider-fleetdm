@@ -2156,3 +2156,82 @@ func TestGetSoftwareTitleInFleet(t *testing.T) {
 		})
 	}
 }
+
+// TestClient_ListSoftwareTitlesAITool pins Fleet 4.95's ai_tool filter: sent
+// as true only when set, and the response flag kept as nil when Fleet omits it
+// (Fleet Free) so it is not mistaken for false.
+func TestClient_ListSoftwareTitlesAITool(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("ai_tool") {
+			got = append(got, q.Get("ai_tool"))
+		} else {
+			got = append(got, "<absent>")
+		}
+		_, _ = w.Write([]byte(`{"count":3,"software_titles":[{"id":1,"ai_tool":true},{"id":2,"ai_tool":false},{"id":3}]}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	ctx := context.Background()
+	if _, _, err := client.ListSoftwareTitles(ctx, SoftwareTitleListOptions{}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	titles, _, err := client.ListSoftwareTitles(ctx, SoftwareTitleListOptions{AITool: true})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !slices.Equal(got, []string{"<absent>", "true"}) {
+		t.Errorf("expected ai_tool absent then true, got %q", got)
+	}
+	if len(titles) != 3 {
+		t.Fatalf("expected 3 titles, got %d", len(titles))
+	}
+	if titles[0].AITool == nil || !*titles[0].AITool {
+		t.Errorf("expected title 1 ai_tool=true, got %v", titles[0].AITool)
+	}
+	if titles[1].AITool == nil || *titles[1].AITool {
+		t.Errorf("expected title 2 ai_tool=false, got %v", titles[1].AITool)
+	}
+	if titles[2].AITool != nil {
+		t.Errorf("expected title 3 ai_tool=nil when omitted, got %v", *titles[2].AITool)
+	}
+}
+
+// TestClient_ListSoftwareVersionsAITool checks the ai_tool filter reaches every
+// page of the versions walk and is left out when not set.
+func TestClient_ListSoftwareVersionsAITool(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("ai_tool") {
+			got = append(got, q.Get("page")+":"+q.Get("ai_tool"))
+		} else {
+			got = append(got, q.Get("page")+":<absent>")
+		}
+		if q.Get("page") == "" {
+			_, _ = w.Write([]byte(`{"count":2,"software":[{"id":1,"ai_tool":true}],"meta":{"has_next_results":true}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"count":2,"software":[{"id":2}],"meta":{"has_next_results":false}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	ctx := context.Background()
+	versions, _, err := client.ListSoftwareVersions(ctx, SoftwareVersionListOptions{AITool: true})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if _, _, err := client.ListSoftwareVersions(ctx, SoftwareVersionListOptions{}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	want := []string{":true", "1:true", ":<absent>", "1:<absent>"}
+	if !slices.Equal(got, want) {
+		t.Errorf("expected ai_tool per page %q, got %q", want, got)
+	}
+	if len(versions) != 2 || versions[0].AITool == nil || !*versions[0].AITool || versions[1].AITool != nil {
+		t.Errorf("expected ai_tool true then nil, got %+v", versions)
+	}
+}

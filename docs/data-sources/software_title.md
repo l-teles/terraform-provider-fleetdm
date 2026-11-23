@@ -48,6 +48,7 @@ output "hosts_count" {
 
 ### Read-Only
 
+- `ai_tool` (Boolean) Whether fleetd reported this software as an AI tool. Null when Fleet does not report it (Fleet Free, or Fleet before 4.95). _Available in Fleet Premium 4.95+._
 - `bundle_identifier` (String) The bundle identifier (for macOS apps).
 - `display_name` (String) The display name of the software.
 - `hosts_count` (Number) The number of hosts with this software installed.

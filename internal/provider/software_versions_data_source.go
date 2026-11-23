@@ -35,6 +35,7 @@ type SoftwareVersionsDataSourceModel struct {
 	Source           types.Set                  `tfsdk:"source"`
 	ExtensionFor     types.Set                  `tfsdk:"extension_for"`
 	VulnerableOnly   types.Bool                 `tfsdk:"vulnerable_only"`
+	AITool           types.Bool                 `tfsdk:"ai_tool"`
 	TotalCount       types.Int64                `tfsdk:"total_count"`
 	SoftwareVersions []SoftwareVersionListModel `tfsdk:"software_versions"`
 }
@@ -48,6 +49,7 @@ type SoftwareVersionListModel struct {
 	Vendor     types.String `tfsdk:"vendor"`
 	HostsCount types.Int64  `tfsdk:"hosts_count"`
 	TitleID    types.Int64  `tfsdk:"title_id"`
+	AITool     types.Bool   `tfsdk:"ai_tool"`
 }
 
 func (d *SoftwareVersionsDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -71,6 +73,7 @@ func (d *SoftwareVersionsDataSource) Schema(ctx context.Context, req datasource.
 				Optional:            true,
 				MarkdownDescription: "Only return software with known vulnerabilities.",
 			},
+			"ai_tool": aiToolFilterAttribute(),
 			"total_count": schema.Int64Attribute{
 				Computed:            true,
 				MarkdownDescription: "Total count of software versions.",
@@ -108,6 +111,7 @@ func (d *SoftwareVersionsDataSource) Schema(ctx context.Context, req datasource.
 							Computed:            true,
 							MarkdownDescription: "The ID of the parent software title.",
 						},
+						"ai_tool": aiToolItemAttribute(),
 					},
 				},
 			},
@@ -148,6 +152,8 @@ func (d *SoftwareVersionsDataSource) Read(ctx context.Context, req datasource.Re
 	}
 	opts.SoftwareTypeFilter = softwareTypeFilterFromConfig(ctx, data.Source, data.ExtensionFor, &resp.Diagnostics)
 	checkSoftwareTypeFilterSupported(ctx, d.client, opts.SoftwareTypeFilter, &resp.Diagnostics)
+	opts.AITool = aiToolFilterFromConfig(data.AITool)
+	checkAIToolFilterSupported(ctx, d.client, opts.AITool, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -169,6 +175,7 @@ func (d *SoftwareVersionsDataSource) Read(ctx context.Context, req datasource.Re
 			Vendor:     types.StringValue(v.Vendor),
 			HostsCount: types.Int64Value(int64(v.HostsCount)),
 			TitleID:    types.Int64Value(int64(v.TitleID)),
+			AITool:     types.BoolPointerValue(v.AITool),
 		}
 	}
 

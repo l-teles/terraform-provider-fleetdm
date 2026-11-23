@@ -36,6 +36,7 @@ type SoftwareTitlesDataSourceModel struct {
 	ExtensionFor        types.Set                `tfsdk:"extension_for"`
 	VulnerableOnly      types.Bool               `tfsdk:"vulnerable_only"`
 	AvailableForInstall types.Bool               `tfsdk:"available_for_install"`
+	AITool              types.Bool               `tfsdk:"ai_tool"`
 	TotalCount          types.Int64              `tfsdk:"total_count"`
 	SoftwareTitles      []SoftwareTitleListModel `tfsdk:"software_titles"`
 }
@@ -49,6 +50,7 @@ type SoftwareTitleListModel struct {
 	HostsCount       types.Int64  `tfsdk:"hosts_count"`
 	VersionsCount    types.Int64  `tfsdk:"versions_count"`
 	BundleIdentifier types.String `tfsdk:"bundle_identifier"`
+	AITool           types.Bool   `tfsdk:"ai_tool"`
 }
 
 func (d *SoftwareTitlesDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -76,6 +78,7 @@ func (d *SoftwareTitlesDataSource) Schema(ctx context.Context, req datasource.Sc
 				Optional:            true,
 				MarkdownDescription: "Only return software available for install.",
 			},
+			"ai_tool": aiToolFilterAttribute(),
 			"total_count": schema.Int64Attribute{
 				Computed:            true,
 				MarkdownDescription: "Total count of software titles.",
@@ -113,6 +116,7 @@ func (d *SoftwareTitlesDataSource) Schema(ctx context.Context, req datasource.Sc
 							Computed:            true,
 							MarkdownDescription: "The bundle identifier (for macOS apps).",
 						},
+						"ai_tool": aiToolItemAttribute(),
 					},
 				},
 			},
@@ -156,6 +160,8 @@ func (d *SoftwareTitlesDataSource) Read(ctx context.Context, req datasource.Read
 	}
 	opts.SoftwareTypeFilter = softwareTypeFilterFromConfig(ctx, data.Source, data.ExtensionFor, &resp.Diagnostics)
 	checkSoftwareTypeFilterSupported(ctx, d.client, opts.SoftwareTypeFilter, &resp.Diagnostics)
+	opts.AITool = aiToolFilterFromConfig(data.AITool)
+	checkAIToolFilterSupported(ctx, d.client, opts.AITool, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -177,6 +183,7 @@ func (d *SoftwareTitlesDataSource) Read(ctx context.Context, req datasource.Read
 			HostsCount:       types.Int64Value(int64(title.HostsCount)),
 			VersionsCount:    types.Int64Value(int64(title.VersionsCount)),
 			BundleIdentifier: types.StringValue(title.BundleIdentifier),
+			AITool:           types.BoolPointerValue(title.AITool),
 		}
 	}
 

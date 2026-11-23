@@ -48,6 +48,7 @@ output "browser_software" {
 
 ### Optional
 
+- `ai_tool` (Boolean) Only return software that fleetd reported as an AI tool. `false` or unset returns all software; it does not select software that isn't an AI tool. Fleet Free rejects `true`. _Requires Fleet Premium 4.95+._
 - `available_for_install` (Boolean) Only return software available for install.
 - `extension_for` (Set of String) Narrow an extension or plugin source to the browsers or IDEs it is for, e.g. `["brave"]` with `source = ["chrome_extensions"]`. Each value's own source must be listed in `source`; a source without any of its values here matches all of its software. One of: `brave`, `chrome`, `chromium`, `clion`, `cursor`, `datagrip`, `edge`, `edge_beta`, `firefox`, `goland`, `intellij_idea`, `intellij_idea_community_edition`, `opera`, `phpstorm`, `pycharm`, `pycharm_community_edition`, `resharper`, `rider`, `rubymine`, `rust_rov`, `trae`, `vscode`, `vscode_insiders`, `vscodium`, `vscodium_insiders`, `webstorm`, `windsurf`, `yandex`. _Requires Fleet 4.94+._
 - `query` (String) Search query to filter software titles by name.
@@ -65,6 +66,7 @@ output "browser_software" {
 
 Read-Only:
 
+- `ai_tool` (Boolean) Whether fleetd reported this software as an AI tool. Null when Fleet does not report it (Fleet Free, or Fleet before 4.95). _Available in Fleet Premium 4.95+._
 - `bundle_identifier` (String) The bundle identifier (for macOS apps).
 - `display_name` (String) The display name of the software.
 - `hosts_count` (Number) The number of hosts with this software.

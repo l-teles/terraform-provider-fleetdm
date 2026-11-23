@@ -37,6 +37,10 @@ type SoftwareTitle struct {
 	AutoUpdateEnabled     *bool   `json:"auto_update_enabled,omitempty"`
 	AutoUpdateWindowStart *string `json:"auto_update_window_start,omitempty"`
 	AutoUpdateWindowEnd   *string `json:"auto_update_window_end,omitempty"`
+
+	// AITool is Fleet 4.95's AI tool flag. Fleet Free and older Fleet omit it,
+	// so nil means "not reported" rather than false.
+	AITool *bool `json:"ai_tool,omitempty"`
 }
 
 // AutomaticInstallPolicyRef points at a Fleet policy that auto-installs a
@@ -332,6 +336,8 @@ type SoftwareVersion struct {
 	Vulnerabilities  []SoftwareVulnerability `json:"vulnerabilities,omitempty"`
 	CountsUpdatedAt  time.Time               `json:"counts_updated_at"`
 	TitleID          int                     `json:"title_id,omitempty"`
+	// AITool is nil when Fleet does not report it (Free, or before 4.95).
+	AITool *bool `json:"ai_tool,omitempty"`
 }
 
 // SoftwareVulnerability represents a software vulnerability.
@@ -378,6 +384,8 @@ type SoftwareTitleListOptions struct {
 	AvailableForInstall bool
 	SelfService         bool
 	VulnerableOnly      bool
+	// AITool sends ai_tool=true (Fleet Premium 4.95+). False sends nothing.
+	AITool bool
 	SoftwareTypeFilter
 }
 
@@ -387,6 +395,8 @@ type SoftwareVersionListOptions struct {
 	TeamID         *int
 	Query          string
 	VulnerableOnly bool
+	// AITool sends ai_tool=true (Fleet Premium 4.95+). False sends nothing.
+	AITool bool
 	SoftwareTypeFilter
 }
 
@@ -450,6 +460,9 @@ func (c *Client) ListSoftwareTitles(ctx context.Context, opts SoftwareTitleListO
 	}
 	if opts.VulnerableOnly {
 		params["vulnerable"] = "true"
+	}
+	if opts.AITool {
+		params["ai_tool"] = "true"
 	}
 	opts.applyParams(params)
 	opts.applyListParams(params)
@@ -517,6 +530,9 @@ func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionL
 		}
 		if opts.VulnerableOnly {
 			params["vulnerable"] = "true"
+		}
+		if opts.AITool {
+			params["ai_tool"] = "true"
 		}
 		opts.applyParams(params)
 		listOpts := opts.ListOptions
@@ -793,8 +809,8 @@ type PatchSoftwarePackageRequest struct {
 	//
 	// PreInstallQuery follows the same convention as of Fleet 4.91, which
 	// introduced the first Fleet-generated pre-install query: turning on a
-	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching)
-	// makes Fleet write a managed query onto the installer. Sending "" for an unmanaged field would wipe it and
+	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching;
+	// from 4.95, patch_deadline) makes Fleet write a managed query onto the installer. Sending "" for an unmanaged field would wipe it and
 	// silently switch that behaviour back off.
 	//
 	// PostInstallScript stays a plain string because Fleet generates no
