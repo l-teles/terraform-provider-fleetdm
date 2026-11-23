@@ -441,7 +441,7 @@ func (r *softwareCustomPackageResource) Read(ctx context.Context, req resource.R
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -759,7 +759,7 @@ func (r *softwareCustomPackageResource) replacePackage(ctx context.Context, titl
 
 	// Refresh title metadata so plan picks up the new version. title_id is
 	// preserved, so plan.ID / plan.TitleID stay correct.
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error refreshing software title after replace",

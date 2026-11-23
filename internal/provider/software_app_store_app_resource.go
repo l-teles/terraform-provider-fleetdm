@@ -395,7 +395,7 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)

@@ -1163,7 +1163,7 @@ func assertFleetLabels(t *testing.T, titleIDAttr string, wantIncludeAny, wantExc
 		// GET /software/titles/{id} is the metadata read the resource itself
 		// uses. The sibling /package endpoint is download-only — without
 		// alt=media it answers 422 — so it cannot serve as an oracle here.
-		title, err := client.GetSoftwareTitle(context.Background(), titleID, nil)
+		title, err := client.GetSoftwareTitleInFleet(context.Background(), titleID, nil)
 		if err != nil {
 			return fmt.Errorf("get software title %d: %w", titleID, err)
 		}

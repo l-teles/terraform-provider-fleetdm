@@ -271,7 +271,7 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 			return
 		}
 		// Re-fetch so plan.DisplayName matches what Fleet stored.
-		refreshed, err := r.client.GetSoftwareTitle(ctx, title.ID, optionalIntPtr(plan.TeamID))
+		refreshed, err := r.client.GetSoftwareTitleInFleet(ctx, title.ID, optionalIntPtr(plan.TeamID))
 		if err == nil && refreshed != nil {
 			plan.DisplayName = types.StringValue(refreshed.DisplayName)
 		}
@@ -325,7 +325,7 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)

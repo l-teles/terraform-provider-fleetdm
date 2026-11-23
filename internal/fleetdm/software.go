@@ -477,6 +477,18 @@ func (c *Client) GetSoftwareTitle(ctx context.Context, id int, teamID *int) (*So
 	return resp.SoftwareTitle, nil
 }
 
+// GetSoftwareTitleInFleet retrieves a software title scoped to the fleet that
+// holds its installer, with nil meaning "Unassigned" (team_id=0). Since Fleet
+// 4.95 an unscoped request omits the Unassigned installer, so resources that
+// own an installer must always send the fleet.
+func (c *Client) GetSoftwareTitleInFleet(ctx context.Context, id int, teamID *int) (*SoftwareTitle, error) {
+	tid := 0
+	if teamID != nil {
+		tid = *teamID
+	}
+	return c.GetSoftwareTitle(ctx, id, &tid)
+}
+
 const (
 	// softwareVersionsPerPage is the page size used when walking
 	// GET /software/versions. Since Fleet 4.93 an unpaginated request returns
@@ -718,7 +730,7 @@ func (c *Client) UploadSoftwarePackage(ctx context.Context, req *UploadSoftwareP
 		return nil, fmt.Errorf("upload succeeded but title_id is 0, response body: %s", string(respBody))
 	}
 
-	return c.GetSoftwareTitle(ctx, uploadResp.SoftwarePackage.TitleID, req.TeamID)
+	return c.GetSoftwareTitleInFleet(ctx, uploadResp.SoftwarePackage.TitleID, req.TeamID)
 }
 
 // DeleteSoftwarePackage deletes a software package by title ID.
