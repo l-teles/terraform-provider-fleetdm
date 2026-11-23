@@ -107,6 +107,16 @@ services:
           rm /certs/apns-key-pkcs8.pem
           chmod 644 /certs/apns-cert.pem /certs/apns-key.pem
         fi
+        # TLS for the fake-idp service. Fleet requires an https token URL and
+        # trusts this self-signed cert through SSL_CERT_DIR, which points at a
+        # directory holding only this cert.
+        if [ ! -f /certs/fake-idp-ca/cert.pem ] || [ ! -f /certs/fake-idp-key.pem ]; then
+          mkdir -p /certs/fake-idp-ca
+          openssl req -x509 -newkey rsa:2048 -keyout /certs/fake-idp-key.pem \
+            -out /certs/fake-idp-ca/cert.pem -days 365 -nodes \
+            -subj "/CN=Fleet Test IdP" -addext "subjectAltName=IP:127.0.0.1"
+          chmod 644 /certs/fake-idp-ca/cert.pem /certs/fake-idp-key.pem
+        fi
         if [ ! -f /certs/apple-scep-cert.pem ] || [ ! -f /certs/apple-scep-key.pem ]; then
           openssl req -x509 -newkey rsa:2048 -keyout /certs/apple-scep-key-pkcs8.pem \
             -out /certs/apple-scep-cert.pem -days 365 -nodes -subj "/CN=Fleet Test Apple SCEP CA"
@@ -116,6 +126,37 @@ services:
         fi
     volumes:
       - mdm-certs:/certs
+
+  # Stand-in OAuth token endpoint for Apple account provisioning. Since 4.95
+  # Fleet test-signs-in a made-up user when those settings change, and accepts
+  # them once the IdP answers invalid_grant, so this always does that.
+  fake-idp:
+    image: python:3.13.18-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
+    network_mode: "host"
+    command:
+      - python
+      - -c
+      - |
+        import http.server, ssl
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = b'{"error":"invalid_grant"}'
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain("/certs/fake-idp-ca/cert.pem", "/certs/fake-idp-key.pem")
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 18099), H)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv.serve_forever()
+    volumes:
+      - mdm-certs:/certs:ro
+    depends_on:
+      mdm-certs:
+        condition: service_completed_successfully
 
   fleet-migrate:
     image: fleetdm/fleet:${FLEET_IMAGE_TAG:-v4.94.0}
@@ -170,6 +211,9 @@ services:
       FLEET_MDM_APPLE_APNS_KEY: /certs/apns-key.pem
       FLEET_MDM_APPLE_SCEP_CERT: /certs/apple-scep-cert.pem
       FLEET_MDM_APPLE_SCEP_KEY: /certs/apple-scep-key.pem
+      # Adds the fake-idp cert to the system roots (Go reads SSL_CERT_DIR on
+      # top of the default bundle file).
+      SSL_CERT_DIR: /etc/ssl/certs:/certs/fake-idp-ca
     volumes:
       - mdm-certs:/certs:ro
     depends_on:
@@ -183,6 +227,8 @@ services:
         condition: service_completed_successfully
       mdm-certs:
         condition: service_completed_successfully
+      fake-idp:
+        condition: service_started
     # No healthcheck here: the Fleet image is a minimal binary that does not
     # ship curl/wget.  setup-fleet.sh polls /healthz from the runner instead.
 

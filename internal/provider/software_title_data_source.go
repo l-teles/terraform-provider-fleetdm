@@ -61,7 +61,7 @@ func (d *SoftwareTitleDataSource) Schema(ctx context.Context, req datasource.Sch
 			},
 			"team_id": schema.Int64Attribute{
 				Optional:            true,
-				MarkdownDescription: "Filter by team ID.",
+				MarkdownDescription: "Filter by team ID. Use `0` for \"Unassigned\".",
 			},
 			"name": schema.StringAttribute{
 				Computed:            true,

@@ -395,7 +395,7 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -644,7 +644,7 @@ func (r *softwareAppStoreAppResource) ImportState(ctx context.Context, req resou
 	if len(parts) < 1 || len(parts) > 2 {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			"Import ID must be in format: title_id or title_id:team_id",
+			"Import ID must be in format: title_id (Unassigned) or title_id:team_id",
 		)
 		return
 	}

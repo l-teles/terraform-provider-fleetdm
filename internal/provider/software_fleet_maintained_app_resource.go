@@ -271,7 +271,7 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 			return
 		}
 		// Re-fetch so plan.DisplayName matches what Fleet stored.
-		refreshed, err := r.client.GetSoftwareTitle(ctx, title.ID, optionalIntPtr(plan.TeamID))
+		refreshed, err := r.client.GetSoftwareTitleInFleet(ctx, title.ID, optionalIntPtr(plan.TeamID))
 		if err == nil && refreshed != nil {
 			plan.DisplayName = types.StringValue(refreshed.DisplayName)
 		}
@@ -325,7 +325,7 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	titleID := int(state.TitleID.ValueInt64())
 	teamID := optionalIntPtr(state.TeamID)
 
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -627,14 +627,14 @@ func (r *softwareFleetMaintainedAppResource) Delete(ctx context.Context, req res
 }
 
 // ImportState imports an existing FMA-managed title by ID. Format:
-// `title_id` or `title_id:team_id`. The next Read after import verifies the
+// `title_id` (Unassigned) or `title_id:team_id`. The next Read after import verifies the
 // title is not a VPP app (catches the most common mismatch).
 func (r *softwareFleetMaintainedAppResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, ":")
 	if len(parts) < 1 || len(parts) > 2 {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			"Import ID must be in format: title_id or title_id:team_id",
+			"Import ID must be in format: title_id (Unassigned) or title_id:team_id",
 		)
 		return
 	}

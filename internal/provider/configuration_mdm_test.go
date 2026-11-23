@@ -84,6 +84,16 @@ func snapshotConfigurationMDM(t *testing.T) {
 	})
 }
 
+// testIdPTokenURL is the token endpoint live Apple account provisioning tests
+// point at. Since 4.95 Fleet test-signs-in with the IdP when these settings
+// change, so it must answer; the default is the CI rig's fake-idp service.
+func testIdPTokenURL() string {
+	if v := os.Getenv("FLEETDM_TEST_IDP_TOKEN_URL"); v != "" {
+		return v
+	}
+	return "https://127.0.0.1:18099/token"
+}
+
 // requireUnconfiguredAppleAccountProvisioning skips the test when Fleet
 // already has Platform SSO configured, and otherwise clears it again from a
 // cleanup. Fleet never returns the client secret, so a configuration that
@@ -391,11 +401,11 @@ func TestAccConfigurationResource_mdmAppleAccountProvisioning(t *testing.T) {
 	cfg := func(clientID, secret string) string {
 		return configurationMDMConfig(fmt.Sprintf(`mdm = {
     apple_account_provisioning = {
-      oauth_idp_token_url     = "https://idp.example.test/token"
+      oauth_idp_token_url     = %q
       oauth_idp_client_id     = %q
       oauth_idp_client_secret = %q
     }
-  }`, clientID, secret))
+  }`, testIdPTokenURL(), clientID, secret))
 	}
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },
@@ -426,12 +436,12 @@ func TestAccConfigurationResource_mdmAppleAccountProvisioningWriteOnly(t *testin
 	cfg := func(secret string, version int) string {
 		return configurationMDMConfig(fmt.Sprintf(`mdm = {
     apple_account_provisioning = {
-      oauth_idp_token_url                = "https://idp.example.test/token"
+      oauth_idp_token_url                = %q
       oauth_idp_client_id                = "tf-acc-client"
       oauth_idp_client_secret_wo         = %q
       oauth_idp_client_secret_wo_version = %d
     }
-  }`, secret, version))
+  }`, testIdPTokenURL(), secret, version))
 	}
 	resource.Test(t, resource.TestCase{
 		PreCheck:                 func() { testAccPreCheck(t) },

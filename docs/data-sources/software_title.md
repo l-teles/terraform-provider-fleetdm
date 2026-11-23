@@ -44,7 +44,7 @@ output "hosts_count" {
 
 ### Optional
 
-- `team_id` (Number) Filter by team ID.
+- `team_id` (Number) Filter by team ID. Use `0` for "Unassigned".
 
 ### Read-Only
 

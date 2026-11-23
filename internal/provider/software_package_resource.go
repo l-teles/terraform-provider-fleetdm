@@ -938,7 +938,7 @@ func (r *softwarePackageResource) Read(ctx context.Context, req resource.ReadReq
 	teamID := optionalIntPtr(state.TeamID)
 
 	// Get the software title
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -1468,7 +1468,7 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 
 	// Refresh title metadata so plan picks up the new version. title_id is
 	// preserved, so plan.ID / plan.TitleID stay correct.
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error refreshing software title after replace",
@@ -1733,13 +1733,13 @@ func (r *softwarePackageResource) Delete(ctx context.Context, req resource.Delet
 }
 
 // ImportState imports an existing resource by ID.
-// Import format: title_id or title_id:team_id
+// Import format: title_id (Unassigned) or title_id:team_id
 func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	parts := strings.Split(req.ID, ":")
 	if len(parts) < 1 || len(parts) > 2 {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			"Import ID must be in format: title_id or title_id:team_id",
+			"Import ID must be in format: title_id (Unassigned) or title_id:team_id",
 		)
 		return
 	}
@@ -1767,7 +1767,7 @@ func (r *softwarePackageResource) ImportState(ctx context.Context, req resource.
 	}
 
 	// Fetch the software title which contains installer metadata
-	title, err := r.client.GetSoftwareTitle(ctx, titleID, teamID)
+	title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError(
 			"Error reading software package during import",

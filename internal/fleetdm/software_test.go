@@ -2123,3 +2123,36 @@ func TestClient_SoftwarePackageRejectsLoneEmptyName(t *testing.T) {
 		}
 	})
 }
+
+// TestGetSoftwareTitleInFleet pins that an Unassigned (nil) fleet is sent as
+// team_id=0: since Fleet 4.95 an unscoped request omits the Unassigned
+// installer.
+func TestGetSoftwareTitleInFleet(t *testing.T) {
+	five := 5
+	for name, tc := range map[string]struct {
+		teamID *int
+		want   string
+	}{
+		"unassigned": {nil, "0"},
+		"fleet":      {&five, "5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Query()["team_id"]
+				_ = json.NewEncoder(w).Encode(getSoftwareTitleResponse{SoftwareTitle: &SoftwareTitle{ID: 1}})
+			}))
+			defer server.Close()
+			client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			if _, err := client.GetSoftwareTitleInFleet(context.Background(), 1, tc.teamID); err != nil {
+				t.Fatalf("GetSoftwareTitleInFleet: %v", err)
+			}
+			if len(got) != 1 || got[0] != tc.want {
+				t.Errorf("team_id = %v, want [%s]", got, tc.want)
+			}
+		})
+	}
+}
