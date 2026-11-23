@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -27,6 +28,11 @@ var (
 // setupExperienceOptInNote marks the opt-in settings whose semantics are
 // described in the resource description.
 const setupExperienceOptInNote = " Opt-in: omitting the attribute leaves Fleet's own value alone."
+
+// setupExperienceBootstrapNote describes the requirements of the bootstrap
+// package settings.
+const setupExperienceBootstrapNote = "Requires Fleet 4.95.0 or later and Apple MDM turned on. Fleet rejects `true` until the " +
+	"fleet has a bootstrap package, so add `depends_on` on its `fleetdm_bootstrap_package`."
 
 // NewSetupExperienceResource is a helper function to simplify the provider implementation.
 func NewSetupExperienceResource() resource.Resource {
@@ -51,6 +57,9 @@ type setupExperienceResourceModel struct {
 
 	EnableManagedLocalAccount types.Bool   `tfsdk:"enable_managed_local_account"`
 	EndUserLocalAccountType   types.String `tfsdk:"end_user_local_account_type"`
+
+	BootstrapPackageDuringManualEnrollment types.Bool `tfsdk:"macos_enable_bootstrap_package_during_manual_enrollment"`
+	BootstrapPackageDuringMigration        types.Bool `tfsdk:"macos_enable_bootstrap_package_during_migration"`
 }
 
 // Metadata returns the resource type name.
@@ -136,6 +145,16 @@ func (r *setupExperienceResource) Schema(_ context.Context, _ resource.SchemaReq
 					stringvalidator.OneOf("admin", "standard", "none"),
 				},
 			},
+			"macos_enable_bootstrap_package_during_manual_enrollment": schema.BoolAttribute{
+				Description: "Whether Fleet installs the fleet's bootstrap package on macOS hosts that enroll manually, not only " +
+					"through automatic (ADE) enrollment. " + setupExperienceBootstrapNote + setupExperienceOptInNote,
+				Optional: true,
+			},
+			"macos_enable_bootstrap_package_during_migration": schema.BoolAttribute{
+				Description: "Whether Fleet installs the fleet's bootstrap package on macOS hosts that migrate to Fleet from another " +
+					"MDM. " + setupExperienceBootstrapNote + setupExperienceOptInNote,
+				Optional: true,
+			},
 		},
 	}
 }
@@ -212,6 +231,36 @@ func setupExperienceUpdateRequest(teamID int, plan setupExperienceResourceModel)
 		ManualAgentInstall:        optionalBoolPtr(plan.ManualAgentInstall),
 		EnableManagedLocalAccount: optionalBoolPtr(plan.EnableManagedLocalAccount),
 		EndUserLocalAccountType:   optionalStringPtr(plan.EndUserLocalAccountType),
+
+		BootstrapPackageDuringManualEnrollment: optionalBoolPtr(plan.BootstrapPackageDuringManualEnrollment),
+		BootstrapPackageDuringMigration:        optionalBoolPtr(plan.BootstrapPackageDuringMigration),
+	}
+}
+
+// checkSetupExperienceApplied reads the settings back when the plan manages a
+// setting that an older Fleet silently ignores, and names any it did not report.
+func (r *setupExperienceResource) checkSetupExperienceApplied(ctx context.Context, teamID int, plan setupExperienceResourceModel, diags *diag.Diagnostics) {
+	if plan.BootstrapPackageDuringManualEnrollment.IsNull() && plan.BootstrapPackageDuringMigration.IsNull() {
+		return
+	}
+	experience, err := r.client.GetSetupExperience(ctx, teamID)
+	if err != nil {
+		diags.AddError("Error reading setup experience", "Could not read back setup experience: "+err.Error())
+		return
+	}
+	for _, s := range []struct {
+		name     string
+		managed  bool
+		reported bool
+	}{
+		{"macos_enable_bootstrap_package_during_manual_enrollment", !plan.BootstrapPackageDuringManualEnrollment.IsNull(), experience.BootstrapPackageDuringManualEnrollment != nil},
+		{"macos_enable_bootstrap_package_during_migration", !plan.BootstrapPackageDuringMigration.IsNull(), experience.BootstrapPackageDuringMigration != nil},
+	} {
+		if s.managed && !s.reported {
+			diags.AddAttributeError(path.Root(s.name), "Setup experience setting not supported by this Fleet",
+				fmt.Sprintf("Fleet accepted the setup experience but did not report %s. It needs Fleet 4.95.0 or later. "+
+					"Remove %[1]s or upgrade Fleet.", s.name))
+		}
 	}
 }
 
@@ -252,6 +301,8 @@ func (r *setupExperienceResource) Create(ctx context.Context, req resource.Creat
 		)
 		return
 	}
+
+	r.checkSetupExperienceApplied(ctx, teamID, plan, &resp.Diagnostics)
 
 	// Update state with computed values
 	plan.ID = types.Int64Value(int64(teamID))
@@ -297,6 +348,8 @@ func (r *setupExperienceResource) Read(ctx context.Context, req resource.ReadReq
 	state.ManualAgentInstall = readOptionalBool(state.ManualAgentInstall, experience.ManualAgentInstall)
 	state.EnableManagedLocalAccount = readOptionalBool(state.EnableManagedLocalAccount, experience.EnableManagedLocalAccount)
 	state.EndUserLocalAccountType = readOptionalString(state.EndUserLocalAccountType, experience.EndUserLocalAccountType)
+	state.BootstrapPackageDuringManualEnrollment = readOptionalBool(state.BootstrapPackageDuringManualEnrollment, experience.BootstrapPackageDuringManualEnrollment)
+	state.BootstrapPackageDuringMigration = readOptionalBool(state.BootstrapPackageDuringMigration, experience.BootstrapPackageDuringMigration)
 
 	// Set the state
 	diags = resp.State.Set(ctx, state)
@@ -323,6 +376,8 @@ func (r *setupExperienceResource) Update(ctx context.Context, req resource.Updat
 		)
 		return
 	}
+
+	r.checkSetupExperienceApplied(ctx, teamID, plan, &resp.Diagnostics)
 
 	// Set the state
 	diags = resp.State.Set(ctx, plan)
@@ -361,6 +416,12 @@ func (r *setupExperienceResource) Delete(ctx context.Context, req resource.Delet
 	}
 	if !state.ManualAgentInstall.IsNull() {
 		updateReq.ManualAgentInstall = &cleared
+	}
+	if !state.BootstrapPackageDuringManualEnrollment.IsNull() {
+		updateReq.BootstrapPackageDuringManualEnrollment = &cleared
+	}
+	if !state.BootstrapPackageDuringMigration.IsNull() {
+		updateReq.BootstrapPackageDuringMigration = &cleared
 	}
 
 	err := r.client.UpdateSetupExperience(ctx, updateReq)

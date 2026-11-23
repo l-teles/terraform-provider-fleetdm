@@ -447,3 +447,44 @@ func TestGetAppConfigHostNameTemplate(t *testing.T) {
 		t.Errorf("NameTemplate = %q, want %q", got, want)
 	}
 }
+
+// TestFleet495AppConfigSettings pins mcp_disabled and enable_profile_validation:
+// omitted from a PATCH unless set, and nil on read from a Fleet that predates them.
+func TestFleet495AppConfigSettings(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		name string
+		req  UpdateAppConfigRequest
+		want string
+	}{
+		{"unset", UpdateAppConfigRequest{ServerSettings: &ServerSettingsUpdate{}, MDM: &MDMSettingsUpdate{}},
+			`{"server_settings":{"live_query_disabled":false,"enable_analytics":false,"query_reports_disabled":false,"scripts_disabled":false,"ai_features_disabled":false},"mdm":{}}`},
+		{"set", UpdateAppConfigRequest{ServerSettings: &ServerSettingsUpdate{MCPDisabled: &off}, MDM: &MDMSettingsUpdate{EnableProfileValidation: &off}},
+			`{"server_settings":{"live_query_disabled":false,"enable_analytics":false,"query_reports_disabled":false,"scripts_disabled":false,"ai_features_disabled":false,"mcp_disabled":false},"mdm":{"enable_profile_validation":false}}`},
+	} {
+		raw, err := json.Marshal(tc.req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, raw, tc.want)
+		}
+	}
+
+	var older, current AppConfig
+	if err := json.Unmarshal([]byte(`{"server_settings":{"ai_features_disabled":true},"mdm":{"enabled_and_configured":true}}`), &older); err != nil {
+		t.Fatal(err)
+	}
+	if older.ServerSettings.MCPDisabled != nil || older.MDM.EnableProfileValidation != nil {
+		t.Errorf("expected nil settings from an older Fleet, got %v and %v", older.ServerSettings.MCPDisabled, older.MDM.EnableProfileValidation)
+	}
+	if err := json.Unmarshal([]byte(`{"server_settings":{"mcp_disabled":true},"mdm":{"enable_profile_validation":false}}`), &current); err != nil {
+		t.Fatal(err)
+	}
+	if p := current.ServerSettings.MCPDisabled; p == nil || !*p {
+		t.Errorf("expected mcp_disabled true, got %v", p)
+	}
+	if p := current.MDM.EnableProfileValidation; p == nil || *p {
+		t.Errorf("expected enable_profile_validation false, got %v", p)
+	}
+}

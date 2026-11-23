@@ -57,6 +57,7 @@ type configurationMDMModel struct {
 
 	AppleRequireHardwareAttestation  types.Bool                                  `tfsdk:"apple_require_hardware_attestation"`
 	OnlyAllowAppleBusinessEnrollment types.Bool                                  `tfsdk:"only_allow_apple_business_enrollment"`
+	EnableProfileValidation          types.Bool                                  `tfsdk:"enable_profile_validation"`
 	AppleAccountProvisioning         *configurationAppleAccountProvisioningModel `tfsdk:"apple_account_provisioning"`
 }
 
@@ -197,6 +198,10 @@ func configurationMDMSchema() schema.SingleNestedAttribute {
 					"`apple_require_hardware_attestation`, Fleet stops issuing SCEP certificates altogether. " +
 					"Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn it off. " +
 					"Devices already enrolled without meeting the requirement can no longer renew their MDM certificate and eventually drop out of management."),
+			"enable_profile_validation": boolean(
+				"Whether Fleet checks new and changed admin-uploaded configuration profiles against Apple's payload schemas and Windows' DDF " +
+					"definitions, rejecting invalid ones. Applies to every fleet. Fleet's default is `true`. Requires Fleet 4.95.0 or later. " +
+					"Removing the attribute stops managing it but leaves Fleet's value in place."),
 			"apple_account_provisioning": schema.SingleNestedAttribute{
 				Optional: true,
 				MarkdownDescription: "OAuth identity provider Fleet uses to provision accounts through Platform SSO on macOS. Requires " +
@@ -324,6 +329,7 @@ func buildConfigurationMDM(ctx context.Context, m *configurationMDMModel, client
 
 	out.AppleRequireHardwareAttestation = optionalBoolPtr(m.AppleRequireHardwareAttestation)
 	out.OnlyAllowAppleBusinessEnrollment = optionalBoolPtr(m.OnlyAllowAppleBusinessEnrollment)
+	out.EnableProfileValidation = optionalBoolPtr(m.EnableProfileValidation)
 	if a := m.AppleAccountProvisioning; a != nil {
 		out.AppleAccountProvisioning = &fleetdm.AppleAccountProvisioning{
 			OAuthIdPTokenURL:     optionalStringPtr(a.OAuthIdPTokenURL),
@@ -411,6 +417,7 @@ func refreshConfigurationMDM(m *configurationMDMModel, api *fleetdm.MDMConfig, d
 
 	m.AppleRequireHardwareAttestation = refreshOptionalBool(m.AppleRequireHardwareAttestation, api.AppleRequireHardwareAttestation)
 	m.OnlyAllowAppleBusinessEnrollment = refreshOptionalBool(m.OnlyAllowAppleBusinessEnrollment, api.OnlyAllowAppleBusinessEnrollment)
+	m.EnableProfileValidation = refreshOptionalBool(m.EnableProfileValidation, api.EnableProfileValidation)
 	// The secret reads back masked and stays as it is in state.
 	if ap, a := m.AppleAccountProvisioning, api.AppleAccountProvisioning; ap != nil && a != nil {
 		ap.OAuthIdPTokenURL = refreshOptionalString(ap.OAuthIdPTokenURL, a.OAuthIdPTokenURL)
@@ -442,6 +449,7 @@ func checkConfigurationMDMApplied(m *configurationMDMModel, api *fleetdm.MDMConf
 	check("end_user_authentication", m.EndUserAuthentication != nil, a.EndUserAuthentication != nil)
 	check("apple_require_hardware_attestation", !m.AppleRequireHardwareAttestation.IsNull(), a.AppleRequireHardwareAttestation != nil)
 	check("only_allow_apple_business_enrollment", !m.OnlyAllowAppleBusinessEnrollment.IsNull(), a.OnlyAllowAppleBusinessEnrollment != nil)
+	check("enable_profile_validation", !m.EnableProfileValidation.IsNull(), a.EnableProfileValidation != nil)
 	check("apple_account_provisioning", m.AppleAccountProvisioning != nil, a.AppleAccountProvisioning != nil)
 	check("windows_automatic_enrollment", m.WindowsAutomaticEnrollment != nil, a.WindowsAutomaticEnrollment != nil)
 	check("enable_recovery_lock_password", !m.EnableRecoveryLockPassword.IsNull(), a.EnableRecoveryLockPassword != nil)

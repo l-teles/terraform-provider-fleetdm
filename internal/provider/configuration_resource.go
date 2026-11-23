@@ -67,6 +67,7 @@ type ConfigurationResourceModel struct {
 	QueryReportsDisabled types.Bool   `tfsdk:"query_reports_disabled"`
 	ScriptsDisabled      types.Bool   `tfsdk:"scripts_disabled"`
 	AIFeaturesDisabled   types.Bool   `tfsdk:"ai_features_disabled"`
+	MCPDisabled          types.Bool   `tfsdk:"mcp_disabled"`
 
 	// Host Expiry Settings
 	HostExpiryEnabled types.Bool  `tfsdk:"host_expiry_enabled"`
@@ -222,6 +223,11 @@ resource "fleetdm_configuration" "main" {
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 				MarkdownDescription: "Whether AI features are disabled.",
+			},
+			"mcp_disabled": schema.BoolAttribute{
+				Optional: true,
+				MarkdownDescription: "Whether Fleet's MCP server is disabled. Requires Fleet 4.95.0 or later; older versions reject the setting. " +
+					"Removing the attribute stops managing it but leaves Fleet's value in place, so set it to `false` to turn the MCP server back on.",
 			},
 			// Host Expiry Settings
 			"host_expiry_enabled": schema.BoolAttribute{
@@ -401,6 +407,7 @@ func (r *ConfigurationResource) Create(ctx context.Context, req resource.CreateR
 	r.updateModelFromConfig(&data, config)
 	checkConfigurationIntegrationsApplied(data.Integrations, config.Integrations, &resp.Diagnostics)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
+	checkConfigurationServerSettingsApplied(&data, config, &resp.Diagnostics)
 	checkConfigurationMDMApplied(data.MDM, config.MDM, &resp.Diagnostics)
 	refreshConfigurationMDM(data.MDM, config.MDM, &resp.Diagnostics)
 	data.MDM.nullifyWriteOnly()
@@ -471,6 +478,7 @@ func (r *ConfigurationResource) Update(ctx context.Context, req resource.UpdateR
 	r.updateModelFromConfig(&data, config)
 	checkConfigurationIntegrationsApplied(data.Integrations, config.Integrations, &resp.Diagnostics)
 	refreshConfigurationIntegrations(data.Integrations, config.Integrations, &resp.Diagnostics)
+	checkConfigurationServerSettingsApplied(&data, config, &resp.Diagnostics)
 	checkConfigurationMDMApplied(data.MDM, config.MDM, &resp.Diagnostics)
 	refreshConfigurationMDM(data.MDM, config.MDM, &resp.Diagnostics)
 	data.MDM.nullifyWriteOnly()
@@ -715,12 +723,22 @@ func (r *ConfigurationResource) buildServerSettingsUpdate(data *ConfigurationRes
 		QueryReportsDisabled: data.QueryReportsDisabled.ValueBool(),
 		ScriptsDisabled:      data.ScriptsDisabled.ValueBool(),
 		AIFeaturesDisabled:   data.AIFeaturesDisabled.ValueBool(),
+		MCPDisabled:          optionalBoolPtr(data.MCPDisabled),
 	}
 	if !data.ServerURL.IsNull() && !data.ServerURL.IsUnknown() && data.ServerURL.ValueString() != "" {
 		v := data.ServerURL.ValueString()
 		s.ServerURL = &v
 	}
 	return s
+}
+
+// checkConfigurationServerSettingsApplied turns a managed server setting that
+// Fleet did not report into a named error instead of an inconsistent result.
+func checkConfigurationServerSettingsApplied(data *ConfigurationResourceModel, config *fleetdm.AppConfig, diags *diag.Diagnostics) {
+	if !data.MCPDisabled.IsNull() && config.ServerSettings.MCPDisabled == nil {
+		diags.AddAttributeError(path.Root("mcp_disabled"), "Server setting not supported by this Fleet",
+			"Fleet accepted the configuration but did not report mcp_disabled. It needs Fleet 4.95.0 or later. Remove mcp_disabled or upgrade Fleet.")
+	}
 }
 
 // updateModelFromConfig updates the resource model from the API response.
@@ -741,6 +759,7 @@ func (r *ConfigurationResource) updateModelFromConfig(data *ConfigurationResourc
 	data.QueryReportsDisabled = types.BoolValue(config.ServerSettings.QueryReportsDisabled)
 	data.ScriptsDisabled = types.BoolValue(config.ServerSettings.ScriptsDisabled)
 	data.AIFeaturesDisabled = types.BoolValue(config.ServerSettings.AIFeaturesDisabled)
+	data.MCPDisabled = refreshOptionalBool(data.MCPDisabled, config.ServerSettings.MCPDisabled)
 
 	// Host Expiry Settings
 	data.HostExpiryEnabled = types.BoolValue(config.HostExpirySettings.HostExpiryEnabled)

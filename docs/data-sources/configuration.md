@@ -64,6 +64,7 @@ resource "fleetdm_team" "example" {
 - `license_organization` (String) The organization name in the license.
 - `license_tier` (String) The Fleet license tier (e.g., 'free', 'premium').
 - `live_query_disabled` (Boolean) Whether live queries are disabled.
+- `mcp_disabled` (Boolean) Whether Fleet's MCP server is disabled. Null before Fleet 4.95.0.
 - `mdm_apple_bm_enabled_and_configured` (Boolean) Whether Apple Business Manager is enabled and configured.
 - `mdm_apple_bm_terms_expired` (Boolean) Whether Apple Business Manager terms have expired.
 - `mdm_enabled_and_configured` (Boolean) Whether MDM is enabled and configured.

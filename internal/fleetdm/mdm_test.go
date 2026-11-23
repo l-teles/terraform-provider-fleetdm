@@ -610,6 +610,68 @@ func TestClient_GetSetupExperience_OptInFields(t *testing.T) {
 	}
 }
 
+// TestClient_SetupExperience_BootstrapPackageSettings pins the Fleet 4.95
+// bootstrap package keys on the wire and on read, under both spellings.
+func TestClient_SetupExperience_BootstrapPackageSettings(t *testing.T) {
+	var body map[string]any
+	server := captureSetupExperiencePatch(t, &body)
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-key"})
+	enabled, disabled := true, false
+	if err := client.UpdateSetupExperience(context.Background(), &UpdateSetupExperienceRequest{
+		TeamID:                                 4,
+		BootstrapPackageDuringManualEnrollment: &enabled,
+		BootstrapPackageDuringMigration:        &disabled,
+	}); err != nil {
+		t.Fatalf("UpdateSetupExperience failed: %v", err)
+	}
+	raw, _ := json.Marshal(body)
+	want := `{"macos_enable_bootstrap_package_during_manual_enrollment":true,"macos_enable_bootstrap_package_during_migration":false,"team_id":4}`
+	if string(raw) != want {
+		t.Errorf("wire format:\n got %s\nwant %s", raw, want)
+	}
+
+	body = nil
+	if err := client.UpdateSetupExperience(context.Background(), &UpdateSetupExperienceRequest{TeamID: 4}); err != nil {
+		t.Fatalf("UpdateSetupExperience failed: %v", err)
+	}
+	if raw, _ := json.Marshal(body); string(raw) != `{"team_id":4}` {
+		t.Errorf("unmanaged bootstrap package settings must be omitted, got %s", raw)
+	}
+
+	for name, payload := range map[string]string{
+		"legacy":  `{"team":{"id":4,"mdm":{"macos_setup":{"macos_enable_bootstrap_package_during_manual_enrollment":true,"macos_enable_bootstrap_package_during_migration":false}}}}`,
+		"renamed": `{"fleet":{"id":4,"mdm":{"setup_experience":{"macos_enable_bootstrap_package_during_manual_enrollment":true,"macos_enable_bootstrap_package_during_migration":false}}}}`,
+		"older":   `{"team":{"id":4,"mdm":{"macos_setup":{"enable_end_user_authentication":false}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(payload))
+			}))
+			defer srv.Close()
+			c, _ := NewClient(ClientConfig{ServerAddress: srv.URL, APIKey: "test-key"})
+			setup, err := c.GetSetupExperience(context.Background(), 4)
+			if err != nil {
+				t.Fatalf("GetSetupExperience failed: %v", err)
+			}
+			if name == "older" {
+				if setup.BootstrapPackageDuringManualEnrollment != nil || setup.BootstrapPackageDuringMigration != nil {
+					t.Errorf("expected nil settings from a Fleet that does not report them, got %+v", setup)
+				}
+				return
+			}
+			if p := setup.BootstrapPackageDuringManualEnrollment; p == nil || !*p {
+				t.Errorf("expected manual enrollment setting true, got %v", p)
+			}
+			if p := setup.BootstrapPackageDuringMigration; p == nil || *p {
+				t.Errorf("expected migration setting false, got %v", p)
+			}
+		})
+	}
+}
+
 func TestClient_GetConfigProfileContent(t *testing.T) {
 	const wantContent = `<?xml version="1.0"?><plist version="1.0"><dict><key>PayloadType</key><string>Configuration</string></dict></plist>`
 
