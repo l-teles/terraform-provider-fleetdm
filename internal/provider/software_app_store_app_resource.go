@@ -121,7 +121,11 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 		Computed: true,
 		PlanModifiers: []planmodifier.Int64{
 			int64planmodifier.UseStateForUnknown(),
-			int64planmodifier.RequiresReplaceIfConfigured(),
+			// Replace only when a known token changes: a null in state (Fleet
+			// reported none) is no reason to delete and re-add the app.
+			int64planmodifier.RequiresReplaceIf(vppTokenChanged,
+				"Changing a known vpp_token_id re-adds the app from the new token.",
+				"Changing a known `vpp_token_id` re-adds the app from the new token."),
 		},
 		Validators: []validator.Int64{
 			int64validator.AtLeast(1),
@@ -284,6 +288,10 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 	if !plan.VPPTokenID.IsUnknown() {
 		addReq.VPPTokenID = plan.VPPTokenID.ValueInt64Pointer()
 	}
+	checkVPPTokenSupported(ctx, r.client, plan.VPPTokenID, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Fleet's Add endpoint accepts `configuration`, so the managed app config
 	// lands in the same request as the app itself — no follow-up needed. The
@@ -400,6 +408,27 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
+}
+
+// vppTokenChanged reports whether a configured vpp_token_id differs from a
+// known token in state.
+func vppTokenChanged(_ context.Context, req planmodifier.Int64Request, resp *int64planmodifier.RequiresReplaceIfFuncResponse) {
+	if req.ConfigValue.IsNull() || req.StateValue.IsNull() || req.StateValue.IsUnknown() || req.PlanValue.IsUnknown() {
+		return
+	}
+	resp.RequiresReplace = !req.PlanValue.Equal(req.StateValue)
+}
+
+// checkVPPTokenSupported rejects a configured vpp_token_id on Fleet older than
+// 4.95, which would silently ignore it.
+func checkVPPTokenSupported(ctx context.Context, client *fleetdm.Client, token types.Int64, diags *diag.Diagnostics) {
+	if token.IsNull() || token.IsUnknown() {
+		return
+	}
+	if before, known := fleetServerVersionBefore(ctx, client, 4, 95); known && before {
+		diags.AddAttributeError(path.Root("vpp_token_id"), "vpp_token_id needs Fleet 4.95",
+			"vpp_token_id requires Fleet 4.95.0 or later; older Fleet ignores it and adds the app from the team's default token. Remove vpp_token_id or upgrade Fleet.")
+	}
 }
 
 // vppTokenIDFromTitle returns the ID of the VPP token Fleet reports the app was
@@ -620,6 +649,14 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 	resp.Diagnostics.Append(d...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+
+	// A token appearing where Fleet reported none only happens before 4.95.
+	if state.VPPTokenID.IsNull() {
+		checkVPPTokenSupported(ctx, r.client, plan.VPPTokenID, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	if err := r.client.UpdateAppStoreApp(ctx, titleID, updateReq); err != nil {

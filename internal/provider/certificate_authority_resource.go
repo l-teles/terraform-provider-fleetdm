@@ -382,7 +382,8 @@ func (v jsonObjectValidator) ValidateString(_ context.Context, req validator.Str
 		return
 	}
 	var obj map[string]any
-	if err := json.Unmarshal([]byte(value), &obj); err != nil {
+	// A literal `null` decodes without error into a nil map, so check for it.
+	if err := json.Unmarshal([]byte(value), &obj); err != nil || obj == nil {
 		// The error text is not echoed: it can quote part of the key.
 		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Value",
 			"Value must be the service account key file's JSON object, for example file(\"service-account.json\").")

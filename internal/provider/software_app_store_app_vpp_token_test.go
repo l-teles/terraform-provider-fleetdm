@@ -30,10 +30,11 @@ type fakeVPPTokenFleet struct {
 	titleTokens  map[int]*int64
 	defaultToken *int64 // token Fleet picks when the add body omits one
 	omitEcho     bool   // emulate Fleet < 4.95, which has no vpp_token on the title
+	version      string // reported by GET /version
 }
 
 func newFakeVPPTokenFleet(t *testing.T) *fakeVPPTokenFleet {
-	f := &fakeVPPTokenFleet{t: t, nextTitleID: 100, titleTokens: map[int]*int64{}}
+	f := &fakeVPPTokenFleet{t: t, nextTitleID: 100, titleTokens: map[int]*int64{}, version: "4.95.0"}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -46,6 +47,9 @@ func (f *fakeVPPTokenFleet) handle(w http.ResponseWriter, r *http.Request) {
 	const titles = "/api/v1/fleet/software/titles/"
 
 	switch {
+	case r.URL.Path == "/api/v1/fleet/version" && r.Method == http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]any{"version": f.version})
+
 	case r.URL.Path == "/api/v1/fleet/software/app_store_apps" && r.Method == http.MethodPost:
 		body, _ := io.ReadAll(r.Body)
 		f.addBodies = append(f.addBodies, string(body))
@@ -201,12 +205,14 @@ func TestAccSoftwareAppStoreAppResource_vppTokenOmitted(t *testing.T) {
 	})
 }
 
-// TestAccSoftwareAppStoreAppResource_vppTokenNoEcho covers Fleet versions
-// before 4.95, which report no token: an omitted token stays null and a
-// configured one is kept rather than planned for replacement.
+// TestAccSoftwareAppStoreAppResource_vppTokenNoEcho covers Fleet before 4.95,
+// which reports no token: an omitted token stays null, and adding one later
+// plans an in-place update (not a replacement) that fails with a named error
+// instead of being silently ignored.
 func TestAccSoftwareAppStoreAppResource_vppTokenNoEcho(t *testing.T) {
 	f := newFakeVPPTokenFleet(t)
 	f.omitEcho = true
+	f.version = "4.94.1"
 	const addr = "fleetdm_software_app_store_app.test"
 
 	resource.Test(t, resource.TestCase{
@@ -224,16 +230,36 @@ func TestAccSoftwareAppStoreAppResource_vppTokenNoEcho(t *testing.T) {
 			},
 			{
 				Config: f.config("ios", "  vpp_token_id = 3"),
-				Check:  resource.TestCheckResourceAttr(addr, "vpp_token_id", "3"),
-			},
-			{
-				Config: f.config("ios", "  vpp_token_id = 3"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
-					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionUpdate)},
 				},
+				ExpectError: regexp.MustCompile(`vpp_token_id requires Fleet 4\.95\.0 or later`),
 			},
 		},
 	})
+	if n := len(f.addBodies); n != 1 {
+		t.Errorf("expected exactly one add request (no replacement), got %d", n)
+	}
+}
+
+// TestAccSoftwareAppStoreAppResource_vppTokenOldFleetCreate checks a configured
+// token is refused on Fleet before 4.95 before anything is added.
+func TestAccSoftwareAppStoreAppResource_vppTokenOldFleetCreate(t *testing.T) {
+	f := newFakeVPPTokenFleet(t)
+	f.version = "4.94.1"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      f.config("ios", "  vpp_token_id = 3"),
+				ExpectError: regexp.MustCompile(`vpp_token_id requires Fleet 4\.95\.0 or later`),
+			},
+		},
+	})
+	if body := f.lastAddBody(); body != "" {
+		t.Errorf("no add request expected on Fleet < 4.95, got %s", body)
+	}
 }
 
 // TestAccSoftwareAppStoreAppResource_vppTokenAndroidRejected checks the

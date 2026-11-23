@@ -1,12 +1,16 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -328,6 +332,7 @@ func TestCertificateAuthorityResource_fleet495Validation(t *testing.T) {
 		{"gcas location", gcas("example-project", "US", "fake-pool", fakeGoogleKey), `lowercase letters, numbers and hyphens`},
 		{"gcas pool", gcas("example-project", "us-central1", "fake/pool", fakeGoogleKey), `letters, numbers, hyphens and underscores`},
 		{"gcas key not json", gcas("example-project", "us-central1", "fake-pool", "not-json"), `service account key file's JSON object`},
+		{"gcas key null", gcas("example-project", "us-central1", "fake-pool", "null"), `service account key file's JSON object`},
 		{"gcas masked key", gcas("example-project", "us-central1", "fake-pool", "********"), `Invalid Certificate Authority Secret`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,5 +357,26 @@ resource "fleetdm_certificate_authority" "test" {
 				t.Errorf("no write expected, got %d", len(writes))
 			}
 		})
+	}
+}
+
+// TestJSONObjectValidatorDoesNotEchoKey guards the validator's promise that a
+// malformed key never appears in the diagnostic.
+func TestJSONObjectValidatorDoesNotEchoKey(t *testing.T) {
+	const secretish = `{"private_key": "fake-key-material-0xdeadbeef"`
+	for _, value := range []string{secretish, "null", "fake-key-material-0xdeadbeef"} {
+		resp := &validator.StringResponse{}
+		jsonObjectValidator{}.ValidateString(context.Background(), validator.StringRequest{
+			Path:        path.Root("api_key_json"),
+			ConfigValue: types.StringValue(value),
+		}, resp)
+		if !resp.Diagnostics.HasError() {
+			t.Fatalf("expected an error for %q", value)
+		}
+		for _, d := range resp.Diagnostics {
+			if strings.Contains(d.Summary()+d.Detail(), "fake-key-material") {
+				t.Errorf("diagnostic echoes the key: %s %s", d.Summary(), d.Detail())
+			}
+		}
 	}
 }
