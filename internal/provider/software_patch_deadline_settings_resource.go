@@ -121,6 +121,10 @@ func (r *SoftwarePatchDeadlineSettingsResource) Read(ctx context.Context, req re
 
 	settings, err := r.client.GetPatchDeadlineSettings(ctx, data.FleetID.ValueInt64())
 	if err != nil {
+		if patchDeadlineSettingsUnsupported(ctx, r.client, err) {
+			resp.Diagnostics.AddError("Patch Deadline Settings Need Fleet 4.95", patchDeadlineSettingsUnsupportedDetail)
+			return
+		}
 		// The fleet was deleted, taking its settings with it.
 		if isNotFound(err) {
 			resp.State.RemoveResource(ctx)
@@ -161,6 +165,12 @@ func (r *SoftwarePatchDeadlineSettingsResource) Delete(ctx context.Context, req 
 
 	fleetID := data.FleetID.ValueInt64()
 	if _, err := r.client.UpdatePatchDeadlineSettings(ctx, fleetdm.DefaultPatchDeadlineSettings(fleetID)); err != nil {
+		// Older Fleet has no such settings, so there is nothing to reset.
+		if patchDeadlineSettingsUnsupported(ctx, r.client, err) {
+			resp.Diagnostics.AddWarning("Patch Deadline Settings Need Fleet 4.95",
+				"This Fleet server has no patch deadline settings, so there was nothing to reset. The resource was removed from state.")
+			return
+		}
 		if isNotFound(err) {
 			return
 		}
@@ -197,6 +207,10 @@ func (r *SoftwarePatchDeadlineSettingsResource) apply(ctx context.Context, data 
 		Days:    days,
 		Time:    data.Time.ValueString(),
 	}); err != nil {
+		if patchDeadlineSettingsUnsupported(ctx, r.client, err) {
+			diags.AddError("Patch Deadline Settings Need Fleet 4.95", patchDeadlineSettingsUnsupportedDetail)
+			return
+		}
 		diags.AddError(title, fmt.Sprintf("Unable to update patch deadline settings for fleet %d: %s", fleetID, err))
 		return
 	}
@@ -207,6 +221,20 @@ func (r *SoftwarePatchDeadlineSettingsResource) apply(ctx context.Context, data 
 		return
 	}
 	diags.Append(mapPatchDeadlineSettingsToModel(ctx, settings, data)...)
+}
+
+const patchDeadlineSettingsUnsupportedDetail = "This Fleet server has no patch deadline settings endpoint. " +
+	"fleetdm_software_patch_deadline_settings requires Fleet Premium 4.95.0 or later."
+
+// patchDeadlineSettingsUnsupported reports whether a 404 came from a Fleet
+// older than 4.95, which has no such endpoint, rather than from a deleted
+// fleet. An unreadable version is treated as a deleted fleet.
+func patchDeadlineSettingsUnsupported(ctx context.Context, client *fleetdm.Client, err error) bool {
+	if !isNotFound(err) {
+		return false
+	}
+	before, known := fleetServerVersionBefore(ctx, client, 4, 95)
+	return known && before
 }
 
 // mapPatchDeadlineSettingsToModel copies the API settings onto the model.

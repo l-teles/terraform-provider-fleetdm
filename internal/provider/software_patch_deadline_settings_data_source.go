@@ -71,6 +71,10 @@ func (d *SoftwarePatchDeadlineSettingsDataSource) Read(ctx context.Context, req 
 
 	settings, err := d.client.GetPatchDeadlineSettings(ctx, data.FleetID.ValueInt64())
 	if err != nil {
+		if patchDeadlineSettingsUnsupported(ctx, d.client, err) {
+			resp.Diagnostics.AddError("Patch Deadline Settings Need Fleet 4.95", patchDeadlineSettingsUnsupportedDetail)
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Error Reading FleetDM Patch Deadline Settings",
 			fmt.Sprintf("Unable to read patch deadline settings: %s", err),

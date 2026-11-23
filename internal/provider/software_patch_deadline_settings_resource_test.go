@@ -37,6 +37,10 @@ type patchDeadlineMock struct {
 	patchNotFound bool
 	// patchNotFoundHits counts PATCHes answered 404 because of patchNotFound.
 	patchNotFoundHits int
+	// version is reported by GET /version; empty answers 404 (version unknown).
+	version string
+	// noRoute removes the endpoint, as on Fleet before 4.95.
+	noRoute bool
 }
 
 func newPatchDeadlineMock(fleetIDs ...int64) *patchDeadlineMock {
@@ -71,7 +75,14 @@ func (m *patchDeadlineMock) handler(t *testing.T) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != basePath {
+		m.mu.Lock()
+		version, noRoute := m.version, m.noRoute
+		m.mu.Unlock()
+		if r.URL.Path == "/api/v1/fleet/version" && version != "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": version})
+			return
+		}
+		if r.URL.Path != basePath || noRoute {
 			http.NotFound(w, r)
 			return
 		}
@@ -369,6 +380,57 @@ provider "fleetdm" {
 					}
 					return nil
 				},
+			},
+		},
+	})
+}
+
+// On Fleet before 4.95 the endpoint itself answers 404. A refresh must fail
+// with the version requirement and keep the resource in state instead of
+// dropping it as a deleted fleet, and destroy still succeeds.
+func TestAccSoftwarePatchDeadlineSettingsResource_mockOlderFleet(t *testing.T) {
+	mock := newPatchDeadlineMock(5)
+	mock.version = "4.95.0"
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+	cfg := testAccPatchDeadlineMockConfig(server.URL, 5, []string{"monday"}, "10:00")
+	wantErr := regexp.MustCompile(`requires\s+Fleet\s+Premium\s+4\.95\.0\s+or\s+later`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg},
+			{
+				PreConfig: func() {
+					mock.mu.Lock()
+					defer mock.mu.Unlock()
+					mock.version, mock.noRoute = "4.94.1", true
+				},
+				RefreshState: true,
+				ExpectError:  wantErr,
+			},
+			{
+				// Still in state: the plan errors on refresh rather than planning a create.
+				Config:      cfg,
+				PlanOnly:    true,
+				ExpectError: wantErr,
+			},
+		},
+	})
+}
+
+func TestAccSoftwarePatchDeadlineSettingsResource_mockOlderFleetCreate(t *testing.T) {
+	mock := newPatchDeadlineMock(5)
+	mock.version, mock.noRoute = "4.94.1", true
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccPatchDeadlineMockConfig(server.URL, 5, []string{"monday"}, "10:00"),
+				ExpectError: regexp.MustCompile(`requires\s+Fleet\s+Premium\s+4\.95\.0\s+or\s+later`),
 			},
 		},
 	})

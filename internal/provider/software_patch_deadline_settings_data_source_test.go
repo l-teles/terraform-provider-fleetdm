@@ -75,6 +75,23 @@ func TestAccSoftwarePatchDeadlineSettingsDataSource_mockFleetNotFound(t *testing
 	})
 }
 
+func TestAccSoftwarePatchDeadlineSettingsDataSource_mockOlderFleet(t *testing.T) {
+	mock := newPatchDeadlineMock(3)
+	mock.version, mock.noRoute = "4.94.1", true
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      testAccPatchDeadlineDataSourceMockConfig(server.URL, 3),
+				ExpectError: regexp.MustCompile(`requires\s+Fleet\s+Premium\s+4\.95\.0\s+or\s+later`),
+			},
+		},
+	})
+}
+
 // TestAccSoftwarePatchDeadlineSettingsDataSource_live reads a new fleet's
 // settings after the resource sets them, and Unassigned's without changing them.
 func TestAccSoftwarePatchDeadlineSettingsDataSource_live(t *testing.T) {
