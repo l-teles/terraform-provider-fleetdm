@@ -392,10 +392,16 @@ func (v jsonObjectValidator) ValidateString(_ context.Context, req validator.Str
 
 // caNameAttribute builds the schema for a CA name attribute.
 func caNameAttribute(caType string) schema.StringAttribute {
+	usage := "Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables."
+	// These types have no profile variables: hosts get certificates through
+	// Fleet's request-certificate API instead.
+	switch caType {
+	case fleetdm.CATypeCustomESTProxy, fleetdm.CATypeGoogleCAS, fleetdm.CATypeHydrant:
+		usage = "Hosts request certificates from it through Fleet's request-certificate API, by its ID."
+	}
 	return schema.StringAttribute{
-		MarkdownDescription: fmt.Sprintf("Name of the certificate authority. Must be unique among %s certificate authorities. "+
-			"Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.", caType),
-		Required: true,
+		MarkdownDescription: fmt.Sprintf("Name of the certificate authority. Must be unique among %s certificate authorities. %s", caType, usage),
+		Required:            true,
 		Validators: []validator.String{
 			stringvalidator.LengthAtLeast(1),
 			stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
@@ -496,8 +502,9 @@ func (r *CertificateAuthorityResource) Schema(_ context.Context, _ resource.Sche
 	resp.Schema = schema.Schema{
 		MarkdownDescription: `Manages a FleetDM certificate authority (CA).
 
-Certificate authorities let Fleet issue client certificates to hosts through configuration profiles,
-using Fleet's ` + "`$FLEET_VAR_*`" + ` certificate variables. Exactly one CA type block must be set;
+Certificate authorities let Fleet issue client certificates to hosts, either through configuration profiles
+using Fleet's ` + "`$FLEET_VAR_*`" + ` certificate variables, or, for Hydrant, custom EST and Google CAS, through
+Fleet's request-certificate API. Exactly one CA type block must be set;
 the type of a CA cannot be changed in place, so switching blocks replaces the resource.
 
 ~> **Note:** This is a Fleet Premium feature. It also requires Fleet's server private key

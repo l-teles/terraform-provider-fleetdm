@@ -30,7 +30,10 @@ type fakeVPPTokenFleet struct {
 	titleTokens  map[int]*int64
 	defaultToken *int64 // token Fleet picks when the add body omits one
 	omitEcho     bool   // emulate Fleet < 4.95, which has no vpp_token on the title
-	version      string // reported by GET /version
+	version      string // reported by GET /version; "" makes it fail
+	// echoAfterUpdate turns the token echo on once an update arrives, so state
+	// can hold null while Fleet holds a token.
+	echoAfterUpdate bool
 }
 
 func newFakeVPPTokenFleet(t *testing.T) *fakeVPPTokenFleet {
@@ -48,7 +51,17 @@ func (f *fakeVPPTokenFleet) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.URL.Path == "/api/v1/fleet/version" && r.Method == http.MethodGet:
+		if f.version == "" {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"version": f.version})
+
+	case strings.HasPrefix(r.URL.Path, titles) && strings.HasSuffix(r.URL.Path, "/app_store_app") && r.Method == http.MethodPatch:
+		if f.echoAfterUpdate {
+			f.omitEcho = false
+		}
+		w.WriteHeader(http.StatusOK)
 
 	case r.URL.Path == "/api/v1/fleet/software/app_store_apps" && r.Method == http.MethodPost:
 		body, _ := io.ReadAll(r.Body)
@@ -281,4 +294,90 @@ func TestAccSoftwareAppStoreAppResource_vppTokenAndroidRejected(t *testing.T) {
 	if body := f.lastAddBody(); body != "" {
 		t.Errorf("no add request expected, got %s", body)
 	}
+}
+
+// TestAccSoftwareAppStoreAppResource_vppTokenUnknownReplaces resolves the token
+// from another resource, so it's unknown at plan time: changing it must plan a
+// replacement up front rather than an update that turns into one later.
+func TestAccSoftwareAppStoreAppResource_vppTokenUnknownReplaces(t *testing.T) {
+	f := newFakeVPPTokenFleet(t)
+	const addr = "fleetdm_software_app_store_app.test"
+	cfg := func(token int) string {
+		return fmt.Sprintf(`
+resource "terraform_data" "token" {
+  input = %d
+}
+`, token) + f.config("ios", "  vpp_token_id = terraform_data.token.output")
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		ExternalProviders:        map[string]resource.ExternalProvider{"terraform": {Source: "terraform.io/builtin/terraform"}},
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(3),
+				Check:  resource.TestCheckResourceAttr(addr, "vpp_token_id", "3"),
+			},
+			{
+				Config: cfg(4),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate)},
+				},
+				Check: resource.TestCheckResourceAttr(addr, "vpp_token_id", "4"),
+			},
+		},
+	})
+}
+
+// TestAccSoftwareAppStoreAppResource_vppTokenUnknownVersion fails closed when the
+// Fleet version can't be read, since older Fleet would ignore the token.
+func TestAccSoftwareAppStoreAppResource_vppTokenUnknownVersion(t *testing.T) {
+	f := newFakeVPPTokenFleet(t)
+	f.version = ""
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      f.config("ios", "  vpp_token_id = 3"),
+				ExpectError: regexp.MustCompile(`(?s)Fleet server version could not\s+be\s+read`),
+			},
+		},
+	})
+	if body := f.lastAddBody(); body != "" {
+		t.Errorf("no add request expected when the version is unknown, got %s", body)
+	}
+}
+
+// TestAccSoftwareAppStoreAppResource_vppTokenMismatchOnUpdate covers state with
+// no token while Fleet holds a different one: the update must record Fleet's
+// token and fail, and the next plan replaces the app.
+func TestAccSoftwareAppStoreAppResource_vppTokenMismatchOnUpdate(t *testing.T) {
+	f := newFakeVPPTokenFleet(t)
+	seven := int64(7)
+	f.defaultToken = &seven
+	f.omitEcho = true
+	f.echoAfterUpdate = true
+	const addr = "fleetdm_software_app_store_app.test"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: f.config("ios", ""),
+				Check:  resource.TestCheckNoResourceAttr(addr, "vpp_token_id"),
+			},
+			{
+				Config:      f.config("ios", "  vpp_token_id = 3"),
+				ExpectError: regexp.MustCompile(`(?s)Fleet added this app from VPP token 7`),
+			},
+			{
+				Config: f.config("ios", "  vpp_token_id = 3"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction(addr, plancheck.ResourceActionDestroyBeforeCreate)},
+				},
+				Check: resource.TestCheckResourceAttr(addr, "vpp_token_id", "3"),
+			},
+		},
+	})
 }

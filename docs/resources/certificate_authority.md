@@ -4,8 +4,9 @@ page_title: "fleetdm_certificate_authority Resource - fleetdm"
 subcategory: ""
 description: |-
   Manages a FleetDM certificate authority (CA).
-  Certificate authorities let Fleet issue client certificates to hosts through configuration profiles,
-  using Fleet's $FLEET_VAR_* certificate variables. Exactly one CA type block must be set;
+  Certificate authorities let Fleet issue client certificates to hosts, either through configuration profiles
+  using Fleet's $FLEET_VAR_* certificate variables, or, for Hydrant, custom EST and Google CAS, through
+  Fleet's request-certificate API. Exactly one CA type block must be set;
   the type of a CA cannot be changed in place, so switching blocks replaces the resource.
   ~> Note: This is a Fleet Premium feature. It also requires Fleet's server private key
   (FLEET_SERVER_PRIVATE_KEY) to be configured, because Fleet encrypts CA credentials at rest.
@@ -153,8 +154,9 @@ description: |-
 
 Manages a FleetDM certificate authority (CA).
 
-Certificate authorities let Fleet issue client certificates to hosts through configuration profiles,
-using Fleet's `$FLEET_VAR_*` certificate variables. Exactly one CA type block must be set;
+Certificate authorities let Fleet issue client certificates to hosts, either through configuration profiles
+using Fleet's `$FLEET_VAR_*` certificate variables, or, for Hydrant, custom EST and Google CAS, through
+Fleet's request-certificate API. Exactly one CA type block must be set;
 the type of a CA cannot be changed in place, so switching blocks replaces the resource.
 
 ~> **Note:** This is a Fleet Premium feature. It also requires Fleet's server private key
@@ -489,7 +491,7 @@ With an in-state credential it is optional, and useful to re-assert the declared
 
 Required:
 
-- `name` (String) Name of the certificate authority. Must be unique among custom_est_proxy certificate authorities. Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.
+- `name` (String) Name of the certificate authority. Must be unique among custom_est_proxy certificate authorities. Hosts request certificates from it through Fleet's request-certificate API, by its ID.
 - `url` (String) EST endpoint of the certificate authority. Fleet reads `<url>/cacerts` to validate it.
 - `username` (String) Username for EST HTTP basic authentication.
 
@@ -561,7 +563,7 @@ Required:
 
 - `ca_pool` (String) ID of the CA pool to request certificates from.
 - `location` (String) Google Cloud location of the CA pool, for example `us-central1`.
-- `name` (String) Name of the certificate authority. Must be unique among google_cas certificate authorities. Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.
+- `name` (String) Name of the certificate authority. Must be unique among google_cas certificate authorities. Hosts request certificates from it through Fleet's request-certificate API, by its ID.
 - `project` (String) Google Cloud project ID or number that holds the CA pool.
 
 Optional:
@@ -576,7 +578,7 @@ Optional:
 Required:
 
 - `client_id` (String) Hydrant OAuth client ID.
-- `name` (String) Name of the certificate authority. Must be unique among hydrant certificate authorities. Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.
+- `name` (String) Name of the certificate authority. Must be unique among hydrant certificate authorities. Hosts request certificates from it through Fleet's request-certificate API, by its ID.
 - `url` (String) Base URL of the Hydrant instance. Fleet reads `<url>/cacerts` to validate it.
 
 Optional:

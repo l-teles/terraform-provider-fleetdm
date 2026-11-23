@@ -379,6 +379,41 @@ resource "fleetdm_setup_experience" "test" {
 	})
 }
 
+// TestAccSetupExperienceResource_bootstrapPackageSettingsOlderFleetUpdate adds
+// a toggle to an existing resource on Fleet before 4.95: the error must repeat
+// on the next apply, so the unapplied value can't have been saved to state.
+func TestAccSetupExperienceResource_bootstrapPackageSettingsOlderFleetUpdate(t *testing.T) {
+	mock := &setupExperienceMock{settings: map[string]any{
+		"enable_end_user_authentication": false,
+		"enable_release_device_manually": false,
+	}}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+	cfg := func(extra string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_setup_experience" "test" {
+  team_id = 9
+%s
+}
+`, server.URL, extra)
+	}
+	wantErr := regexp.MustCompile(`(?s)did not report\s+macos_enable_bootstrap_package_during_migration`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg("")},
+			{Config: cfg("  macos_enable_bootstrap_package_during_migration = true"), ExpectError: wantErr},
+			{Config: cfg("  macos_enable_bootstrap_package_during_migration = true"), ExpectError: wantErr},
+		},
+	})
+}
+
 // TestAccSetupExperienceResource_bootstrapPackageSettingsLive runs on a
 // throwaway fleet: Fleet refuses true without a bootstrap package, and accepts
 // it once one is uploaded. Fleet only checks that the package is a signed

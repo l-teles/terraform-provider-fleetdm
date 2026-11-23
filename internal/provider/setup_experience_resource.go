@@ -378,6 +378,14 @@ func (r *setupExperienceResource) Update(ctx context.Context, req resource.Updat
 	}
 
 	r.checkSetupExperienceApplied(ctx, teamID, plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		// Keep the prior values for the toggles Fleet didn't apply, so the next
+		// plan shows the difference again instead of recording them as done.
+		var prior setupExperienceResourceModel
+		resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
+		plan.BootstrapPackageDuringManualEnrollment = prior.BootstrapPackageDuringManualEnrollment
+		plan.BootstrapPackageDuringMigration = prior.BootstrapPackageDuringMigration
+	}
 
 	// Set the state
 	diags = resp.State.Set(ctx, plan)

@@ -71,7 +71,7 @@ Multi-resource race: when two `fleetdm_software_*` resources on the same team an
 - `platform` (String) The platform the app targets: `darwin` (macOS, the Fleet default), `ios`, `ipados`, or `android` (Google Play, Fleet 4.90 or later — requires Android MDM to be enabled on your Fleet server). Computed when omitted.
 - `self_service` (Boolean) Whether the software is available for self-service installation by end users. Defaults to false.
 - `team_id` (Number) The ID of the team this software belongs to. Required for Fleet Premium.
-- `vpp_token_id` (Number) ID of the VPP token to add the app from (see `data.fleetdm_vpp_tokens`). Fleet 4.95 or later. Required by Fleet when the team has more than one VPP token; when omitted, Fleet uses the team's only token and the provider records the token Fleet picked. Not supported for `android` apps. Fleet fixes the token when the app is added, so changing this forces a new resource. Deleting a VPP token in Fleet removes its apps from every team.
+- `vpp_token_id` (Number) ID of the VPP token to add the app from (see `data.fleetdm_vpp_tokens`). Fleet 4.95 or later. Required by Fleet when the team has more than one VPP token; when omitted, Fleet uses the team's only token and the provider records the token Fleet picked. Not supported for `android` apps. Fleet fixes the token when the app is added, so changing a known token (or setting it from a value not known until apply) forces a new resource. Adding it to an app whose token Fleet never reported updates in place, and fails if Fleet holds a different token. Fleet before 4.95 ignores the token, so setting it there is an error. Deleting a VPP token in Fleet removes its apps from every team.
 
 ### Read-Only
 

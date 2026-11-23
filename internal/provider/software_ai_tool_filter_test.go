@@ -177,7 +177,7 @@ data %q "test" {
 }
 
 // TestCheckAIToolFilterSupported covers the version gate directly, including
-// the warning when the version can't be read.
+// the error when the version can't be read.
 func TestCheckAIToolFilterSupported(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -190,7 +190,7 @@ func TestCheckAIToolFilterSupported(t *testing.T) {
 		{name: "filter off", version: "4.94.0", wantCall: false},
 		{name: "4.95", version: "4.95.0", aiTool: true, wantCall: true},
 		{name: "4.94", version: "4.94.2", aiTool: true, wantErr: true, wantCall: true},
-		{name: "unreadable version", version: "", aiTool: true, wantWarning: true, wantCall: true},
+		{name: "unreadable version", version: "", aiTool: true, wantErr: true, wantCall: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			called := false

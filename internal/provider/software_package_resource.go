@@ -635,8 +635,8 @@ func (r *softwarePackageResource) createPackage(ctx context.Context, plan *softw
 	plan.Name = types.StringValue(title.Name)
 	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
-	if len(title.Versions) > 0 {
-		plan.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		plan.Version = types.StringValue(v)
 	}
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
@@ -858,8 +858,8 @@ func (r *softwarePackageResource) createFleetMaintained(ctx context.Context, pla
 	plan.Name = types.StringValue(title.Name)
 	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
-	if len(title.Versions) > 0 {
-		plan.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		plan.Version = types.StringValue(v)
 	}
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
@@ -1055,8 +1055,8 @@ func (r *softwarePackageResource) readVPP(_ context.Context, title *fleetdm.Soft
 func (r *softwarePackageResource) readPackageOrFMA(_ context.Context, title *fleetdm.SoftwareTitle, state *softwarePackageResourceModel) {
 	state.Name = types.StringValue(title.Name)
 	state.DisplayName = types.StringValue(title.DisplayName)
-	if len(title.Versions) > 0 {
-		state.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		state.Version = types.StringValue(v)
 	}
 
 	pkg := title.SoftwarePackage
@@ -1478,8 +1478,8 @@ func (r *softwarePackageResource) replaceSoftwarePackage(ctx context.Context, ti
 	}
 
 	plan.Name = types.StringValue(title.Name)
-	if len(title.Versions) > 0 {
-		plan.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		plan.Version = types.StringValue(v)
 	}
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)

@@ -448,3 +448,16 @@ func (m automaticInstallPoliciesUseStateForUnknown) PlanModifyList(_ context.Con
 	}
 	resp.PlanValue = req.StateValue
 }
+
+// installerVersion returns the version of the title's installer, falling back
+// to the newest version hosts report. Host inventory can lag a replaced
+// installer, and on Fleet 4.95 it is scoped to the installer's fleet.
+func installerVersion(title *fleetdm.SoftwareTitle) string {
+	if title.SoftwarePackage != nil && title.SoftwarePackage.Version != "" {
+		return title.SoftwarePackage.Version
+	}
+	if len(title.Versions) > 0 {
+		return title.Versions[0].Version
+	}
+	return ""
+}

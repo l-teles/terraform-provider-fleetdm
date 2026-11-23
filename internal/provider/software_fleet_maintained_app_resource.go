@@ -203,8 +203,8 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 	plan.Name = types.StringValue(title.Name)
 	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
-	if len(title.Versions) > 0 {
-		plan.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		plan.Version = types.StringValue(v)
 	}
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
@@ -363,8 +363,8 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	}
 
 	state.Name = types.StringValue(title.Name)
-	if len(title.Versions) > 0 {
-		state.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		state.Version = types.StringValue(v)
 	}
 	pkg := title.SoftwarePackage
 	if pkg.Platform != "" {
