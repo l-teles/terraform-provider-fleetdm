@@ -695,7 +695,14 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 			resp.Diagnostics.AddError("Error reading VPP app", "Could not read back the App Store app: "+err.Error())
 			return
 		}
-		if got := vppTokenIDFromTitle(title); !got.IsNull() && !got.Equal(plan.VPPTokenID) {
+		switch got := vppTokenIDFromTitle(title); {
+		case got.IsNull():
+			// Unverified, so state keeps no token and the next plan tries again.
+			resp.Diagnostics.AddAttributeError(path.Root("vpp_token_id"), "Could not confirm the VPP token",
+				fmt.Sprintf("Fleet did not report which VPP token this app was added from, so vpp_token_id %d can't be confirmed. "+
+					"Remove vpp_token_id, or replace the app to add it from that token.", plan.VPPTokenID.ValueInt64()))
+			plan.VPPTokenID = got
+		case !got.Equal(plan.VPPTokenID):
 			resp.Diagnostics.AddAttributeError(path.Root("vpp_token_id"), "App added from a different VPP token",
 				fmt.Sprintf("Fleet added this app from VPP token %d, and an update can't move it to token %d. "+
 					"Run terraform plan again to replace the app, or set vpp_token_id to %[1]d.", got.ValueInt64(), plan.VPPTokenID.ValueInt64()))

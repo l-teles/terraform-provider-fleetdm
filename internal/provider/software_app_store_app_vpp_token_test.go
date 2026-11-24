@@ -352,6 +352,37 @@ func TestAccSoftwareAppStoreAppResource_vppTokenUnknownVersion(t *testing.T) {
 // TestAccSoftwareAppStoreAppResource_vppTokenMismatchOnUpdate covers state with
 // no token while Fleet holds a different one: the update must record Fleet's
 // token and fail, and the next plan replaces the app.
+// When the read-back after an update still reports no token, the configured ID
+// is unverified, so Update errors and leaves state without it.
+func TestAccSoftwareAppStoreAppResource_vppTokenMissingAfterUpdate(t *testing.T) {
+	f := newFakeVPPTokenFleet(t)
+	seven := int64(7)
+	f.defaultToken = &seven
+	f.omitEcho = true
+	const addr = "fleetdm_software_app_store_app.test"
+	cfg := f.config("ios", "  vpp_token_id = 3")
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: f.config("ios", ""),
+				Check:  resource.TestCheckNoResourceAttr(addr, "vpp_token_id"),
+			},
+			{
+				Config:      cfg,
+				ExpectError: regexp.MustCompile(`(?s)Fleet did not report\s+which VPP token`),
+			},
+			{
+				// State still has no token, so the plan keeps trying instead of going quiet.
+				Config:             cfg,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+		},
+	})
+}
+
 func TestAccSoftwareAppStoreAppResource_vppTokenMismatchOnUpdate(t *testing.T) {
 	f := newFakeVPPTokenFleet(t)
 	seven := int64(7)
