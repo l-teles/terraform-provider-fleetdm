@@ -4,26 +4,35 @@ page_title: "fleetdm_certificate_authority Resource - fleetdm"
 subcategory: ""
 description: |-
   Manages a FleetDM certificate authority (CA).
-  Certificate authorities let Fleet issue client certificates to hosts through configuration profiles,
-  using Fleet's $FLEET_VAR_* certificate variables. Exactly one CA type block must be set;
+  Certificate authorities let Fleet issue client certificates to hosts, either through configuration profiles
+  using Fleet's $FLEET_VAR_* certificate variables, or, for Hydrant, custom EST and Google CAS, through
+  Fleet's request-certificate API. Exactly one CA type block must be set;
   the type of a CA cannot be changed in place, so switching blocks replaces the resource.
   ~> Note: This is a Fleet Premium feature. It also requires Fleet's server private key
   (FLEET_SERVER_PRIVATE_KEY) to be configured, because Fleet encrypts CA credentials at rest.
   Without it Fleet rejects every write with "Private key must be configured".
   ~> Note: Fleet validates the configured URL when the CA is saved — it fetches the SCEP/EST CA
-  certificate, the DigiCert profile, or the Smallstep challenge endpoint, as applicable. An endpoint
-  that is unreachable from the Fleet server makes apply fail, even if the configuration is
-  otherwise correct.
+  certificate, the DigiCert profile, or the Smallstep challenge endpoint, as applicable. For EJBCA it
+  connects with the client certificate and checks the CA and certificate profile, and for Google CAS it
+  reads the CA pool with the service account key. An endpoint that is unreachable from the Fleet server
+  makes apply fail, even if the configuration is otherwise correct.
+  ~> Note: ejbca and google_cas require Fleet 4.95 or later. Every update
+  re-sends the whole block, so an ejbca update always re-sends the client PKCS#12 and Fleet
+  verifies the connection to EJBCA again.
   Drift detection
   Fleet reports CA configuration asymmetrically, which bounds what Terraform can detect:
   Non-secret fields (name, url, admin_url, username,
-  profile_id, client_id, the certificate fields) are returned by Fleet and
-  refreshed on every read, so out-of-band changes to them are detected and corrected.Secrets (challenge, password, api_token, client_secret)
-  are always masked as ********. Fleet's API hardcodes secret redaction, so no token or
-  parameter returns the real value. Terraform therefore cannot detect a secret changed in the
-  Fleet UI or by another client, whichever variant you use.To recover from suspected secret drift, increment secrets_wo_version. That forces an
-  update that re-sends the configured block to Fleet, re-asserting the secrets you declared.The list endpoint returns only id, name and type, so the
-  fleetdm_certificate_authorities data source exposes those three fields only.
+  profile_id, client_id, the certificate fields, the EJBCA profile names and
+  trust_ca_bundle, the Google CAS project, location and
+  ca_pool) are returned by Fleet and refreshed on every read, so out-of-band changes to
+  them are detected and corrected.Secrets (challenge, password, api_token, client_secret,
+  client_p12, api_key_json) are never returned: Fleet masks them as
+  ******** or, for the EJBCA PKCS#12 and its password, omits them. No token or parameter
+  returns the real value. Terraform therefore cannot detect a secret changed in the Fleet UI or by
+  another client, whichever variant you use.To recover from suspected secret drift, increment secrets_wo_version. That forces an
+  update that re-sends the configured block to Fleet, re-asserting the secrets you declared.The list endpoint returns only id, name, type and, for EJBCA, the
+  client certificate's expiry, so the fleetdm_certificate_authorities data source exposes
+  only those fields.
   Choosing how to supply secrets
   Every credential comes in two forms — pick one per resource:
   <name>_wo (preferred, Terraform 1.11+) is write-only: Terraform reads it from
@@ -108,14 +117,46 @@ description: |-
       password      = var.smallstep_password
     }
   }
+  
+  EJBCA
+  
+  resource "fleetdm_certificate_authority" "ejbca" {
+    secrets_wo_version = 1
+  
+    ejbca = {
+      name                       = "EJBCA_WIFI"
+      url                        = "https://ejbca.example.com"
+      client_p12_wo              = filebase64("fleet-client.p12")
+      password_wo                = var.ejbca_client_p12_password
+      certificate_authority_name = "ManagementCA"
+      certificate_profile_name   = "ENDUSER"
+      end_entity_profile_name    = "EMPTY"
+      certificate_common_name    = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+    }
+  }
+  
+  Google Cloud Certificate Authority Service
+  
+  resource "fleetdm_certificate_authority" "google_cas" {
+    secrets_wo_version = 1
+  
+    google_cas = {
+      name            = "GOOGLE_CAS_LINUX"
+      project         = "example-project"
+      location        = "us-central1"
+      ca_pool         = "fleet-pool"
+      api_key_json_wo = file("service-account.json")
+    }
+  }
 ---
 
 # fleetdm_certificate_authority (Resource)
 
 Manages a FleetDM certificate authority (CA).
 
-Certificate authorities let Fleet issue client certificates to hosts through configuration profiles,
-using Fleet's `$FLEET_VAR_*` certificate variables. Exactly one CA type block must be set;
+Certificate authorities let Fleet issue client certificates to hosts, either through configuration profiles
+using Fleet's `$FLEET_VAR_*` certificate variables, or, for Hydrant, custom EST and Google CAS, through
+Fleet's request-certificate API. Exactly one CA type block must be set;
 the type of a CA cannot be changed in place, so switching blocks replaces the resource.
 
 ~> **Note:** This is a Fleet Premium feature. It also requires Fleet's server private key
@@ -123,25 +164,34 @@ the type of a CA cannot be changed in place, so switching blocks replaces the re
 Without it Fleet rejects every write with "Private key must be configured".
 
 ~> **Note:** Fleet validates the configured URL when the CA is saved — it fetches the SCEP/EST CA
-certificate, the DigiCert profile, or the Smallstep challenge endpoint, as applicable. An endpoint
-that is unreachable from the Fleet server makes `apply` fail, even if the configuration is
-otherwise correct.
+certificate, the DigiCert profile, or the Smallstep challenge endpoint, as applicable. For EJBCA it
+connects with the client certificate and checks the CA and certificate profile, and for Google CAS it
+reads the CA pool with the service account key. An endpoint that is unreachable from the Fleet server
+makes `apply` fail, even if the configuration is otherwise correct.
+
+~> **Note:** `ejbca` and `google_cas` require Fleet 4.95 or later. Every update
+re-sends the whole block, so an `ejbca` update always re-sends the client PKCS#12 and Fleet
+verifies the connection to EJBCA again.
 
 ## Drift detection
 
 Fleet reports CA configuration asymmetrically, which bounds what Terraform can detect:
 
 * **Non-secret fields** (`name`, `url`, `admin_url`, `username`,
-  `profile_id`, `client_id`, the certificate fields) **are** returned by Fleet and
-  refreshed on every read, so out-of-band changes to them are detected and corrected.
-* **Secrets** (`challenge`, `password`, `api_token`, `client_secret`)
-  are **always** masked as `********`. Fleet's API hardcodes secret redaction, so no token or
-  parameter returns the real value. Terraform therefore **cannot detect** a secret changed in the
-  Fleet UI or by another client, whichever variant you use.
+  `profile_id`, `client_id`, the certificate fields, the EJBCA profile names and
+  `trust_ca_bundle`, the Google CAS `project`, `location` and
+  `ca_pool`) **are** returned by Fleet and refreshed on every read, so out-of-band changes to
+  them are detected and corrected.
+* **Secrets** (`challenge`, `password`, `api_token`, `client_secret`,
+  `client_p12`, `api_key_json`) are **never** returned: Fleet masks them as
+  `********` or, for the EJBCA PKCS#12 and its password, omits them. No token or parameter
+  returns the real value. Terraform therefore **cannot detect** a secret changed in the Fleet UI or by
+  another client, whichever variant you use.
 * To recover from suspected secret drift, increment `secrets_wo_version`. That forces an
   update that re-sends the configured block to Fleet, re-asserting the secrets you declared.
-* The list endpoint returns only `id`, `name` and `type`, so the
-  `fleetdm_certificate_authorities` data source exposes those three fields only.
+* The list endpoint returns only `id`, `name`, `type` and, for EJBCA, the
+  client certificate's expiry, so the `fleetdm_certificate_authorities` data source exposes
+  only those fields.
 
 ### Choosing how to supply secrets
 
@@ -245,6 +295,41 @@ resource "fleetdm_certificate_authority" "smallstep" {
     challenge_url = "https://example.scep.smallstep.com/challenge"
     username      = "fleet"
     password      = var.smallstep_password
+  }
+}
+```
+
+### EJBCA
+
+```hcl
+resource "fleetdm_certificate_authority" "ejbca" {
+  secrets_wo_version = 1
+
+  ejbca = {
+    name                       = "EJBCA_WIFI"
+    url                        = "https://ejbca.example.com"
+    client_p12_wo              = filebase64("fleet-client.p12")
+    password_wo                = var.ejbca_client_p12_password
+    certificate_authority_name = "ManagementCA"
+    certificate_profile_name   = "ENDUSER"
+    end_entity_profile_name    = "EMPTY"
+    certificate_common_name    = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+  }
+}
+```
+
+### Google Cloud Certificate Authority Service
+
+```hcl
+resource "fleetdm_certificate_authority" "google_cas" {
+  secrets_wo_version = 1
+
+  google_cas = {
+    name            = "GOOGLE_CAS_LINUX"
+    project         = "example-project"
+    location        = "us-central1"
+    ca_pool         = "fleet-pool"
+    api_key_json_wo = file("service-account.json")
   }
 }
 ```
@@ -384,6 +469,8 @@ resource "fleetdm_certificate_authority" "smallstep" {
 - `custom_est_proxy` (Attributes) Custom EST (Enrollment over Secure Transport) proxy certificate authority. (see [below for nested schema](#nestedatt--custom_est_proxy))
 - `custom_scep_proxy` (Attributes) Custom SCEP proxy certificate authority. (see [below for nested schema](#nestedatt--custom_scep_proxy))
 - `digicert` (Attributes) DigiCert ONE certificate authority. (see [below for nested schema](#nestedatt--digicert))
+- `ejbca` (Attributes) EJBCA certificate authority, enrolled over EJBCA's REST API with mutual TLS. Fleet 4.95 or later. Referenced from configuration profiles as `$FLEET_VAR_EJBCA_DATA_<name>` and `$FLEET_VAR_EJBCA_PASSWORD_<name>`. An EJBCA CA cannot share its name with a CA of any other type. (see [below for nested schema](#nestedatt--ejbca))
+- `google_cas` (Attributes) Google Cloud Certificate Authority Service (CAS) CA pool. Fleet 4.95 or later. Fleet requests certificates from it for Linux hosts through the request-certificate API. (see [below for nested schema](#nestedatt--google_cas))
 - `hydrant` (Attributes) Hydrant certificate authority. (see [below for nested schema](#nestedatt--hydrant))
 - `ndes_scep_proxy` (Attributes) Microsoft NDES SCEP proxy certificate authority. Fleet allows only one NDES CA per server and fixes its name to `NDES`, so this block has no `name` attribute. (see [below for nested schema](#nestedatt--ndes_scep_proxy))
 - `secrets_wo_version` (Number) Rotation trigger for the block's secrets. Incrementing it forces an update that re-sends the whole configured block to Fleet. Changing it never destroys the CA.
@@ -397,14 +484,14 @@ With an in-state credential it is optional, and useful to re-assert the declared
 
 - `id` (String) Identifier of the certificate authority, assigned by Fleet.
 - `name` (String) Name of the certificate authority as stored by Fleet. Mirrors the `name` of the configured block; for `ndes_scep_proxy` Fleet fixes it to `NDES`.
-- `type` (String) Type of the certificate authority. One of `digicert`, `ndes_scep_proxy`, `custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`.
+- `type` (String) Type of the certificate authority. One of `digicert`, `ndes_scep_proxy`, `custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`, `ejbca`, `google_cas`.
 
 <a id="nestedatt--custom_est_proxy"></a>
 ### Nested Schema for `custom_est_proxy`
 
 Required:
 
-- `name` (String) Name of the certificate authority. Must be unique among custom_est_proxy certificate authorities. Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.
+- `name` (String) Name of the certificate authority. Must be unique among custom_est_proxy certificate authorities. Hosts request certificates from it through Fleet's request-certificate API, by its ID.
 - `url` (String) EST endpoint of the certificate authority. Fleet reads `<url>/cacerts` to validate it.
 - `username` (String) Username for EST HTTP basic authentication.
 
@@ -446,13 +533,52 @@ Optional:
 - `certificate_user_principal_names` (List of String) User principal names (UPNs) to place in the issued certificate's subject alternative name. Supports Fleet host variables.
 
 
+<a id="nestedatt--ejbca"></a>
+### Nested Schema for `ejbca`
+
+Required:
+
+- `certificate_authority_name` (String) Name of the EJBCA CA to enroll with.
+- `certificate_common_name` (String) Common name (CN) of the issued certificate. Supports Fleet host variables such as `$FLEET_VAR_HOST_HARDWARE_SERIAL`.
+- `certificate_profile_name` (String) Name of the EJBCA certificate profile to enroll with.
+- `end_entity_profile_name` (String) Name of the EJBCA end entity profile to enroll with.
+- `name` (String) Name of the certificate authority. Must be unique among ejbca certificate authorities. Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.
+- `url` (String) Base URL of the EJBCA instance, for example `https://ejbca.example.com`.
+
+Optional:
+
+- `certificate_user_principal_names` (List of String) User principal names (UPNs) to place in the issued certificate's subject alternative name. Supports Fleet host variables.
+- `client_p12` (String, Sensitive) Base64-encoded PKCS#12 bundle holding the client certificate chain and private key Fleet authenticates to EJBCA with, for example `filebase64("fleet-client.p12")`. Fleet never returns this value. Exactly one of `client_p12` and `client_p12_wo` must be set. This attribute is stored in Terraform state — anyone who can read the state file can read it. Prefer `client_p12_wo` on Terraform 1.11 and later.
+- `client_p12_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Base64-encoded PKCS#12 bundle holding the client certificate chain and private key Fleet authenticates to EJBCA with. Fleet never returns this value. Write-only: Terraform never persists it to the plan or the state file. Exactly one of `client_p12` and `client_p12_wo` must be set. Requires Terraform 1.11 or later. Because Terraform cannot see a write-only value, changing it has no effect on its own — increment `secrets_wo_version` in the same change to push the new value.
+- `password` (String, Sensitive) Password that opens `client_p12`. Fleet never returns this value. Exactly one of `password` and `password_wo` must be set. This attribute is stored in Terraform state — anyone who can read the state file can read it. Prefer `password_wo` on Terraform 1.11 and later.
+- `password_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Password that opens `client_p12`. Fleet never returns this value. Write-only: Terraform never persists it to the plan or the state file. Exactly one of `password` and `password_wo` must be set. Requires Terraform 1.11 or later. Because Terraform cannot see a write-only value, changing it has no effect on its own — increment `secrets_wo_version` in the same change to push the new value.
+- `trust_ca_bundle` (String) PEM bundle of CA certificates Fleet trusts for EJBCA's HTTPS certificate. Fleet uses the system roots when omitted.
+- `username_template` (String) Template for the EJBCA end entity username. Supports Fleet host variables. Fleet uses `certificate_common_name` when omitted.
+
+
+<a id="nestedatt--google_cas"></a>
+### Nested Schema for `google_cas`
+
+Required:
+
+- `ca_pool` (String) ID of the CA pool to request certificates from.
+- `location` (String) Google Cloud location of the CA pool, for example `us-central1`.
+- `name` (String) Name of the certificate authority. Must be unique among google_cas certificate authorities. Hosts request certificates from it through Fleet's request-certificate API, by its ID.
+- `project` (String) Google Cloud project ID or number that holds the CA pool.
+
+Optional:
+
+- `api_key_json` (String, Sensitive) JSON key file of a Google Cloud service account with the CA Service Certificate Manager role, for example `file("service-account.json")`. Fleet never returns this value. Exactly one of `api_key_json` and `api_key_json_wo` must be set. This attribute is stored in Terraform state — anyone who can read the state file can read it. Prefer `api_key_json_wo` on Terraform 1.11 and later.
+- `api_key_json_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) JSON key file of a Google Cloud service account with the CA Service Certificate Manager role. Fleet never returns this value. Write-only: Terraform never persists it to the plan or the state file. Exactly one of `api_key_json` and `api_key_json_wo` must be set. Requires Terraform 1.11 or later. Because Terraform cannot see a write-only value, changing it has no effect on its own — increment `secrets_wo_version` in the same change to push the new value.
+
+
 <a id="nestedatt--hydrant"></a>
 ### Nested Schema for `hydrant`
 
 Required:
 
 - `client_id` (String) Hydrant OAuth client ID.
-- `name` (String) Name of the certificate authority. Must be unique among hydrant certificate authorities. Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.
+- `name` (String) Name of the certificate authority. Must be unique among hydrant certificate authorities. Hosts request certificates from it through Fleet's request-certificate API, by its ID.
 - `url` (String) Base URL of the Hydrant instance. Fleet reads `<url>/cacerts` to validate it.
 
 Optional:

@@ -37,6 +37,10 @@ type SoftwareTitle struct {
 	AutoUpdateEnabled     *bool   `json:"auto_update_enabled,omitempty"`
 	AutoUpdateWindowStart *string `json:"auto_update_window_start,omitempty"`
 	AutoUpdateWindowEnd   *string `json:"auto_update_window_end,omitempty"`
+
+	// AITool is Fleet 4.95's AI tool flag. Fleet Free and older Fleet omit it,
+	// so nil means "not reported" rather than false.
+	AITool *bool `json:"ai_tool,omitempty"`
 }
 
 // AutomaticInstallPolicyRef points at a Fleet policy that auto-installs a
@@ -101,6 +105,17 @@ type AppStoreAppInfo struct {
 	// json.RawMessage so both survive the round trip; use
 	// DecodeAppConfiguration to turn it back into the provider's raw string.
 	Configuration json.RawMessage `json:"configuration,omitempty"`
+	// VPPToken is the VPP token the app was added from (Fleet 4.95+). Null for
+	// Android apps and absent on older Fleet versions.
+	VPPToken *VPPTokenSummary `json:"vpp_token,omitempty"`
+}
+
+// VPPTokenSummary identifies the VPP token an App Store app was added from.
+type VPPTokenSummary struct {
+	ID          int64  `json:"id"`
+	OrgName     string `json:"org_name"`
+	Location    string `json:"location"`
+	CountryCode string `json:"country_code"`
 }
 
 // AddAppStoreAppRequest represents the request body for adding a VPP app.
@@ -116,6 +131,9 @@ type AddAppStoreAppRequest struct {
 	DisplayName string `json:"display_name,omitempty"`
 	// Configuration is the app's managed app configuration. Omitted when nil.
 	Configuration json.RawMessage `json:"configuration,omitempty"`
+	// VPPTokenID picks the VPP token to add the app from (Fleet 4.95+). Fleet
+	// requires it when the team has more than one token. Omitted when nil.
+	VPPTokenID *int64 `json:"vpp_token_id,omitempty"`
 }
 
 // UpdateAppStoreAppRequest represents the request body for updating a VPP app.
@@ -332,6 +350,8 @@ type SoftwareVersion struct {
 	Vulnerabilities  []SoftwareVulnerability `json:"vulnerabilities,omitempty"`
 	CountsUpdatedAt  time.Time               `json:"counts_updated_at"`
 	TitleID          int                     `json:"title_id,omitempty"`
+	// AITool is nil when Fleet does not report it (Free, or before 4.95).
+	AITool *bool `json:"ai_tool,omitempty"`
 }
 
 // SoftwareVulnerability represents a software vulnerability.
@@ -378,6 +398,8 @@ type SoftwareTitleListOptions struct {
 	AvailableForInstall bool
 	SelfService         bool
 	VulnerableOnly      bool
+	// AITool sends ai_tool=true (Fleet Premium 4.95+). False sends nothing.
+	AITool bool
 	SoftwareTypeFilter
 }
 
@@ -387,6 +409,8 @@ type SoftwareVersionListOptions struct {
 	TeamID         *int
 	Query          string
 	VulnerableOnly bool
+	// AITool sends ai_tool=true (Fleet Premium 4.95+). False sends nothing.
+	AITool bool
 	SoftwareTypeFilter
 }
 
@@ -450,6 +474,9 @@ func (c *Client) ListSoftwareTitles(ctx context.Context, opts SoftwareTitleListO
 	}
 	if opts.VulnerableOnly {
 		params["vulnerable"] = "true"
+	}
+	if opts.AITool {
+		params["ai_tool"] = "true"
 	}
 	opts.applyParams(params)
 	opts.applyListParams(params)
@@ -517,6 +544,9 @@ func (c *Client) ListSoftwareVersions(ctx context.Context, opts SoftwareVersionL
 		}
 		if opts.VulnerableOnly {
 			params["vulnerable"] = "true"
+		}
+		if opts.AITool {
+			params["ai_tool"] = "true"
 		}
 		opts.applyParams(params)
 		listOpts := opts.ListOptions
@@ -793,8 +823,8 @@ type PatchSoftwarePackageRequest struct {
 	//
 	// PreInstallQuery follows the same convention as of Fleet 4.91, which
 	// introduced the first Fleet-generated pre-install query: turning on a
-	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching)
-	// makes Fleet write a managed query onto the installer. Sending "" for an unmanaged field would wipe it and
+	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching;
+	// from 4.95, patch_deadline) makes Fleet write a managed query onto the installer. Sending "" for an unmanaged field would wipe it and
 	// silently switch that behaviour back off.
 	//
 	// PostInstallScript stays a plain string because Fleet generates no
@@ -1049,10 +1079,15 @@ type AppStoreAppListItem struct {
 	LatestVersion string `json:"latest_version,omitempty"`
 }
 
-// ListAppStoreApps lists available App Store (VPP) apps for a team.
-func (c *Client) ListAppStoreApps(ctx context.Context, teamID int) ([]AppStoreAppListItem, error) {
+// ListAppStoreApps lists available App Store (VPP) apps for a team. A nil
+// vppTokenID lets Fleet pick the team's only token; Fleet 4.95+ requires it
+// when the team has more than one.
+func (c *Client) ListAppStoreApps(ctx context.Context, teamID int, vppTokenID *int64) ([]AppStoreAppListItem, error) {
 	params := map[string]string{
 		"team_id": strconv.Itoa(teamID),
+	}
+	if vppTokenID != nil {
+		params["vpp_token_id"] = strconv.FormatInt(*vppTokenID, 10)
 	}
 	var resp ListAppStoreAppsResponse
 	if err := c.Get(ctx, "/software/app_store_apps", params, &resp); err != nil {

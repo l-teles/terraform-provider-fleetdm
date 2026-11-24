@@ -203,3 +203,45 @@ func TestListVPPTokens(t *testing.T) {
 		t.Errorf("Expected location 'EU', got '%s'", tokens[1].Location)
 	}
 }
+
+// TestListVPPTokens_495Shape decodes Fleet's VPPTokenDB as 4.95 serializes it:
+// team tuples keyed `team_id`, plus `country_code` and `created_at`.
+func TestListVPPTokens_495Shape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"vpp_tokens":[
+			{"id":3,"org_name":"Example Org","location":"Example Unit","renew_date":"2030-01-01T00:00:00Z",
+			 "country_code":"us","created_at":"2026-01-01T00:00:00Z",
+			 "teams":[{"team_id":0,"name":"No team"},{"team_id":7,"name":"Workstations"}],
+			 "fleets":[{"fleet_id":0,"name":"No team"},{"fleet_id":7,"name":"Workstations"}]},
+			{"id":4,"org_name":"Example Org","location":"Other Unit","renew_date":"2030-01-01T00:00:00Z","teams":[]},
+			{"id":5,"org_name":"Example Org","location":"Unassigned","renew_date":"2030-01-01T00:00:00Z","teams":null}
+		]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-token"})
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+	tokens, err := client.ListVPPTokens(context.Background())
+	if err != nil {
+		t.Fatalf("ListVPPTokens failed: %v", err)
+	}
+	if len(tokens) != 3 {
+		t.Fatalf("expected 3 tokens, got %d", len(tokens))
+	}
+	got := tokens[0]
+	if got.CountryCode != "us" || got.CreatedAt != "2026-01-01T00:00:00Z" {
+		t.Errorf("country_code/created_at not decoded: %+v", got)
+	}
+	if len(got.Teams) != 2 || got.Teams[1].ID != 7 || got.Teams[1].Name != "Workstations" || got.Teams[0].ID != 0 {
+		t.Errorf("teams not decoded from team_id: %+v", got.Teams)
+	}
+	if tokens[1].Teams == nil || len(tokens[1].Teams) != 0 {
+		t.Errorf("all-teams token must decode as an empty, non-nil list: %#v", tokens[1].Teams)
+	}
+	if tokens[2].Teams != nil {
+		t.Errorf("unassigned token must decode as nil teams: %#v", tokens[2].Teams)
+	}
+}

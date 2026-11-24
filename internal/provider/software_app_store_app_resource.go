@@ -7,11 +7,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -74,6 +76,7 @@ type softwareAppStoreAppResourceModel struct {
 	LabelsExcludeAny         unorderedStringList `tfsdk:"labels_exclude_any"`
 	LabelsIncludeAll         unorderedStringList `tfsdk:"labels_include_all"`
 	AutomaticInstallPolicies types.List          `tfsdk:"automatic_install_policies"`
+	VPPTokenID               types.Int64         `tfsdk:"vpp_token_id"`
 }
 
 // Metadata returns the resource type name.
@@ -104,6 +107,30 @@ func (r *softwareAppStoreAppResource) Schema(_ context.Context, _ resource.Schem
 		Computed: true,
 		PlanModifiers: []planmodifier.String{
 			stringplanmodifier.UseStateForUnknown(),
+		},
+	}
+	// Fleet fixes the token when the app is added: every version of the app on
+	// a team shares it and the update endpoint does not accept it.
+	attrs["vpp_token_id"] = schema.Int64Attribute{
+		Description: "ID of the VPP token to add the app from (see `data.fleetdm_vpp_tokens`). Fleet 4.95 or later. " +
+			"Required by Fleet when the team has more than one VPP token; when omitted, Fleet uses the team's only token " +
+			"and the provider records the token Fleet picked. Not supported for `android` apps. Fleet fixes the token " +
+			"when the app is added, so changing a known token (or setting it from a value not known until apply) forces a " +
+			"new resource. Adding it to an app whose token Fleet never reported updates in place, and fails if Fleet holds " +
+			"a different token. Fleet before 4.95 ignores the token, so setting it there is an error. Deleting a VPP token " +
+			"in Fleet removes its apps from every team.",
+		Optional: true,
+		Computed: true,
+		PlanModifiers: []planmodifier.Int64{
+			int64planmodifier.UseStateForUnknown(),
+			// Replace only when a known token changes: a null in state (Fleet
+			// reported none) is no reason to delete and re-add the app.
+			int64planmodifier.RequiresReplaceIf(vppTokenChanged,
+				"Changing a known vpp_token_id re-adds the app from the new token.",
+				"Changing a known `vpp_token_id` re-adds the app from the new token."),
+		},
+		Validators: []validator.Int64{
+			int64validator.AtLeast(1),
 		},
 	}
 	attrs["auto_update_enabled"] = schema.BoolAttribute{
@@ -207,6 +234,16 @@ func (r *softwareAppStoreAppResource) ValidateConfig(ctx context.Context, req re
 		return
 	}
 
+	// Fleet rejects a VPP token on Android apps, which come from Google Play.
+	if !data.VPPTokenID.IsNull() && !data.VPPTokenID.IsUnknown() &&
+		!data.Platform.IsUnknown() && data.Platform.ValueString() == "android" {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("vpp_token_id"),
+			"VPP token not supported for Android apps",
+			"vpp_token_id applies to Apple App Store apps only. Fleet rejects it for android apps, which come from Google Play.",
+		)
+	}
+
 	// Unknown values (e.g. driven by another resource's attribute) can't be
 	// checked at plan time; Fleet's own validation is the backstop there.
 	if data.AutoUpdateEnabled.IsNull() || data.AutoUpdateEnabled.IsUnknown() || !data.AutoUpdateEnabled.ValueBool() {
@@ -250,6 +287,13 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		SelfService: plan.SelfService.ValueBool(),
 		DisplayName: plan.DisplayName.ValueString(),
 	}
+	if !plan.VPPTokenID.IsUnknown() {
+		addReq.VPPTokenID = plan.VPPTokenID.ValueInt64Pointer()
+	}
+	checkVPPTokenSupported(ctx, r.client, plan.VPPTokenID, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Fleet's Add endpoint accepts `configuration`, so the managed app config
 	// lands in the same request as the app itself — no follow-up needed. The
@@ -289,6 +333,11 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 		plan.Platform = types.StringValue("")
 	}
 	plan.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+	// A configured token is kept as planned; an omitted one records the token
+	// Fleet picked, or null where Fleet reports none (Android, Fleet < 4.95).
+	if plan.VPPTokenID.IsUnknown() {
+		plan.VPPTokenID = vppTokenIDFromTitle(title)
+	}
 
 	// Fleet's AddAppStoreApp endpoint accepts neither labels nor the
 	// auto_update_* settings. If the user set any of them in HCL, follow up
@@ -361,6 +410,44 @@ func (r *softwareAppStoreAppResource) Create(ctx context.Context, req resource.C
 
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
+}
+
+// vppTokenChanged reports whether a configured vpp_token_id differs from a
+// known token in state. A token not yet known at plan time also replaces, so
+// the final plan can't switch from update to replace once it resolves.
+func vppTokenChanged(_ context.Context, req planmodifier.Int64Request, resp *int64planmodifier.RequiresReplaceIfFuncResponse) {
+	if req.ConfigValue.IsNull() || req.StateValue.IsNull() || req.StateValue.IsUnknown() {
+		return
+	}
+	resp.RequiresReplace = req.ConfigValue.IsUnknown() || !req.ConfigValue.Equal(req.StateValue)
+}
+
+// checkVPPTokenSupported rejects a configured vpp_token_id on Fleet older than
+// 4.95, which would silently ignore it.
+func checkVPPTokenSupported(ctx context.Context, client *fleetdm.Client, token types.Int64, diags *diag.Diagnostics) {
+	if token.IsNull() || token.IsUnknown() {
+		return
+	}
+	before, known := fleetServerVersionBefore(ctx, client, 4, 95)
+	if !known {
+		diags.AddAttributeError(path.Root("vpp_token_id"), "Could not confirm vpp_token_id support",
+			"The Fleet server version could not be read. vpp_token_id requires Fleet 4.95.0 or later, and older Fleet "+
+				"ignores it, so it is not sent blindly.")
+		return
+	}
+	if before {
+		diags.AddAttributeError(path.Root("vpp_token_id"), "vpp_token_id needs Fleet 4.95",
+			"vpp_token_id requires Fleet 4.95.0 or later; older Fleet ignores it and adds the app from the team's default token. Remove vpp_token_id or upgrade Fleet.")
+	}
+}
+
+// vppTokenIDFromTitle returns the ID of the VPP token Fleet reports the app was
+// added from, or null when Fleet reports none.
+func vppTokenIDFromTitle(title *fleetdm.SoftwareTitle) types.Int64 {
+	if title.AppStoreApp == nil || title.AppStoreApp.VPPToken == nil {
+		return types.Int64Null()
+	}
+	return types.Int64Value(title.AppStoreApp.VPPToken.ID)
 }
 
 // applyAutoUpdateFields copies the three auto_update_* plan values onto an
@@ -450,6 +537,11 @@ func (r *softwareAppStoreAppResource) Read(ctx context.Context, req resource.Rea
 		state.InstallDuringSetup = types.BoolValue(*app.InstallDuringSetup)
 	}
 	state.AutomaticInstallPolicies = automaticInstallPoliciesFromTitle(title)
+	// An absent echo (Android, Fleet < 4.95) keeps state rather than nulling it,
+	// which would plan a replacement for a configured token.
+	if tok := vppTokenIDFromTitle(title); !tok.IsNull() {
+		state.VPPTokenID = tok
+	}
 	if app.LabelsIncludeAny != nil && !state.LabelsIncludeAny.IsNull() {
 		state.LabelsIncludeAny = labelsToStringListValue(app.LabelsIncludeAny)
 	}
@@ -569,6 +661,14 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 		return
 	}
 
+	// A token appearing where Fleet reported none only happens before 4.95.
+	if state.VPPTokenID.IsNull() {
+		checkVPPTokenSupported(ctx, r.client, plan.VPPTokenID, &resp.Diagnostics)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
 	if err := r.client.UpdateAppStoreApp(ctx, titleID, updateReq); err != nil {
 		resp.Diagnostics.AddError(
 			"Error updating VPP app",
@@ -583,6 +683,31 @@ func (r *softwareAppStoreAppResource) Update(ctx context.Context, req resource.U
 	}
 	if plan.DisplayName.IsUnknown() {
 		plan.DisplayName = state.DisplayName
+	}
+	if plan.VPPTokenID.IsUnknown() {
+		plan.VPPTokenID = state.VPPTokenID
+	}
+	// A token configured where state had none can't be applied by an update, so
+	// record the token Fleet actually holds and ask for a replacement plan.
+	if state.VPPTokenID.IsNull() && !plan.VPPTokenID.IsNull() {
+		title, err := r.client.GetSoftwareTitleInFleet(ctx, titleID, optionalIntPtr(plan.TeamID))
+		if err != nil {
+			resp.Diagnostics.AddError("Error reading VPP app", "Could not read back the App Store app: "+err.Error())
+			return
+		}
+		switch got := vppTokenIDFromTitle(title); {
+		case got.IsNull():
+			// Unverified, so state keeps no token and the next plan tries again.
+			resp.Diagnostics.AddAttributeError(path.Root("vpp_token_id"), "Could not confirm the VPP token",
+				fmt.Sprintf("Fleet did not report which VPP token this app was added from, so vpp_token_id %d can't be confirmed. "+
+					"Remove vpp_token_id, or replace the app to add it from that token.", plan.VPPTokenID.ValueInt64()))
+			plan.VPPTokenID = got
+		case !got.Equal(plan.VPPTokenID):
+			resp.Diagnostics.AddAttributeError(path.Root("vpp_token_id"), "App added from a different VPP token",
+				fmt.Sprintf("Fleet added this app from VPP token %d, and an update can't move it to token %d. "+
+					"Run terraform plan again to replace the app, or set vpp_token_id to %[1]d.", got.ValueInt64(), plan.VPPTokenID.ValueInt64()))
+			plan.VPPTokenID = got
+		}
 	}
 
 	// install_during_setup diff routes through the separate

@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -37,6 +38,8 @@ type vppTokenModel struct {
 	OrganizationName types.String `tfsdk:"organization_name"`
 	Location         types.String `tfsdk:"location"`
 	RenewDate        types.String `tfsdk:"renew_date"`
+	CountryCode      types.String `tfsdk:"country_code"`
+	CreatedAt        types.String `tfsdk:"created_at"`
 	Teams            types.List   `tfsdk:"teams"`
 }
 
@@ -77,9 +80,20 @@ func (d *vppTokensDataSource) Schema(_ context.Context, _ datasource.SchemaReque
 							Description: "When the token needs to be renewed.",
 							Computed:    true,
 						},
-						"teams": schema.ListNestedAttribute{
-							Description: "Teams associated with this VPP token.",
+						"country_code": schema.StringAttribute{
+							Description: "Lowercase ISO 3166-1 alpha-2 country code of the Apple Business account that owns the token " +
+								"(e.g. `us`). Null when Fleet has not recorded it.",
+							Computed: true,
+						},
+						"created_at": schema.StringAttribute{
+							Description: "When the token was uploaded to Fleet. Fleet 4.95 or later; null on older versions.",
 							Computed:    true,
+						},
+						"teams": schema.ListNestedAttribute{
+							Description: "Teams associated with this VPP token. An empty list means the token is available to " +
+								"every team; null means it is assigned to none. Use the token `id` as `vpp_token_id` on " +
+								"`fleetdm_software_app_store_app` when a team has more than one token.",
+							Computed: true,
 							NestedObject: schema.NestedAttributeObject{
 								Attributes: map[string]schema.Attribute{
 									"id": schema.Int64Attribute{
@@ -121,25 +135,28 @@ func (d *vppTokensDataSource) Read(ctx context.Context, req datasource.ReadReque
 
 	// Map response to state
 	for _, token := range tokens {
-		// Build teams list
-		var teams []vppTokenTeamModel
-		for _, team := range token.Teams {
-			teams = append(teams, vppTokenTeamModel{
-				ID:   types.Int64Value(int64(team.ID)),
-				Name: types.StringValue(team.Name),
-			})
-		}
-
-		// Convert teams to types.List
-		teamsList, diags := types.ListValueFrom(ctx, types.ObjectType{
+		teamType := types.ObjectType{
 			AttrTypes: map[string]attr.Type{
 				"id":   types.Int64Type,
 				"name": types.StringType,
 			},
-		}, teams)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
+		}
+		// Fleet distinguishes "no team" (null) from "all teams" (empty list).
+		teamsList := types.ListNull(teamType)
+		if token.Teams != nil {
+			teams := make([]vppTokenTeamModel, 0, len(token.Teams))
+			for _, team := range token.Teams {
+				teams = append(teams, vppTokenTeamModel{
+					ID:   types.Int64Value(team.ID),
+					Name: types.StringValue(team.Name),
+				})
+			}
+			var diags diag.Diagnostics
+			teamsList, diags = types.ListValueFrom(ctx, teamType, teams)
+			resp.Diagnostics.Append(diags...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
 		}
 
 		tokenModel := vppTokenModel{
@@ -147,6 +164,8 @@ func (d *vppTokensDataSource) Read(ctx context.Context, req datasource.ReadReque
 			OrganizationName: types.StringValue(token.OrganizationName),
 			Location:         types.StringValue(token.Location),
 			RenewDate:        types.StringValue(token.RenewDate),
+			CountryCode:      emptyStringToNull(token.CountryCode),
+			CreatedAt:        emptyStringToNull(token.CreatedAt),
 			Teams:            teamsList,
 		}
 

@@ -481,6 +481,10 @@ type SetupExperience struct {
 	// them once Apple MDM is configured; without it the PATCH answers 422.
 	EnableManagedLocalAccount *bool   `json:"enable_managed_local_account,omitempty"`
 	EndUserLocalAccountType   *string `json:"end_user_local_account_type,omitempty"`
+	// The bootstrap package settings (Fleet 4.95+, Premium) keep their names
+	// under both spellings.
+	BootstrapPackageDuringManualEnrollment *bool `json:"macos_enable_bootstrap_package_during_manual_enrollment,omitempty"`
+	BootstrapPackageDuringMigration        *bool `json:"macos_enable_bootstrap_package_during_migration,omitempty"`
 }
 
 // renamedSetupExperience is the same object under the names Fleet 4.90
@@ -499,6 +503,9 @@ type renamedSetupExperience struct {
 	// its name under both spellings.
 	EnableManagedLocalAccount *bool   `json:"enable_create_local_admin_account,omitempty"`
 	EndUserLocalAccountType   *string `json:"end_user_local_account_type,omitempty"`
+
+	BootstrapPackageDuringManualEnrollment *bool `json:"macos_enable_bootstrap_package_during_manual_enrollment,omitempty"`
+	BootstrapPackageDuringMigration        *bool `json:"macos_enable_bootstrap_package_during_migration,omitempty"`
 }
 
 func (s renamedSetupExperience) toSetupExperience() *SetupExperience {
@@ -511,6 +518,9 @@ func (s renamedSetupExperience) toSetupExperience() *SetupExperience {
 		ManualAgentInstall:        s.ManualAgentInstall,
 		EnableManagedLocalAccount: s.EnableManagedLocalAccount,
 		EndUserLocalAccountType:   s.EndUserLocalAccountType,
+
+		BootstrapPackageDuringManualEnrollment: s.BootstrapPackageDuringManualEnrollment,
+		BootstrapPackageDuringMigration:        s.BootstrapPackageDuringMigration,
 	}
 }
 
@@ -573,6 +583,10 @@ type UpdateSetupExperienceRequest struct {
 	// a fixed set, so the provider checks both at plan time.
 	EnableManagedLocalAccount *bool   `json:"enable_managed_local_account,omitempty"`
 	EndUserLocalAccountType   *string `json:"end_user_local_account_type,omitempty"`
+	// Fleet refuses true for either bootstrap package setting until the fleet
+	// has a bootstrap package. Fleet before 4.95 ignores both keys.
+	BootstrapPackageDuringManualEnrollment *bool `json:"macos_enable_bootstrap_package_during_manual_enrollment,omitempty"`
+	BootstrapPackageDuringMigration        *bool `json:"macos_enable_bootstrap_package_during_migration,omitempty"`
 }
 
 // GetSetupExperience retrieves setup experience settings for a team.

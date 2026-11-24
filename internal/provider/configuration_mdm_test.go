@@ -33,6 +33,7 @@ var configurationMDMRestoredKeys = []string{
 	"windows_entra_tenant_ids", "windows_entra_client_ids",
 	"macos_migration", "end_user_authentication",
 	"apple_require_hardware_attestation", "only_allow_apple_business_enrollment",
+	"enable_profile_validation",
 }
 
 // snapshotConfigurationMDM records the global mdm keys these tests change and
@@ -532,6 +533,7 @@ func TestBuildConfigurationMDM(t *testing.T) {
 		WindowsEntraClientIDs:            types.SetNull(types.StringType),
 		AppleRequireHardwareAttestation:  types.BoolNull(),
 		OnlyAllowAppleBusinessEnrollment: types.BoolValue(true),
+		EnableProfileValidation:          types.BoolValue(false),
 		AppleAccountProvisioning: &configurationAppleAccountProvisioningModel{
 			OAuthIdPTokenURL: types.StringValue("https://idp.example.test/token"),
 			OAuthIdPClientID: types.StringValue("c"),
@@ -550,7 +552,7 @@ func TestBuildConfigurationMDM(t *testing.T) {
 	got := string(raw)
 	want := `{"apple_server_url":"","windows_migration_enabled":false,"windows_entra_tenant_ids":[],` +
 		`"apple_account_provisioning":{"oauth_idp_token_url":"https://idp.example.test/token","oauth_idp_client_id":"c","oauth_idp_client_secret":"s3cret"},` +
-		`"only_allow_apple_business_enrollment":true}`
+		`"only_allow_apple_business_enrollment":true,"enable_profile_validation":false}`
 	if got != want {
 		t.Errorf("wire format:\n got %s\nwant %s", got, want)
 	}
@@ -589,6 +591,79 @@ func TestConfigurationMDMOnOlderFleet(t *testing.T) {
 	if !strings.Contains(msg, "only_allow_apple_business_enrollment") || strings.Contains(msg, "apple_require_hardware_attestation") {
 		t.Errorf("expected only the missing setting to be named, got %q", msg)
 	}
+}
+
+// TestConfigurationMDMProfileValidationOnOlderFleet covers a Fleet before 4.95,
+// which does not report enable_profile_validation: refresh keeps state and
+// apply names the setting. Fleet's current reply is adopted as is.
+func TestConfigurationMDMProfileValidationOnOlderFleet(t *testing.T) {
+	m := &configurationMDMModel{EnableProfileValidation: types.BoolValue(false)}
+	var older, current fleetdm.MDMConfig
+	if err := json.Unmarshal([]byte(`{"enabled_and_configured":true}`), &older); err != nil {
+		t.Fatal(err)
+	}
+	var diags diag.Diagnostics
+	refreshConfigurationMDM(m, &older, &diags)
+	checkConfigurationMDMApplied(m, &older, &diags)
+	if !diags.HasError() || !strings.Contains(diags.Errors()[0].Detail(), "enable_profile_validation") {
+		t.Fatalf("expected an error naming enable_profile_validation, got %v", diags)
+	}
+	if m.EnableProfileValidation.ValueBool() {
+		t.Error("refresh must keep a setting the server did not report")
+	}
+
+	if err := json.Unmarshal([]byte(`{"enable_profile_validation":true}`), &current); err != nil {
+		t.Fatal(err)
+	}
+	diags = nil
+	checkConfigurationMDMApplied(m, &current, &diags)
+	refreshConfigurationMDM(m, &current, &diags)
+	if diags.HasError() || !m.EnableProfileValidation.ValueBool() {
+		t.Errorf("expected Fleet's value to be adopted without errors, got %v (%v)", m.EnableProfileValidation, diags)
+	}
+
+	unmanaged := &configurationMDMModel{}
+	refreshConfigurationMDM(unmanaged, &current, &diags)
+	if !unmanaged.EnableProfileValidation.IsNull() {
+		t.Errorf("an unmanaged setting must stay null, got %v", unmanaged.EnableProfileValidation)
+	}
+}
+
+// TestAccConfigurationResource_mdmProfileValidation turns profile validation
+// off and back on. Other tests rely on it being on, so the cleanup restores it.
+func TestAccConfigurationResource_mdmProfileValidation(t *testing.T) {
+	snapshotConfigurationMDM(t)
+	const attr = "fleetdm_configuration.test"
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: configurationMDMConfig(`mdm = { enable_profile_validation = false }`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(attr, "mdm.enable_profile_validation", "false"),
+					checkGlobalMDMInFleet("enable_profile_validation", "false"),
+				),
+			},
+			{Config: configurationMDMConfig(`mdm = { enable_profile_validation = false }`), PlanOnly: true},
+			{
+				Config: configurationMDMConfig(`mdm = { enable_profile_validation = true }`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(attr, "mdm.enable_profile_validation", "true"),
+					checkGlobalMDMInFleet("enable_profile_validation", "true"),
+				),
+			},
+			{
+				// Without the mdm block Fleet keeps its value and the plan stays empty.
+				Config: configurationMDMConfig(""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr(attr, "mdm.enable_profile_validation"),
+					checkGlobalMDMInFleet("enable_profile_validation", "true"),
+				),
+			},
+			{Config: configurationMDMConfig(""), PlanOnly: true},
+		},
+	})
 }
 
 // checkGlobalMDMInFleet asserts a fragment of a global mdm key directly, for

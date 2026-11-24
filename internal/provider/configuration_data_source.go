@@ -39,6 +39,7 @@ type ConfigurationDataSourceModel struct {
 	QueryReportsDisabled types.Bool   `tfsdk:"query_reports_disabled"`
 	ScriptsDisabled      types.Bool   `tfsdk:"scripts_disabled"`
 	AIFeaturesDisabled   types.Bool   `tfsdk:"ai_features_disabled"`
+	MCPDisabled          types.Bool   `tfsdk:"mcp_disabled"`
 
 	// Host Expiry Settings
 	HostExpiryEnabled types.Bool  `tfsdk:"host_expiry_enabled"`
@@ -128,6 +129,10 @@ func (d *ConfigurationDataSource) Schema(ctx context.Context, req datasource.Sch
 			},
 			"ai_features_disabled": schema.BoolAttribute{
 				MarkdownDescription: "Whether AI features are disabled.",
+				Computed:            true,
+			},
+			"mcp_disabled": schema.BoolAttribute{
+				MarkdownDescription: "Whether Fleet's MCP server is disabled. Null before Fleet 4.95.0.",
 				Computed:            true,
 			},
 
@@ -245,6 +250,7 @@ func (d *ConfigurationDataSource) Read(ctx context.Context, req datasource.ReadR
 	data.QueryReportsDisabled = types.BoolValue(config.ServerSettings.QueryReportsDisabled)
 	data.ScriptsDisabled = types.BoolValue(config.ServerSettings.ScriptsDisabled)
 	data.AIFeaturesDisabled = types.BoolValue(config.ServerSettings.AIFeaturesDisabled)
+	data.MCPDisabled = types.BoolPointerValue(config.ServerSettings.MCPDisabled)
 
 	// Host Expiry Settings
 	data.HostExpiryEnabled = types.BoolValue(config.HostExpirySettings.HostExpiryEnabled)

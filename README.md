@@ -19,7 +19,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 
 > **Requires Fleet 4.82.0+.** All resources and data sources in this provider version — including the deprecated `fleetdm_team` and `fleetdm_query` aliases — route through the new Fleet API endpoints (`/fleets`, `/reports`). These endpoints are only available on Fleet 4.82.0+.
 
-### Resources (24)
+### Resources (26)
 
 | Resource                        | Description                                                |
 | ------------------------------- | ---------------------------------------------------------- |
@@ -37,6 +37,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_software_fleet_maintained_app` | Add Fleet-curated apps to a team (Premium)                                          |
 | `fleetdm_software_web_app`             | Create Android web apps (web clips) (Premium, requires Android MDM)                 |
 | `fleetdm_software_self_service_category` | Group self-service software into browsable categories (Premium, Fleet 4.90+)       |
+| `fleetdm_software_patch_deadline_settings` | Set the weekdays and time when a fleet's patch deadlines fall (Premium, Fleet 4.95+) |
 | `fleetdm_software_title_icon`           | Set a custom icon for a software title (Premium, Fleet 4.90+)                      |
 | `fleetdm_bootstrap_package`     | Manage bootstrap packages for setup assistant (Premium)    |
 | `fleetdm_configuration`         | Manage global Fleet configuration                          |
@@ -49,7 +50,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_query` *(deprecated)*  | Deprecated alias for `fleetdm_report`                      |
 | `fleetdm_software_package` *(deprecated)* | Split into the three `fleetdm_software_*` resources above — see the migration guide |
 
-### Data Sources (38)
+### Data Sources (39)
 
 | Data Source                                              | Description                               |
 | -------------------------------------------------------- | ----------------------------------------- |
@@ -74,6 +75,7 @@ This Terraform provider allows you to manage [FleetDM](https://fleetdm.com) reso
 | `fleetdm_fleet_maintained_app` / `fleetdm_fleet_maintained_apps` | Read Fleet-maintained app information     |
 | `fleetdm_app_store_apps`                                 | Read available App Store (VPP) apps for a fleet (Premium) |
 | `fleetdm_software_self_service_categories`               | Read self-service software categories on a fleet (Premium, Fleet 4.90+) |
+| `fleetdm_software_patch_deadline_settings`               | Read a fleet's patch deadline weekdays and time (Premium, Fleet 4.95+) |
 | `fleetdm_certificate_authorities`                        | Read configured certificate authorities (Premium) |
 | `fleetdm_certificates`                                   | Read certificate templates on a fleet (Premium, Fleet 4.90+) |
 | `fleetdm_rest_api_endpoints`                             | Read Fleet's REST API endpoint catalog    |

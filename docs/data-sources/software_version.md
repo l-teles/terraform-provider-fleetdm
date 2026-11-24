@@ -44,6 +44,7 @@ output "vulnerabilities" {
 
 ### Read-Only
 
+- `ai_tool` (Boolean) Whether fleetd reported this software as an AI tool. Null when Fleet does not report it (Fleet Free, or Fleet before 4.95). _Available in Fleet Premium 4.95+._
 - `arch` (String) The architecture (e.g., 'x86_64', 'arm64').
 - `bundle_identifier` (String) The bundle identifier (for macOS apps).
 - `generated_cpe` (String) The generated CPE (Common Platform Enumeration) identifier.

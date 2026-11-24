@@ -203,8 +203,8 @@ func (r *softwareFleetMaintainedAppResource) Create(ctx context.Context, req res
 	plan.Name = types.StringValue(title.Name)
 	plan.DisplayName = types.StringValue(title.DisplayName)
 	plan.Version = types.StringValue("")
-	if len(title.Versions) > 0 {
-		plan.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		plan.Version = types.StringValue(v)
 	}
 	if title.SoftwarePackage != nil && title.SoftwarePackage.Platform != "" {
 		plan.Platform = types.StringValue(title.SoftwarePackage.Platform)
@@ -363,8 +363,8 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	}
 
 	state.Name = types.StringValue(title.Name)
-	if len(title.Versions) > 0 {
-		state.Version = types.StringValue(title.Versions[0].Version)
+	if v := installerVersion(title); v != "" {
+		state.Version = types.StringValue(v)
 	}
 	pkg := title.SoftwarePackage
 	if pkg.Platform != "" {
@@ -390,8 +390,8 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	}
 	// pre_install_query follows the same ownership rule as the scripts above.
 	// Since Fleet 4.91 it can carry a Fleet-generated value -- turning on a
-	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching)
-	// makes Fleet write a managed query here --
+	// patch policy's patch_when_closed (or, from 4.93, notify_before_patching;
+	// from 4.95, patch_deadline) makes Fleet write a managed query here --
 	// so absorbing it into state on a title whose HCL omits the attribute would
 	// start a fight Terraform wins by wiping the query, silently switching that
 	// behaviour back off.
@@ -456,7 +456,13 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	// plan, which is the same destroy/recreate diff the backfill exists to
 	// prevent.
 	if state.FleetMaintainedAppID.IsNull() {
-		apps, err := r.client.ListFleetMaintainedApps(ctx, teamID)
+		// Fleet links catalog entries to titles only for a named fleet, so
+		// "no team" must be sent as Unassigned (team_id=0).
+		scope := 0
+		if teamID != nil {
+			scope = *teamID
+		}
+		apps, err := r.client.ListFleetMaintainedApps(ctx, &scope)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Could not resolve fleet_maintained_app_id from catalog",

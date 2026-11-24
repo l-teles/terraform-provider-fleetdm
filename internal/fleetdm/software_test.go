@@ -1230,6 +1230,9 @@ func TestClient_ListAppStoreApps(t *testing.T) {
 		if r.URL.Query().Get("team_id") != "5" {
 			t.Errorf("expected team_id=5, got: %s", r.URL.Query().Get("team_id"))
 		}
+		if r.URL.Query().Has("vpp_token_id") {
+			t.Errorf("vpp_token_id must be omitted when unset, got: %s", r.URL.RawQuery)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(ListAppStoreAppsResponse{
@@ -1242,7 +1245,7 @@ func TestClient_ListAppStoreApps(t *testing.T) {
 	defer server.Close()
 
 	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key", VerifyTLS: false})
-	apps, err := client.ListAppStoreApps(context.Background(), 5)
+	apps, err := client.ListAppStoreApps(context.Background(), 5, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1257,6 +1260,67 @@ func TestClient_ListAppStoreApps(t *testing.T) {
 	}
 	if apps[1].Name != "Xcode" {
 		t.Errorf("expected second app name 'Xcode', got: %s", apps[1].Name)
+	}
+}
+
+// TestClient_ListAppStoreApps_VPPTokenID checks the Fleet 4.95 vpp_token_id
+// query parameter (server/service/vpp.go listAppStoreAppsRequest).
+func TestClient_ListAppStoreApps_VPPTokenID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("vpp_token_id"); got != "3" {
+			t.Errorf("expected vpp_token_id=3, got: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"app_store_apps":[]}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	tokenID := int64(3)
+	if _, err := client.ListAppStoreApps(context.Background(), 5, &tokenID); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// TestClient_AddAppStoreApp_VPPTokenWire asserts the exact add body with and
+// without vpp_token_id, and that the title's vpp_token echo is decoded.
+func TestClient_AddAppStoreApp_VPPTokenWire(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tokenID  *int64
+		wantBody string
+	}{
+		{"unset", nil, `{"app_store_id":"1","team_id":5,"platform":"ios"}`},
+		{"set", new(int64(3)), `{"app_store_id":"1","team_id":5,"platform":"ios","vpp_token_id":3}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost {
+					body, _ := io.ReadAll(r.Body)
+					if string(body) != tc.wantBody {
+						t.Errorf("body mismatch:\n got: %s\nwant: %s", body, tc.wantBody)
+					}
+					_, _ = w.Write([]byte(`{"software_title_id":100}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"software_title":{"id":100,"name":"App","app_store_app":{"app_store_id":"1","platform":"ios",
+					"vpp_token":{"id":3,"org_name":"Example Org","location":"Example Unit","country_code":"us"}}}}`))
+			}))
+			defer server.Close()
+
+			client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+			title, err := client.AddAppStoreApp(context.Background(), &AddAppStoreAppRequest{
+				AppStoreID: "1", TeamID: 5, Platform: "ios", VPPTokenID: tc.tokenID,
+			})
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			want := VPPTokenSummary{ID: 3, OrgName: "Example Org", Location: "Example Unit", CountryCode: "us"}
+			if title.AppStoreApp == nil || title.AppStoreApp.VPPToken == nil || *title.AppStoreApp.VPPToken != want {
+				t.Errorf("vpp_token echo not decoded: %+v", title.AppStoreApp)
+			}
+		})
 	}
 }
 
@@ -2154,5 +2218,84 @@ func TestGetSoftwareTitleInFleet(t *testing.T) {
 				t.Errorf("team_id = %v, want [%s]", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestClient_ListSoftwareTitlesAITool pins Fleet 4.95's ai_tool filter: sent
+// as true only when set, and the response flag kept as nil when Fleet omits it
+// (Fleet Free) so it is not mistaken for false.
+func TestClient_ListSoftwareTitlesAITool(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("ai_tool") {
+			got = append(got, q.Get("ai_tool"))
+		} else {
+			got = append(got, "<absent>")
+		}
+		_, _ = w.Write([]byte(`{"count":3,"software_titles":[{"id":1,"ai_tool":true},{"id":2,"ai_tool":false},{"id":3}]}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	ctx := context.Background()
+	if _, _, err := client.ListSoftwareTitles(ctx, SoftwareTitleListOptions{}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	titles, _, err := client.ListSoftwareTitles(ctx, SoftwareTitleListOptions{AITool: true})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !slices.Equal(got, []string{"<absent>", "true"}) {
+		t.Errorf("expected ai_tool absent then true, got %q", got)
+	}
+	if len(titles) != 3 {
+		t.Fatalf("expected 3 titles, got %d", len(titles))
+	}
+	if titles[0].AITool == nil || !*titles[0].AITool {
+		t.Errorf("expected title 1 ai_tool=true, got %v", titles[0].AITool)
+	}
+	if titles[1].AITool == nil || *titles[1].AITool {
+		t.Errorf("expected title 2 ai_tool=false, got %v", titles[1].AITool)
+	}
+	if titles[2].AITool != nil {
+		t.Errorf("expected title 3 ai_tool=nil when omitted, got %v", *titles[2].AITool)
+	}
+}
+
+// TestClient_ListSoftwareVersionsAITool checks the ai_tool filter reaches every
+// page of the versions walk and is left out when not set.
+func TestClient_ListSoftwareVersionsAITool(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("ai_tool") {
+			got = append(got, q.Get("page")+":"+q.Get("ai_tool"))
+		} else {
+			got = append(got, q.Get("page")+":<absent>")
+		}
+		if q.Get("page") == "" {
+			_, _ = w.Write([]byte(`{"count":2,"software":[{"id":1,"ai_tool":true}],"meta":{"has_next_results":true}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"count":2,"software":[{"id":2}],"meta":{"has_next_results":false}}`))
+	}))
+	defer server.Close()
+
+	client, _ := NewClient(ClientConfig{ServerAddress: server.URL, APIKey: "test-api-key"})
+	ctx := context.Background()
+	versions, _, err := client.ListSoftwareVersions(ctx, SoftwareVersionListOptions{AITool: true})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if _, _, err := client.ListSoftwareVersions(ctx, SoftwareVersionListOptions{}); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	want := []string{":true", "1:true", ":<absent>", "1:<absent>"}
+	if !slices.Equal(got, want) {
+		t.Errorf("expected ai_tool per page %q, got %q", want, got)
+	}
+	if len(versions) != 2 || versions[0].AITool == nil || !*versions[0].AITool || versions[1].AITool != nil {
+		t.Errorf("expected ai_tool true then nil, got %+v", versions)
 	}
 }

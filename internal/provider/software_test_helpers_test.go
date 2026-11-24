@@ -317,13 +317,18 @@ func newFakeFleetSoftwareServer(t *testing.T) *fakeFleetSoftwareServer {
 			f.mu.Lock()
 			apps := []map[string]any{}
 			if f.titleSource == "fma" && f.fmaCreateAppID != 0 {
+				// Like Fleet, link the title only when the request names a fleet.
+				var titleID any
+				if r.URL.Query().Has("team_id") {
+					titleID = f.titleID
+				}
 				apps = append(apps, map[string]any{
 					"id":                f.fmaCreateAppID,
 					"name":              f.titleName,
 					"slug":              "test/darwin",
 					"platform":          "darwin",
 					"version":           "1.0.0",
-					"software_title_id": f.titleID,
+					"software_title_id": titleID,
 				})
 			}
 			f.mu.Unlock()

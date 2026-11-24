@@ -29,6 +29,8 @@ type ServerSettings struct {
 	QueryReportsDisabled bool   `json:"query_reports_disabled"`
 	ScriptsDisabled      bool   `json:"scripts_disabled"`
 	AIFeaturesDisabled   bool   `json:"ai_features_disabled"`
+	// MCPDisabled is nil when the server does not report it (before Fleet 4.95).
+	MCPDisabled *bool `json:"mcp_disabled"`
 }
 
 // ActivityExpirySettings contains activity expiry configuration
@@ -175,6 +177,7 @@ type MDMConfig struct {
 
 	AppleRequireHardwareAttestation  *bool `json:"apple_require_hardware_attestation"`
 	OnlyAllowAppleBusinessEnrollment *bool `json:"only_allow_apple_business_enrollment"`
+	EnableProfileValidation          *bool `json:"enable_profile_validation"`
 }
 
 // MacOSMigration configures migrating macOS hosts from another MDM to Fleet.
@@ -316,6 +319,8 @@ type ServerSettingsUpdate struct {
 	QueryReportsDisabled bool    `json:"query_reports_disabled"`
 	ScriptsDisabled      bool    `json:"scripts_disabled"`
 	AIFeaturesDisabled   bool    `json:"ai_features_disabled"`
+	// MCPDisabled is omitted unless managed: Fleet before 4.95 rejects the unknown key.
+	MCPDisabled *bool `json:"mcp_disabled,omitempty"`
 }
 
 // OrgInfoUpdate is used in PATCH requests. Each canonical org_logo_url_*_mode key
@@ -371,6 +376,7 @@ type MDMSettingsUpdate struct {
 
 	AppleRequireHardwareAttestation  *bool `json:"apple_require_hardware_attestation,omitempty"`
 	OnlyAllowAppleBusinessEnrollment *bool `json:"only_allow_apple_business_enrollment,omitempty"`
+	EnableProfileValidation          *bool `json:"enable_profile_validation,omitempty"`
 }
 
 // UpdateAppConfigRequest represents a partial app config update

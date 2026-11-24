@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -41,6 +44,8 @@ var caTypeBlocks = []string{
 	fleetdm.CATypeCustomESTProxy,
 	fleetdm.CATypeHydrant,
 	fleetdm.CATypeSmallstep,
+	fleetdm.CATypeEJBCA,
+	fleetdm.CATypeGoogleCAS,
 }
 
 // caSecretPair names the credential attribute a CA type block carries. Every
@@ -58,6 +63,9 @@ var caSecretPairs = []caSecretPair{
 	{fleetdm.CATypeCustomESTProxy, "password"},
 	{fleetdm.CATypeHydrant, "client_secret"},
 	{fleetdm.CATypeSmallstep, "password"},
+	{fleetdm.CATypeEJBCA, "client_p12"},
+	{fleetdm.CATypeEJBCA, "password"},
+	{fleetdm.CATypeGoogleCAS, "api_key_json"},
 }
 
 // caTypeBlockPaths returns a path expression for every CA type block, for use
@@ -94,6 +102,8 @@ type CertificateAuthorityResourceModel struct {
 	CustomESTProxy  *customESTProxyCAModel  `tfsdk:"custom_est_proxy"`
 	Hydrant         *hydrantCAModel         `tfsdk:"hydrant"`
 	Smallstep       *smallstepCAModel       `tfsdk:"smallstep"`
+	EJBCA           *ejbcaCAModel           `tfsdk:"ejbca"`
+	GoogleCAS       *googleCASCAModel       `tfsdk:"google_cas"`
 }
 
 type digiCertCAModel struct {
@@ -147,6 +157,31 @@ type smallstepCAModel struct {
 	PasswordWO   types.String `tfsdk:"password_wo"`
 }
 
+type ejbcaCAModel struct {
+	Name                          types.String `tfsdk:"name"`
+	URL                           types.String `tfsdk:"url"`
+	ClientP12                     types.String `tfsdk:"client_p12"`
+	ClientP12WO                   types.String `tfsdk:"client_p12_wo"`
+	Password                      types.String `tfsdk:"password"`
+	PasswordWO                    types.String `tfsdk:"password_wo"`
+	TrustCABundle                 types.String `tfsdk:"trust_ca_bundle"`
+	CertificateAuthorityName      types.String `tfsdk:"certificate_authority_name"`
+	CertificateProfileName        types.String `tfsdk:"certificate_profile_name"`
+	EndEntityProfileName          types.String `tfsdk:"end_entity_profile_name"`
+	CertificateCommonName         types.String `tfsdk:"certificate_common_name"`
+	UsernameTemplate              types.String `tfsdk:"username_template"`
+	CertificateUserPrincipalNames types.List   `tfsdk:"certificate_user_principal_names"`
+}
+
+type googleCASCAModel struct {
+	Name         types.String `tfsdk:"name"`
+	Project      types.String `tfsdk:"project"`
+	Location     types.String `tfsdk:"location"`
+	CAPool       types.String `tfsdk:"ca_pool"`
+	APIKeyJSON   types.String `tfsdk:"api_key_json"`
+	APIKeyJSONWO types.String `tfsdk:"api_key_json_wo"`
+}
+
 // configuredType reports the CA type whose block is set on the model, or an
 // empty string when none is.
 func (m *CertificateAuthorityResourceModel) configuredType() string {
@@ -163,6 +198,10 @@ func (m *CertificateAuthorityResourceModel) configuredType() string {
 		return fleetdm.CATypeHydrant
 	case m.Smallstep != nil:
 		return fleetdm.CATypeSmallstep
+	case m.EJBCA != nil:
+		return fleetdm.CATypeEJBCA
+	case m.GoogleCAS != nil:
+		return fleetdm.CATypeGoogleCAS
 	default:
 		return ""
 	}
@@ -186,6 +225,10 @@ func (m *CertificateAuthorityResourceModel) configuredName() types.String {
 		return m.Hydrant.Name
 	case m.Smallstep != nil:
 		return m.Smallstep.Name
+	case m.EJBCA != nil:
+		return m.EJBCA.Name
+	case m.GoogleCAS != nil:
+		return m.GoogleCAS.Name
 	default:
 		return types.StringNull()
 	}
@@ -276,12 +319,89 @@ func (v notMaskedSecretValidator) ValidateString(_ context.Context, req validato
 	}
 }
 
+// Fleet's Google CAS ID rules (ee/server/service/certificate_authorities_google_cas.go).
+var (
+	googleCASProjectRegex  = regexp.MustCompile(`^[a-z0-9][a-z0-9.:-]*$`)
+	googleCASLocationRegex = regexp.MustCompile(`^[a-z0-9-]+$`)
+	googleCASCAPoolRegex   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	nonBlankRegex          = regexp.MustCompile(`\S`)
+)
+
+// googleCASMaxKeySize is Fleet's limit on a Google service account key.
+const googleCASMaxKeySize = 16 << 10
+
+// base64Validator requires standard base64, which is how Fleet decodes the
+// EJBCA client PKCS#12 (surrounding whitespace is ignored).
+type base64Validator struct{}
+
+func (v base64Validator) Description(_ context.Context) string {
+	return "must be standard base64, for example the output of filebase64()"
+}
+
+func (v base64Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v base64Validator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := strings.TrimSpace(req.ConfigValue.ValueString())
+	if value == fleetdm.MaskedCASecret {
+		return // notMaskedSecretValidator reports this
+	}
+	if _, err := base64.StdEncoding.DecodeString(value); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Value",
+			"Value must be a base64-encoded PKCS#12 bundle, for example filebase64(\"client.p12\"). Fleet rejects anything else.")
+	}
+}
+
+// jsonObjectValidator requires a JSON object no larger than Fleet accepts for
+// a Google service account key.
+type jsonObjectValidator struct{}
+
+func (v jsonObjectValidator) Description(_ context.Context) string {
+	return fmt.Sprintf("must be a JSON object of at most %d bytes", googleCASMaxKeySize)
+}
+
+func (v jsonObjectValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v jsonObjectValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueString()
+	if value == fleetdm.MaskedCASecret {
+		return // notMaskedSecretValidator reports this
+	}
+	if len(value) > googleCASMaxKeySize {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Value",
+			fmt.Sprintf("The service account key is larger than the %d bytes Fleet accepts.", googleCASMaxKeySize))
+		return
+	}
+	var obj map[string]any
+	// A literal `null` decodes without error into a nil map, so check for it.
+	if err := json.Unmarshal([]byte(value), &obj); err != nil || obj == nil {
+		// The error text is not echoed: it can quote part of the key.
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Value",
+			"Value must be the service account key file's JSON object, for example file(\"service-account.json\").")
+	}
+}
+
 // caNameAttribute builds the schema for a CA name attribute.
 func caNameAttribute(caType string) schema.StringAttribute {
+	usage := "Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables."
+	// These types have no profile variables: hosts get certificates through
+	// Fleet's request-certificate API instead.
+	switch caType {
+	case fleetdm.CATypeCustomESTProxy, fleetdm.CATypeGoogleCAS, fleetdm.CATypeHydrant:
+		usage = "Hosts request certificates from it through Fleet's request-certificate API, by its ID."
+	}
 	return schema.StringAttribute{
-		MarkdownDescription: fmt.Sprintf("Name of the certificate authority. Must be unique among %s certificate authorities. "+
-			"Referenced from configuration profiles as part of Fleet's `$FLEET_VAR_*` certificate variables.", caType),
-		Required: true,
+		MarkdownDescription: fmt.Sprintf("Name of the certificate authority. Must be unique among %s certificate authorities. %s", caType, usage),
+		Required:            true,
 		Validators: []validator.String{
 			stringvalidator.LengthAtLeast(1),
 			stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
@@ -305,21 +425,21 @@ func caURLAttribute(description string) schema.StringAttribute {
 // caSecretAttribute builds the schema for a sensitive CA credential that
 // Terraform persists to state. Exactly one of it and its write-only sibling
 // must be set; the constraint lives here so it is declared once per pair.
-func caSecretAttribute(name, description string) schema.StringAttribute {
+func caSecretAttribute(name, description string, extra ...validator.String) schema.StringAttribute {
 	return schema.StringAttribute{
 		MarkdownDescription: description + " Exactly one of `" + name + "` and `" + name + "_wo` must be set. " +
 			"This attribute is stored in Terraform state — anyone who can read the state file can read it. " +
 			"Prefer `" + name + "_wo` on Terraform 1.11 and later.",
 		Optional:  true,
 		Sensitive: true,
-		Validators: []validator.String{
+		Validators: append([]validator.String{
 			stringvalidator.LengthAtLeast(1),
 			notMaskedSecretValidator{},
 			stringvalidator.ExactlyOneOf(
 				path.MatchRelative().AtParent().AtName(name),
 				path.MatchRelative().AtParent().AtName(name+"_wo"),
 			),
-		},
+		}, extra...),
 	}
 }
 
@@ -328,7 +448,7 @@ func caSecretAttribute(name, description string) schema.StringAttribute {
 // state, so it is readable only from the configuration of the running apply,
 // and a change to it is invisible to Terraform — secrets_wo_version is what
 // makes a rotation visible.
-func caSecretWOAttribute(name, description string) schema.StringAttribute {
+func caSecretWOAttribute(name, description string, extra ...validator.String) schema.StringAttribute {
 	return schema.StringAttribute{
 		MarkdownDescription: description + " Write-only: Terraform never persists it to the plan or the state file. " +
 			"Exactly one of `" + name + "` and `" + name + "_wo` must be set. Requires Terraform 1.11 or later. " +
@@ -337,21 +457,43 @@ func caSecretWOAttribute(name, description string) schema.StringAttribute {
 		Optional:  true,
 		Sensitive: true,
 		WriteOnly: true,
-		Validators: []validator.String{
+		Validators: append([]validator.String{
 			stringvalidator.LengthAtLeast(1),
 			notMaskedSecretValidator{},
-		},
+		}, extra...),
 	}
 }
 
 // caPlainAttribute builds the schema for a required non-secret CA attribute.
-func caPlainAttribute(description string) schema.StringAttribute {
+func caPlainAttribute(description string, extra ...validator.String) schema.StringAttribute {
 	return schema.StringAttribute{
 		MarkdownDescription: description,
 		Required:            true,
-		Validators: []validator.String{
+		Validators: append([]validator.String{
 			stringvalidator.LengthAtLeast(1),
-		},
+		}, extra...),
+	}
+}
+
+// caOptionalAttribute builds the schema for an optional non-secret CA
+// attribute. Unset is sent to Fleet as an empty string, which clears it.
+func caOptionalAttribute(description string, extra ...validator.String) schema.StringAttribute {
+	return schema.StringAttribute{
+		MarkdownDescription: description,
+		Optional:            true,
+		Validators: append([]validator.String{
+			stringvalidator.LengthAtLeast(1),
+		}, extra...),
+	}
+}
+
+// caUPNAttribute builds the schema for a certificate's user principal names.
+func caUPNAttribute() schema.ListAttribute {
+	return schema.ListAttribute{
+		MarkdownDescription: "User principal names (UPNs) to place in the issued certificate's " +
+			"subject alternative name. Supports Fleet host variables.",
+		Optional:    true,
+		ElementType: types.StringType,
 	}
 }
 
@@ -360,8 +502,9 @@ func (r *CertificateAuthorityResource) Schema(_ context.Context, _ resource.Sche
 	resp.Schema = schema.Schema{
 		MarkdownDescription: `Manages a FleetDM certificate authority (CA).
 
-Certificate authorities let Fleet issue client certificates to hosts through configuration profiles,
-using Fleet's ` + "`$FLEET_VAR_*`" + ` certificate variables. Exactly one CA type block must be set;
+Certificate authorities let Fleet issue client certificates to hosts, either through configuration profiles
+using Fleet's ` + "`$FLEET_VAR_*`" + ` certificate variables, or, for Hydrant, custom EST and Google CAS, through
+Fleet's request-certificate API. Exactly one CA type block must be set;
 the type of a CA cannot be changed in place, so switching blocks replaces the resource.
 
 ~> **Note:** This is a Fleet Premium feature. It also requires Fleet's server private key
@@ -369,25 +512,34 @@ the type of a CA cannot be changed in place, so switching blocks replaces the re
 Without it Fleet rejects every write with "Private key must be configured".
 
 ~> **Note:** Fleet validates the configured URL when the CA is saved — it fetches the SCEP/EST CA
-certificate, the DigiCert profile, or the Smallstep challenge endpoint, as applicable. An endpoint
-that is unreachable from the Fleet server makes ` + "`apply`" + ` fail, even if the configuration is
-otherwise correct.
+certificate, the DigiCert profile, or the Smallstep challenge endpoint, as applicable. For EJBCA it
+connects with the client certificate and checks the CA and certificate profile, and for Google CAS it
+reads the CA pool with the service account key. An endpoint that is unreachable from the Fleet server
+makes ` + "`apply`" + ` fail, even if the configuration is otherwise correct.
+
+~> **Note:** ` + "`ejbca`" + ` and ` + "`google_cas`" + ` require Fleet 4.95 or later. Every update
+re-sends the whole block, so an ` + "`ejbca`" + ` update always re-sends the client PKCS#12 and Fleet
+verifies the connection to EJBCA again.
 
 ## Drift detection
 
 Fleet reports CA configuration asymmetrically, which bounds what Terraform can detect:
 
 * **Non-secret fields** (` + "`name`" + `, ` + "`url`" + `, ` + "`admin_url`" + `, ` + "`username`" + `,
-  ` + "`profile_id`" + `, ` + "`client_id`" + `, the certificate fields) **are** returned by Fleet and
-  refreshed on every read, so out-of-band changes to them are detected and corrected.
-* **Secrets** (` + "`challenge`" + `, ` + "`password`" + `, ` + "`api_token`" + `, ` + "`client_secret`" + `)
-  are **always** masked as ` + "`********`" + `. Fleet's API hardcodes secret redaction, so no token or
-  parameter returns the real value. Terraform therefore **cannot detect** a secret changed in the
-  Fleet UI or by another client, whichever variant you use.
+  ` + "`profile_id`" + `, ` + "`client_id`" + `, the certificate fields, the EJBCA profile names and
+  ` + "`trust_ca_bundle`" + `, the Google CAS ` + "`project`" + `, ` + "`location`" + ` and
+  ` + "`ca_pool`" + `) **are** returned by Fleet and refreshed on every read, so out-of-band changes to
+  them are detected and corrected.
+* **Secrets** (` + "`challenge`" + `, ` + "`password`" + `, ` + "`api_token`" + `, ` + "`client_secret`" + `,
+  ` + "`client_p12`" + `, ` + "`api_key_json`" + `) are **never** returned: Fleet masks them as
+  ` + "`********`" + ` or, for the EJBCA PKCS#12 and its password, omits them. No token or parameter
+  returns the real value. Terraform therefore **cannot detect** a secret changed in the Fleet UI or by
+  another client, whichever variant you use.
 * To recover from suspected secret drift, increment ` + "`secrets_wo_version`" + `. That forces an
   update that re-sends the configured block to Fleet, re-asserting the secrets you declared.
-* The list endpoint returns only ` + "`id`" + `, ` + "`name`" + ` and ` + "`type`" + `, so the
-  ` + "`fleetdm_certificate_authorities`" + ` data source exposes those three fields only.
+* The list endpoint returns only ` + "`id`" + `, ` + "`name`" + `, ` + "`type`" + ` and, for EJBCA, the
+  client certificate's expiry, so the ` + "`fleetdm_certificate_authorities`" + ` data source exposes
+  only those fields.
 
 ### Choosing how to supply secrets
 
@@ -494,6 +646,41 @@ resource "fleetdm_certificate_authority" "smallstep" {
   }
 }
 ` + "```" + `
+
+### EJBCA
+
+` + "```hcl" + `
+resource "fleetdm_certificate_authority" "ejbca" {
+  secrets_wo_version = 1
+
+  ejbca = {
+    name                       = "EJBCA_WIFI"
+    url                        = "https://ejbca.example.com"
+    client_p12_wo              = filebase64("fleet-client.p12")
+    password_wo                = var.ejbca_client_p12_password
+    certificate_authority_name = "ManagementCA"
+    certificate_profile_name   = "ENDUSER"
+    end_entity_profile_name    = "EMPTY"
+    certificate_common_name    = "$FLEET_VAR_HOST_HARDWARE_SERIAL"
+  }
+}
+` + "```" + `
+
+### Google Cloud Certificate Authority Service
+
+` + "```hcl" + `
+resource "fleetdm_certificate_authority" "google_cas" {
+  secrets_wo_version = 1
+
+  google_cas = {
+    name            = "GOOGLE_CAS_LINUX"
+    project         = "example-project"
+    location        = "us-central1"
+    ca_pool         = "fleet-pool"
+    api_key_json_wo = file("service-account.json")
+  }
+}
+` + "```" + `
 `,
 
 		Attributes: map[string]schema.Attribute{
@@ -511,7 +698,7 @@ resource "fleetdm_certificate_authority" "smallstep" {
 			},
 			"type": schema.StringAttribute{
 				MarkdownDescription: "Type of the certificate authority. One of `digicert`, `ndes_scep_proxy`, " +
-					"`custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`.",
+					"`custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`, `ejbca`, `google_cas`.",
 				Computed: true,
 			},
 			"secrets_wo_version": schema.Int64Attribute{
@@ -543,12 +730,7 @@ resource "fleetdm_certificate_authority" "smallstep" {
 						"Supports Fleet host variables such as `$FLEET_VAR_HOST_HARDWARE_SERIAL`."),
 					"certificate_seat_id": caPlainAttribute("Seat ID to associate the issued certificate with. " +
 						"Supports Fleet host variables."),
-					"certificate_user_principal_names": schema.ListAttribute{
-						MarkdownDescription: "User principal names (UPNs) to place in the issued certificate's " +
-							"subject alternative name. Supports Fleet host variables.",
-						Optional:    true,
-						ElementType: types.StringType,
-					},
+					"certificate_user_principal_names": caUPNAttribute(),
 				},
 			},
 
@@ -610,6 +792,65 @@ resource "fleetdm_certificate_authority" "smallstep" {
 					"username":      caPlainAttribute("Username for the Smallstep challenge endpoint."),
 					"password":      caSecretAttribute("password", "Password for the Smallstep challenge endpoint. Fleet never returns this value."),
 					"password_wo":   caSecretWOAttribute("password", "Password for the Smallstep challenge endpoint. Fleet never returns this value."),
+				},
+			},
+
+			fleetdm.CATypeEJBCA: schema.SingleNestedAttribute{
+				MarkdownDescription: "EJBCA certificate authority, enrolled over EJBCA's REST API with mutual TLS. Fleet 4.95 or " +
+					"later. Referenced from configuration profiles as `$FLEET_VAR_EJBCA_DATA_<name>` and " +
+					"`$FLEET_VAR_EJBCA_PASSWORD_<name>`. An EJBCA CA cannot share its name with a CA of any other type.",
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"name": func() schema.StringAttribute {
+						a := caNameAttribute(fleetdm.CATypeEJBCA)
+						a.Validators = append(a.Validators, stringvalidator.NoneOfCaseInsensitive(fleetdm.NDESCAName))
+						return a
+					}(),
+					"url": caURLAttribute("Base URL of the EJBCA instance, for example `https://ejbca.example.com`."),
+					"client_p12": caSecretAttribute("client_p12", "Base64-encoded PKCS#12 bundle holding the client certificate "+
+						"chain and private key Fleet authenticates to EJBCA with, for example `filebase64(\"fleet-client.p12\")`. "+
+						"Fleet never returns this value.", base64Validator{}),
+					"client_p12_wo": caSecretWOAttribute("client_p12", "Base64-encoded PKCS#12 bundle holding the client "+
+						"certificate chain and private key Fleet authenticates to EJBCA with. Fleet never returns this value.", base64Validator{}),
+					"password":    caSecretAttribute("password", "Password that opens `client_p12`. Fleet never returns this value."),
+					"password_wo": caSecretWOAttribute("password", "Password that opens `client_p12`. Fleet never returns this value."),
+					"trust_ca_bundle": caOptionalAttribute("PEM bundle of CA certificates Fleet trusts for EJBCA's HTTPS " +
+						"certificate. Fleet uses the system roots when omitted."),
+					"certificate_authority_name": caPlainAttribute("Name of the EJBCA CA to enroll with.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength), fleetNormalizedValidator{}),
+					"certificate_profile_name": caPlainAttribute("Name of the EJBCA certificate profile to enroll with.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength), fleetNormalizedValidator{}),
+					"end_entity_profile_name": caPlainAttribute("Name of the EJBCA end entity profile to enroll with.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength), fleetNormalizedValidator{}),
+					"certificate_common_name": caPlainAttribute("Common name (CN) of the issued certificate. Supports Fleet "+
+						"host variables such as `$FLEET_VAR_HOST_HARDWARE_SERIAL`.", stringvalidator.LengthAtMost(fleetdm.MaxNameLength)),
+					"username_template": caOptionalAttribute("Template for the EJBCA end entity username. Supports Fleet host "+
+						"variables. Fleet uses `certificate_common_name` when omitted.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength), stringvalidator.RegexMatches(nonBlankRegex, "must not be only whitespace")),
+					"certificate_user_principal_names": caUPNAttribute(),
+				},
+			},
+
+			fleetdm.CATypeGoogleCAS: schema.SingleNestedAttribute{
+				MarkdownDescription: "Google Cloud Certificate Authority Service (CAS) CA pool. Fleet 4.95 or later. Fleet " +
+					"requests certificates from it for Linux hosts through the request-certificate API.",
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"name": caNameAttribute(fleetdm.CATypeGoogleCAS),
+					"project": caPlainAttribute("Google Cloud project ID or number that holds the CA pool.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+						stringvalidator.RegexMatches(googleCASProjectRegex, "must contain only lowercase letters, numbers, hyphens, periods and colons, and start with a letter or number")),
+					"location": caPlainAttribute("Google Cloud location of the CA pool, for example `us-central1`.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+						stringvalidator.RegexMatches(googleCASLocationRegex, "must contain only lowercase letters, numbers and hyphens")),
+					"ca_pool": caPlainAttribute("ID of the CA pool to request certificates from.",
+						stringvalidator.LengthAtMost(fleetdm.MaxNameLength),
+						stringvalidator.RegexMatches(googleCASCAPoolRegex, "must contain only letters, numbers, hyphens and underscores")),
+					"api_key_json": caSecretAttribute("api_key_json", "JSON key file of a Google Cloud service account with the "+
+						"CA Service Certificate Manager role, for example `file(\"service-account.json\")`. Fleet never returns this value.",
+						jsonObjectValidator{}),
+					"api_key_json_wo": caSecretWOAttribute("api_key_json", "JSON key file of a Google Cloud service account with "+
+						"the CA Service Certificate Manager role. Fleet never returns this value.", jsonObjectValidator{}),
 				},
 			},
 		},
@@ -771,6 +1012,11 @@ func (m *CertificateAuthorityResourceModel) nullifyWriteOnlySecrets() {
 		m.Hydrant.ClientSecretWO = types.StringNull()
 	case m.Smallstep != nil:
 		m.Smallstep.PasswordWO = types.StringNull()
+	case m.EJBCA != nil:
+		m.EJBCA.ClientP12WO = types.StringNull()
+		m.EJBCA.PasswordWO = types.StringNull()
+	case m.GoogleCAS != nil:
+		m.GoogleCAS.APIKeyJSONWO = types.StringNull()
 	}
 }
 
@@ -826,6 +1072,29 @@ func (m *CertificateAuthorityResourceModel) buildPayload(ctx context.Context, co
 			ChallengeURL: m.Smallstep.ChallengeURL.ValueString(),
 			Username:     m.Smallstep.Username.ValueString(),
 			Password:     resolveCASecret(ctx, config, fleetdm.CATypeSmallstep, "password", m.Smallstep.Password, diags),
+		}
+	case m.EJBCA != nil:
+		upns := stringListToSlice(ctx, m.EJBCA.CertificateUserPrincipalNames, diags)
+		payload.EJBCA = &fleetdm.EJBCACA{
+			Name:                          m.EJBCA.Name.ValueStringPointer(),
+			URL:                           m.EJBCA.URL.ValueString(),
+			ClientP12:                     resolveCASecret(ctx, config, fleetdm.CATypeEJBCA, "client_p12", m.EJBCA.ClientP12, diags),
+			Password:                      resolveCASecret(ctx, config, fleetdm.CATypeEJBCA, "password", m.EJBCA.Password, diags),
+			TrustCABundle:                 m.EJBCA.TrustCABundle.ValueString(),
+			CertificateAuthorityName:      m.EJBCA.CertificateAuthorityName.ValueString(),
+			CertificateProfileName:        m.EJBCA.CertificateProfileName.ValueString(),
+			EndEntityProfileName:          m.EJBCA.EndEntityProfileName.ValueString(),
+			CertificateCommonName:         m.EJBCA.CertificateCommonName.ValueString(),
+			UsernameTemplate:              m.EJBCA.UsernameTemplate.ValueString(),
+			CertificateUserPrincipalNames: &upns,
+		}
+	case m.GoogleCAS != nil:
+		payload.GoogleCAS = &fleetdm.GoogleCASCA{
+			Name:       m.GoogleCAS.Name.ValueStringPointer(),
+			Project:    m.GoogleCAS.Project.ValueString(),
+			Location:   m.GoogleCAS.Location.ValueString(),
+			CAPool:     m.GoogleCAS.CAPool.ValueString(),
+			APIKeyJSON: resolveCASecret(ctx, config, fleetdm.CATypeGoogleCAS, "api_key_json", m.GoogleCAS.APIKeyJSON, diags),
 		}
 	default:
 		diags.AddError(
@@ -1029,6 +1298,26 @@ func (m *CertificateAuthorityResourceModel) refreshFromAPI(ctx context.Context, 
 		m.Smallstep.ChallengeURL = types.StringValue(ca.ChallengeURL)
 		m.Smallstep.Username = types.StringValue(ca.Username)
 		m.Smallstep.Password = preserveSecret(ca.Password, m.Smallstep.Password)
+	case m.EJBCA != nil:
+		m.EJBCA.Name = types.StringValue(ca.Name)
+		m.EJBCA.URL = types.StringValue(ca.URL)
+		m.EJBCA.TrustCABundle = emptyStringToNull(ca.TrustCABundle)
+		m.EJBCA.CertificateAuthorityName = types.StringValue(ca.CertificateAuthorityName)
+		m.EJBCA.CertificateProfileName = types.StringValue(ca.CertificateProfileName)
+		m.EJBCA.EndEntityProfileName = types.StringValue(ca.EndEntityProfileName)
+		m.EJBCA.CertificateCommonName = types.StringValue(ca.CertificateCommonName)
+		m.EJBCA.UsernameTemplate = emptyStringToNull(ca.UsernameTemplate)
+		m.EJBCA.CertificateUserPrincipalNames = preserveUPNList(
+			ctx, ca.CertificateUserPrincipalNames, m.EJBCA.CertificateUserPrincipalNames, diags)
+		// Fleet returns neither the PKCS#12 nor its password, so both stay as in state.
+		m.EJBCA.ClientP12 = preserveSecret("", m.EJBCA.ClientP12)
+		m.EJBCA.Password = preserveSecret("", m.EJBCA.Password)
+	case m.GoogleCAS != nil:
+		m.GoogleCAS.Name = types.StringValue(ca.Name)
+		m.GoogleCAS.Project = types.StringValue(ca.Project)
+		m.GoogleCAS.Location = types.StringValue(ca.Location)
+		m.GoogleCAS.CAPool = types.StringValue(ca.CAPool)
+		m.GoogleCAS.APIKeyJSON = preserveSecret(ca.APIKeyJSON, m.GoogleCAS.APIKeyJSON)
 	}
 }
 
@@ -1206,6 +1495,34 @@ func (r *CertificateAuthorityResource) ImportState(ctx context.Context, req reso
 			ChallengeURL: types.StringValue(ca.ChallengeURL),
 			Username:     types.StringValue(ca.Username),
 			Password:     types.StringNull(),
+		}
+	case fleetdm.CATypeEJBCA:
+		upns := types.ListNull(types.StringType)
+		if len(ca.CertificateUserPrincipalNames) > 0 {
+			converted, d := types.ListValueFrom(ctx, types.StringType, ca.CertificateUserPrincipalNames)
+			resp.Diagnostics.Append(d...)
+			upns = converted
+		}
+		data.EJBCA = &ejbcaCAModel{
+			Name:                          types.StringValue(ca.Name),
+			URL:                           types.StringValue(ca.URL),
+			ClientP12:                     types.StringNull(),
+			Password:                      types.StringNull(),
+			TrustCABundle:                 emptyStringToNull(ca.TrustCABundle),
+			CertificateAuthorityName:      types.StringValue(ca.CertificateAuthorityName),
+			CertificateProfileName:        types.StringValue(ca.CertificateProfileName),
+			EndEntityProfileName:          types.StringValue(ca.EndEntityProfileName),
+			CertificateCommonName:         types.StringValue(ca.CertificateCommonName),
+			UsernameTemplate:              emptyStringToNull(ca.UsernameTemplate),
+			CertificateUserPrincipalNames: upns,
+		}
+	case fleetdm.CATypeGoogleCAS:
+		data.GoogleCAS = &googleCASCAModel{
+			Name:       types.StringValue(ca.Name),
+			Project:    types.StringValue(ca.Project),
+			Location:   types.StringValue(ca.Location),
+			CAPool:     types.StringValue(ca.CAPool),
+			APIKeyJSON: types.StringNull(),
 		}
 	default:
 		resp.Diagnostics.AddError(

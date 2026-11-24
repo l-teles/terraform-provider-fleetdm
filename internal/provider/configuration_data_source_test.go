@@ -25,6 +25,7 @@ func TestAccConfigurationDataSource_basic(t *testing.T) {
 					"enable_analytics":       true,
 					"query_reports_disabled": false,
 					"scripts_disabled":       false,
+					"mcp_disabled":           true,
 				},
 				"host_expiry_settings": map[string]interface{}{
 					"host_expiry_enabled": true,
@@ -59,6 +60,7 @@ func TestAccConfigurationDataSource_basic(t *testing.T) {
 					resource.TestCheckResourceAttr("data.fleetdm_configuration.test", "host_expiry_window", "30"),
 					resource.TestCheckResourceAttr("data.fleetdm_configuration.test", "enable_host_users", "true"),
 					resource.TestCheckResourceAttr("data.fleetdm_configuration.test", "enable_software_inventory", "true"),
+					resource.TestCheckResourceAttr("data.fleetdm_configuration.test", "mcp_disabled", "true"),
 				),
 			},
 		},
@@ -87,6 +89,7 @@ func TestAccConfigurationDataSource_live(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("data.fleetdm_configuration.test", "org_name"),
 					resource.TestCheckResourceAttrSet("data.fleetdm_configuration.test", "server_url"),
+					resource.TestCheckResourceAttrSet("data.fleetdm_configuration.test", "mcp_disabled"),
 				),
 			},
 		},

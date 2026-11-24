@@ -257,8 +257,8 @@ func softwareScriptAttributes() map[string]schema.Attribute {
 		"pre_install_query": schema.StringAttribute{
 			Description: "An osquery SQL query to run before installation. Installation proceeds only if the query returns results. " +
 				"Optional: when omitted, the query stays under Fleet's control and Terraform neither stores nor reverts it. " +
-				"Fleet writes a managed query here when a patch policy targeting this title sets patch_when_closed or " +
-				"notify_before_patching, so leaving " +
+				"Fleet writes a managed query here when a patch policy targeting this title sets patch_when_closed, " +
+				"notify_before_patching or patch_deadline, so leaving " +
 				"the attribute out is what lets that keep working. Set this attribute to take ownership of the query; remove it " +
 				"to hand ownership back to Fleet without clearing the query that is in place.",
 			Optional: true,
@@ -447,4 +447,17 @@ func (m automaticInstallPoliciesUseStateForUnknown) PlanModifyList(_ context.Con
 		return
 	}
 	resp.PlanValue = req.StateValue
+}
+
+// installerVersion returns the version of the title's installer, falling back
+// to the newest version hosts report. Host inventory can lag a replaced
+// installer, and on Fleet 4.95 it is scoped to the installer's fleet.
+func installerVersion(title *fleetdm.SoftwareTitle) string {
+	if title.SoftwarePackage != nil && title.SoftwarePackage.Version != "" {
+		return title.SoftwarePackage.Version
+	}
+	if len(title.Versions) > 0 {
+		return title.Versions[0].Version
+	}
+	return ""
 }

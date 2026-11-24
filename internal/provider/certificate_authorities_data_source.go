@@ -34,9 +34,10 @@ type certificateAuthoritiesDataSourceModel struct {
 
 // certificateAuthoritySummaryModel maps an individual certificate authority.
 type certificateAuthoritySummaryModel struct {
-	ID   types.Int64  `tfsdk:"id"`
-	Name types.String `tfsdk:"name"`
-	Type types.String `tfsdk:"type"`
+	ID                types.Int64  `tfsdk:"id"`
+	Name              types.String `tfsdk:"name"`
+	Type              types.String `tfsdk:"type"`
+	MTLSCertExpiresAt types.String `tfsdk:"mtls_cert_expires_at"`
 }
 
 // Metadata returns the data source type name.
@@ -48,8 +49,8 @@ func (d *certificateAuthoritiesDataSource) Metadata(_ context.Context, req datas
 func (d *certificateAuthoritiesDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Retrieves every certificate authority configured in FleetDM. This is a Fleet Premium feature.\n\n" +
-			"~> **Note:** Fleet's list endpoint returns identity only, so this data source exposes `id`, `name` and " +
-			"`type` and no configuration. Fleet never returns certificate authority secrets through any endpoint.",
+			"~> **Note:** Fleet's list endpoint returns identity only, so this data source exposes `id`, `name`, " +
+			"`type` and, for EJBCA, the client certificate expiry, and no configuration. Fleet never returns certificate authority secrets through any endpoint.",
 		Attributes: map[string]schema.Attribute{
 			"certificate_authorities": schema.ListNestedAttribute{
 				MarkdownDescription: "List of certificate authorities.",
@@ -66,7 +67,12 @@ func (d *certificateAuthoritiesDataSource) Schema(_ context.Context, _ datasourc
 						},
 						"type": schema.StringAttribute{
 							MarkdownDescription: "Type of the certificate authority. One of `digicert`, `ndes_scep_proxy`, " +
-								"`custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`.",
+								"`custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`, `ejbca`, `google_cas`.",
+							Computed: true,
+						},
+						"mtls_cert_expires_at": schema.StringAttribute{
+							MarkdownDescription: "When the client certificate Fleet authenticates to EJBCA with expires, as an RFC 3339 timestamp. " +
+								"Set for `ejbca` certificate authorities only (Fleet 4.95 or later); null for every other type.",
 							Computed: true,
 						},
 					},
@@ -97,9 +103,10 @@ func (d *certificateAuthoritiesDataSource) Read(ctx context.Context, _ datasourc
 	state.CertificateAuthorities = make([]certificateAuthoritySummaryModel, 0, len(cas))
 	for _, ca := range cas {
 		state.CertificateAuthorities = append(state.CertificateAuthorities, certificateAuthoritySummaryModel{
-			ID:   types.Int64Value(int64(ca.ID)),
-			Name: types.StringValue(ca.Name),
-			Type: types.StringValue(ca.Type),
+			ID:                types.Int64Value(int64(ca.ID)),
+			Name:              types.StringValue(ca.Name),
+			Type:              types.StringValue(ca.Type),
+			MTLSCertExpiresAt: emptyStringToNull(ca.MTLSCertExpiresAt),
 		})
 	}
 

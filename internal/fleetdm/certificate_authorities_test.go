@@ -570,6 +570,8 @@ func TestCertificateAuthorityPayloadType(t *testing.T) {
 		{"custom_est", CertificateAuthorityPayload{CustomESTProxy: &CustomESTProxyCA{}}, CATypeCustomESTProxy},
 		{"hydrant", CertificateAuthorityPayload{Hydrant: &HydrantCA{}}, CATypeHydrant},
 		{"smallstep", CertificateAuthorityPayload{Smallstep: &SmallstepSCEPProxyCA{}}, CATypeSmallstep},
+		{"ejbca", CertificateAuthorityPayload{EJBCA: &EJBCACA{}}, CATypeEJBCA},
+		{"google_cas", CertificateAuthorityPayload{GoogleCAS: &GoogleCASCA{}}, CATypeGoogleCAS},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -577,5 +579,103 @@ func TestCertificateAuthorityPayloadType(t *testing.T) {
 				t.Errorf("Type() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCertificateAuthorityPayloadFleet495Wire pins the exact EJBCA and Google
+// CAS bodies against Fleet 4.95's server/fleet/ejbca.go EJBCA and
+// server/fleet/google_cas.go GoogleCASCA, and that ClearName drops the name.
+func TestCertificateAuthorityPayloadFleet495Wire(t *testing.T) {
+	upns := []string{}
+	for _, tc := range []struct {
+		name      string
+		payload   *CertificateAuthorityPayload
+		want      string
+		wantClear string
+	}{
+		{
+			name: "ejbca",
+			payload: &CertificateAuthorityPayload{EJBCA: &EJBCACA{
+				Name: strPtr("EJBCA_TEST"), URL: "https://ejbca.example.test", ClientP12: "ZmFrZS1wMTI=", Password: "fake-p12-password",
+				CertificateAuthorityName: "FakeCA", CertificateProfileName: "FakeProfile", EndEntityProfileName: "FakeEndEntity",
+				CertificateCommonName: "fake-cn", CertificateUserPrincipalNames: &upns,
+			}},
+			want: `{"ejbca":{"name":"EJBCA_TEST","url":"https://ejbca.example.test","client_p12":"ZmFrZS1wMTI=",` +
+				`"password":"fake-p12-password","trust_ca_bundle":"","certificate_authority_name":"FakeCA",` +
+				`"certificate_profile_name":"FakeProfile","end_entity_profile_name":"FakeEndEntity",` +
+				`"certificate_common_name":"fake-cn","username_template":"","certificate_user_principal_names":[]}}`,
+			wantClear: `{"ejbca":{"url":"https://ejbca.example.test","client_p12":"ZmFrZS1wMTI=",` +
+				`"password":"fake-p12-password","trust_ca_bundle":"","certificate_authority_name":"FakeCA",` +
+				`"certificate_profile_name":"FakeProfile","end_entity_profile_name":"FakeEndEntity",` +
+				`"certificate_common_name":"fake-cn","username_template":"","certificate_user_principal_names":[]}}`,
+		},
+		{
+			name: "google_cas",
+			payload: &CertificateAuthorityPayload{GoogleCAS: &GoogleCASCA{
+				Name: strPtr("GCAS_TEST"), Project: "example-project", Location: "us-central1", CAPool: "fake-pool",
+				APIKeyJSON: `{"type":"service_account"}`,
+			}},
+			want: `{"google_cas":{"name":"GCAS_TEST","project":"example-project","location":"us-central1",` +
+				`"ca_pool":"fake-pool","api_key_json":"{\"type\":\"service_account\"}"}}`,
+			wantClear: `{"google_cas":{"project":"example-project","location":"us-central1",` +
+				`"ca_pool":"fake-pool","api_key_json":"{\"type\":\"service_account\"}"}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("body mismatch:\n got: %s\nwant: %s", got, tc.want)
+			}
+			if name, ok := tc.payload.Name(); !ok || name == "" {
+				t.Errorf("Name() = (%q, %v), want the configured name", name, ok)
+			}
+			tc.payload.ClearName()
+			got, _ = json.Marshal(tc.payload)
+			if string(got) != tc.wantClear {
+				t.Errorf("cleared body mismatch:\n got: %s\nwant: %s", got, tc.wantClear)
+			}
+		})
+	}
+}
+
+// TestGetCertificateAuthorityFleet495Fields decodes the 4.95 GET shape of both
+// new types, where Google's key is masked and EJBCA's credentials are absent.
+func TestGetCertificateAuthorityFleet495Fields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/fleet/certificate_authorities/1" {
+			_, _ = w.Write([]byte(`{"id":1,"name":"EJBCA_TEST","type":"ejbca","url":"https://ejbca.example.test",
+				"trust_ca_bundle":"fake-ca-bundle","certificate_authority_name":"FakeCA","certificate_profile_name":"FakeProfile",
+				"end_entity_profile_name":"FakeEndEntity","certificate_common_name":"fake-cn","username_template":"fake-user",
+				"certificate_user_principal_names":["upn@example.test"],"mtls_cert_expires_at":"2030-01-01T00:00:00Z"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":2,"name":"GCAS_TEST","type":"google_cas","project":"example-project",
+			"location":"us-central1","ca_pool":"fake-pool","api_key_json":"********"}`))
+	}))
+	defer server.Close()
+	client := newTestCAClient(t, server.URL)
+
+	ejbca, err := client.GetCertificateAuthority(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ejbca.TrustCABundle != "fake-ca-bundle" || ejbca.CertificateAuthorityName != "FakeCA" ||
+		ejbca.CertificateProfileName != "FakeProfile" || ejbca.EndEntityProfileName != "FakeEndEntity" ||
+		ejbca.UsernameTemplate != "fake-user" || ejbca.MTLSCertExpiresAt != "2030-01-01T00:00:00Z" ||
+		len(ejbca.CertificateUserPrincipalNames) != 1 || ejbca.Password != "" {
+		t.Errorf("EJBCA fields not decoded: %+v", ejbca)
+	}
+
+	gcas, err := client.GetCertificateAuthority(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gcas.Project != "example-project" || gcas.Location != "us-central1" || gcas.CAPool != "fake-pool" ||
+		gcas.APIKeyJSON != MaskedCASecret {
+		t.Errorf("Google CAS fields not decoded: %+v", gcas)
 	}
 }

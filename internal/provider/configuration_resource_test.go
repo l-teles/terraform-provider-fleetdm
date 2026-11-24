@@ -2,13 +2,19 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
@@ -474,4 +480,221 @@ resource "fleetdm_configuration" "test" {
 			},
 		},
 	})
+}
+
+// appConfigMock serves /config from a map that each PATCH merges into, one
+// section deep, and records every server_settings object sent. dropMCP stands
+// in for a Fleet that predates mcp_disabled.
+type appConfigMock struct {
+	mu             sync.Mutex
+	dropMCP        bool
+	config         map[string]map[string]any
+	serverSettings []string
+}
+
+func newAppConfigMock(dropMCP bool) *appConfigMock {
+	return &appConfigMock{dropMCP: dropMCP, config: map[string]map[string]any{
+		"org_info":                 {"org_name": "", "contact_url": "https://fleetdm.com/company/contact"},
+		"server_settings":          {"server_url": "https://fleet.example.test"},
+		"host_expiry_settings":     {},
+		"activity_expiry_settings": {},
+		"features":                 {"enable_host_users": true, "enable_software_inventory": true},
+		"fleet_desktop":            {},
+	}}
+}
+
+func (m *appConfigMock) handler(t *testing.T) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/fleet/config" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if r.Method == http.MethodPatch {
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("failed to decode PATCH body: %v", err)
+			}
+			m.serverSettings = append(m.serverSettings, string(body["server_settings"]))
+			for section, raw := range body {
+				var values map[string]any
+				if err := json.Unmarshal(raw, &values); err != nil {
+					continue
+				}
+				if m.config[section] == nil {
+					m.config[section] = map[string]any{}
+				}
+				maps.Copy(m.config[section], values)
+			}
+			if m.dropMCP {
+				delete(m.config["server_settings"], "mcp_disabled")
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(m.config)
+	}
+}
+
+func mcpDisabledMockConfig(serverURL, line string) string {
+	return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %[1]q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_configuration" "test" {
+  org_name = "Mock Org"
+  %[2]s
+}
+`, serverURL, line)
+}
+
+// TestAccConfigurationResource_mcpDisabledWire pins the wire format: the key is
+// sent only while managed, and dropping it from HCL leaves Fleet's value alone
+// without drift.
+func TestAccConfigurationResource_mcpDisabledWire(t *testing.T) {
+	mock := newAppConfigMock(false)
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: mcpDisabledMockConfig(server.URL, "mcp_disabled = true"),
+				Check:  resource.TestCheckResourceAttr("fleetdm_configuration.test", "mcp_disabled", "true"),
+			},
+			{
+				Config: mcpDisabledMockConfig(server.URL, ""),
+				Check:  resource.TestCheckNoResourceAttr("fleetdm_configuration.test", "mcp_disabled"),
+			},
+			{Config: mcpDisabledMockConfig(server.URL, ""), PlanOnly: true},
+		},
+	})
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.serverSettings) != 2 {
+		t.Fatalf("expected two PATCH requests, got %d: %v", len(mock.serverSettings), mock.serverSettings)
+	}
+	const base = `{"live_query_disabled":false,"enable_analytics":true,"query_reports_disabled":false,"scripts_disabled":false,"ai_features_disabled":false`
+	if want := base + `,"mcp_disabled":true}`; mock.serverSettings[0] != want {
+		t.Errorf("managed:\n got %s\nwant %s", mock.serverSettings[0], want)
+	}
+	if want := base + `}`; mock.serverSettings[1] != want {
+		t.Errorf("unmanaged:\n got %s\nwant %s", mock.serverSettings[1], want)
+	}
+	if mock.config["server_settings"]["mcp_disabled"] != true {
+		t.Errorf("removing the attribute must leave Fleet's value alone, got %v", mock.config["server_settings"]["mcp_disabled"])
+	}
+}
+
+// TestAccConfigurationResource_mcpDisabledOlderFleet covers a Fleet that does
+// not report mcp_disabled: the apply fails with a named error.
+func TestAccConfigurationResource_mcpDisabledOlderFleet(t *testing.T) {
+	server := httptest.NewServer(newAppConfigMock(true).handler(t))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      mcpDisabledMockConfig(server.URL, "mcp_disabled = false"),
+				ExpectError: regexp.MustCompile(`(?s)did not report mcp_disabled.*Fleet 4\.95\.0`),
+			},
+		},
+	})
+}
+
+// TestAccConfigurationResource_mcpDisabled toggles the MCP server on a live
+// Fleet and restores the original value out of band.
+func TestAccConfigurationResource_mcpDisabled(t *testing.T) {
+	restoreServerSettingOutOfBand(t, "mcp_disabled")
+	const attr = "fleetdm_configuration.test"
+	cfg := func(line string) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_configuration" "test" {
+  org_name = "MCP Org"
+  %s
+}
+`, line)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg("mcp_disabled = true"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(attr, "mcp_disabled", "true"),
+					checkServerSettingInFleet("mcp_disabled", true),
+				),
+			},
+			{Config: cfg("mcp_disabled = true"), PlanOnly: true},
+			{
+				Config: cfg("mcp_disabled = false"),
+				Check:  checkServerSettingInFleet("mcp_disabled", false),
+			},
+			{
+				// Unmanaged again: Fleet keeps false and the plan stays empty.
+				Config: cfg(""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr(attr, "mcp_disabled"),
+					checkServerSettingInFleet("mcp_disabled", false),
+				),
+			},
+			{Config: cfg(""), PlanOnly: true},
+		},
+	})
+}
+
+// restoreServerSettingOutOfBand snapshots one global server setting and
+// writes it back from a cleanup, since other tests share the instance.
+func restoreServerSettingOutOfBand(t *testing.T, key string) {
+	t.Helper()
+	if os.Getenv("TF_ACC") == "" || os.Getenv("FLEETDM_URL") == "" {
+		return
+	}
+	client, err := certificateIntegrationsTestClient()
+	if err != nil {
+		t.Fatalf("failed to build fleet client: %v", err)
+	}
+	var cfg struct {
+		ServerSettings map[string]json.RawMessage `json:"server_settings"`
+	}
+	if err := client.Get(context.Background(), "/config", nil, &cfg); err != nil {
+		t.Fatalf("failed to snapshot server_settings: %v", err)
+	}
+	original, ok := cfg.ServerSettings[key]
+	if !ok {
+		return
+	}
+	t.Cleanup(func() {
+		body := map[string]any{"server_settings": map[string]json.RawMessage{key: original}}
+		if err := client.Patch(context.Background(), "/config", body, nil); err != nil {
+			t.Errorf("failed to restore server_settings.%s: %v", key, err)
+		}
+	})
+}
+
+// checkServerSettingInFleet asserts a global server setting directly.
+func checkServerSettingInFleet(key string, want bool) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		client, err := certificateIntegrationsTestClient()
+		if err != nil {
+			return err
+		}
+		var cfg struct {
+			ServerSettings map[string]any `json:"server_settings"`
+		}
+		if err := client.Get(context.Background(), "/config", nil, &cfg); err != nil {
+			return err
+		}
+		if got := cfg.ServerSettings[key]; got != want {
+			return fmt.Errorf("server_settings.%s is %v, want %v", key, got, want)
+		}
+		return nil
+	}
 }

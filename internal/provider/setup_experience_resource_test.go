@@ -1,7 +1,11 @@
 package provider
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -19,13 +23,9 @@ import (
 	"github.com/l-teles/terraform-provider-fleetdm/internal/fleetdm"
 )
 
-// Setup experience has no live acceptance test: Fleet gates PATCH
-// /setup_experience on Apple MDM being turned on whenever the body carries
-// enable_release_device_manually, manual_agent_install or
-// require_all_software_macos, which this resource always does for the first of
-// those. Against a Fleet started with --dev (what CI runs) every apply returns
-// "MDM features aren't turned on in Fleet", so the mock tests below carry the
-// coverage for the request bodies and the opt-in state handling.
+// The mock tests below pin the request bodies and opt-in state handling; the
+// live tests need the rig's self-signed Apple MDM, since Fleet gates PATCH
+// /setup_experience on Apple MDM being turned on.
 
 func TestAccSetupExperienceResource_basic(t *testing.T) {
 	mock := &setupExperienceMock{settings: map[string]any{
@@ -211,12 +211,14 @@ func TestAccSetupExperienceResource_omittedOptInFieldsStayNull(t *testing.T) {
 	// Fleet reports values for every opt-in setting; the ones Terraform does not
 	// manage must stay out of both the request bodies and state.
 	mock := &setupExperienceMock{settings: map[string]any{
-		"enable_end_user_authentication": true,
-		"enable_release_device_manually": false,
-		"lock_end_user_info":             true,
-		"require_all_software_macos":     true,
-		"require_all_software_windows":   true,
-		"manual_agent_install":           true,
+		"enable_end_user_authentication":                          true,
+		"enable_release_device_manually":                          false,
+		"lock_end_user_info":                                      true,
+		"require_all_software_macos":                              true,
+		"require_all_software_windows":                            true,
+		"manual_agent_install":                                    true,
+		"macos_enable_bootstrap_package_during_manual_enrollment": true,
+		"macos_enable_bootstrap_package_during_migration":         true,
 	}}
 	server := httptest.NewServer(mock.handler(t))
 	defer server.Close()
@@ -231,6 +233,8 @@ func TestAccSetupExperienceResource_omittedOptInFieldsStayNull(t *testing.T) {
 					resource.TestCheckNoResourceAttr("fleetdm_setup_experience.test", "require_all_software_macos"),
 					resource.TestCheckNoResourceAttr("fleetdm_setup_experience.test", "require_all_software_windows"),
 					resource.TestCheckNoResourceAttr("fleetdm_setup_experience.test", "manual_agent_install"),
+					resource.TestCheckNoResourceAttr("fleetdm_setup_experience.test", "macos_enable_bootstrap_package_during_manual_enrollment"),
+					resource.TestCheckNoResourceAttr("fleetdm_setup_experience.test", "macos_enable_bootstrap_package_during_migration"),
 				),
 			},
 		},
@@ -242,6 +246,8 @@ func TestAccSetupExperienceResource_omittedOptInFieldsStayNull(t *testing.T) {
 			"require_all_software_macos",
 			"require_all_software_windows",
 			"manual_agent_install",
+			"macos_enable_bootstrap_package_during_manual_enrollment",
+			"macos_enable_bootstrap_package_during_migration",
 		} {
 			if _, ok := body[field]; ok {
 				t.Errorf("PATCH %d: expected %s to be omitted, got %v", i, field, body[field])
@@ -281,6 +287,229 @@ resource "fleetdm_setup_experience" "test" {
 	if len(mock.recorded()) != 0 {
 		t.Errorf("expected no PATCH requests for an invalid configuration, got %d", len(mock.recorded()))
 	}
+}
+
+// TestAccSetupExperienceResource_bootstrapPackageSettings pins the Fleet 4.95
+// bootstrap package settings on the wire: sent when set, read back, and reset
+// to false on destroy.
+func TestAccSetupExperienceResource_bootstrapPackageSettings(t *testing.T) {
+	mock := &setupExperienceMock{settings: map[string]any{
+		"enable_end_user_authentication":                          false,
+		"enable_release_device_manually":                          false,
+		"macos_enable_bootstrap_package_during_manual_enrollment": true,
+		"macos_enable_bootstrap_package_during_migration":         false,
+	}}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	cfg := fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_setup_experience" "test" {
+  team_id = 8
+  macos_enable_bootstrap_package_during_manual_enrollment = true
+  macos_enable_bootstrap_package_during_migration         = false
+}
+`, server.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("fleetdm_setup_experience.test", "macos_enable_bootstrap_package_during_manual_enrollment", "true"),
+					resource.TestCheckResourceAttr("fleetdm_setup_experience.test", "macos_enable_bootstrap_package_during_migration", "false"),
+				),
+			},
+			{Config: cfg, PlanOnly: true},
+		},
+	})
+
+	patches := mock.recorded()
+	if len(patches) < 2 {
+		t.Fatalf("expected a create and a destroy PATCH, got %d", len(patches))
+	}
+	create, _ := json.Marshal(patches[0])
+	wantCreate := `{"enable_end_user_authentication":false,"enable_release_device_manually":false,` +
+		`"macos_enable_bootstrap_package_during_manual_enrollment":true,"macos_enable_bootstrap_package_during_migration":false,"team_id":8}`
+	if string(create) != wantCreate {
+		t.Errorf("create PATCH:\n got %s\nwant %s", create, wantCreate)
+	}
+	destroy := patches[len(patches)-1]
+	for _, k := range []string{"macos_enable_bootstrap_package_during_manual_enrollment", "macos_enable_bootstrap_package_during_migration"} {
+		if destroy[k] != false {
+			t.Errorf("destroy PATCH: expected %s=false, got %v", k, destroy[k])
+		}
+	}
+}
+
+// TestAccSetupExperienceResource_bootstrapPackageSettingsOlderFleet covers a
+// Fleet that ignores the settings and does not report them: the apply fails
+// with a named error instead of recording a value Fleet never stored.
+func TestAccSetupExperienceResource_bootstrapPackageSettingsOlderFleet(t *testing.T) {
+	mock := &setupExperienceMock{settings: map[string]any{
+		"enable_end_user_authentication": false,
+		"enable_release_device_manually": false,
+	}}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_setup_experience" "test" {
+  team_id = 9
+  macos_enable_bootstrap_package_during_migration = true
+}
+`, server.URL),
+				ExpectError: regexp.MustCompile(`(?s)did not report\s+macos_enable_bootstrap_package_during_migration.*Fleet\s+4\.95\.0`),
+			},
+		},
+	})
+}
+
+// TestAccSetupExperienceResource_bootstrapPackageSettingsOlderFleetUpdate adds
+// a toggle to an existing resource on Fleet before 4.95: the error must repeat
+// on the next apply, so the unapplied value can't have been saved to state.
+func TestAccSetupExperienceResource_bootstrapPackageSettingsOlderFleetUpdate(t *testing.T) {
+	mock := &setupExperienceMock{settings: map[string]any{
+		"enable_end_user_authentication": false,
+		"enable_release_device_manually": false,
+	}}
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+	cfg := func(extra string) string {
+		return fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_setup_experience" "test" {
+  team_id = 9
+%s
+}
+`, server.URL, extra)
+	}
+	wantErr := regexp.MustCompile(`(?s)did not report\s+macos_enable_bootstrap_package_during_migration`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg("")},
+			{Config: cfg("  macos_enable_bootstrap_package_during_migration = true"), ExpectError: wantErr},
+			{Config: cfg("  macos_enable_bootstrap_package_during_migration = true"), ExpectError: wantErr},
+		},
+	})
+}
+
+// TestAccSetupExperienceResource_bootstrapPackageSettingsLive runs on a
+// throwaway fleet: Fleet refuses true without a bootstrap package, and accepts
+// it once one is uploaded. Fleet only checks that the package is a signed
+// distribution XAR, so testBootstrapPackageBase64 is enough.
+func TestAccSetupExperienceResource_bootstrapPackageSettingsLive(t *testing.T) {
+	fleetName := "tf-acc-bootstrap-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	cfg := func(manual, migration bool, withPackage bool) string {
+		pkg, dependsOn := "", ""
+		if withPackage {
+			pkg = fmt.Sprintf(`
+resource "fleetdm_bootstrap_package" "test" {
+  team_id         = fleetdm_fleet.test.id
+  name            = "bootstrap.pkg"
+  package_content = %q
+}
+`, testBootstrapPackageBase64(t))
+			dependsOn = "depends_on = [fleetdm_bootstrap_package.test]"
+		}
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_fleet" "test" {
+  name = %[1]q
+}
+%[2]s
+resource "fleetdm_setup_experience" "test" {
+  team_id = fleetdm_fleet.test.id
+  macos_enable_bootstrap_package_during_manual_enrollment = %[3]t
+  macos_enable_bootstrap_package_during_migration         = %[4]t
+  %[5]s
+}
+`, fleetName, pkg, manual, migration, dependsOn)
+	}
+	const attr = "fleetdm_setup_experience.test"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: cfg(false, false, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(attr, "macos_enable_bootstrap_package_during_manual_enrollment", "false"),
+					resource.TestCheckResourceAttr(attr, "macos_enable_bootstrap_package_during_migration", "false"),
+				),
+			},
+			{Config: cfg(false, false, false), PlanOnly: true},
+			{
+				Config:      cfg(true, false, false),
+				ExpectError: regexp.MustCompile(`(?s)first\s+specify\s+a\s+macos_bootstrap_package`),
+			},
+			{
+				Config: cfg(true, true, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(attr, "macos_enable_bootstrap_package_during_manual_enrollment", "true"),
+					resource.TestCheckResourceAttr(attr, "macos_enable_bootstrap_package_during_migration", "true"),
+				),
+			},
+			{Config: cfg(true, true, true), PlanOnly: true},
+			{
+				Config: cfg(false, true, true),
+				Check:  resource.TestCheckResourceAttr(attr, "macos_enable_bootstrap_package_during_manual_enrollment", "false"),
+			},
+		},
+	})
+}
+
+// testBootstrapPackageBase64 builds a minimal XAR whose table of contents has
+// a signature element and a Distribution file, which is all Fleet checks.
+func testBootstrapPackageBase64(t *testing.T) string {
+	t.Helper()
+	toc := []byte(`<?xml version="1.0" encoding="UTF-8"?><xar><toc>` +
+		`<checksum style="sha1"><offset>0</offset><size>20</size></checksum>` +
+		`<signature style="RSA"><offset>20</offset><size>256</size></signature>` +
+		`<file id="1"><name>Distribution</name></file></toc></xar>`)
+	var compressed bytes.Buffer
+	zw := zlib.NewWriter(&compressed)
+	if _, err := zw.Write(toc); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var pkg bytes.Buffer
+	header := struct {
+		Magic            uint32
+		HeaderSize       uint16
+		Version          uint16
+		CompressedSize   int64
+		UncompressedSize int64
+		HashType         uint32
+	}{0x78617221, 28, 1, int64(compressed.Len()), int64(len(toc)), 1}
+	if err := binary.Write(&pkg, binary.BigEndian, header); err != nil {
+		t.Fatal(err)
+	}
+	pkg.Write(compressed.Bytes())
+	pkg.Write(make([]byte, 276)) // heap: checksum and signature placeholders
+	return base64.StdEncoding.EncodeToString(pkg.Bytes())
 }
 
 func testAccSetupExperienceResourceConfig(serverURL string, teamID int, enableEndUserAuth, enableReleaseManually bool) string {
@@ -395,6 +624,8 @@ resource "fleetdm_setup_experience" "test" {
 					"require_all_software_macos",
 					"require_all_software_windows",
 					"manual_agent_install",
+					"macos_enable_bootstrap_package_during_manual_enrollment",
+					"macos_enable_bootstrap_package_during_migration",
 				},
 			},
 		},

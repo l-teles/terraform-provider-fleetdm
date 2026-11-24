@@ -16,6 +16,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -1283,7 +1284,7 @@ resource "fleetdm_policy" "test" {
   notify_before_patching         = true
 }
 `, policyName),
-				ExpectError: regexp.MustCompile(`(?s)Only\s+one\s+of\s+patch_when_closed\s+or\s+notify_before_patching`),
+				ExpectError: regexp.MustCompile(`(?s)Only\s+one\s+of\s+patch_when_closed,\s+notify_before_patching\s+or\s+patch_deadline`),
 			},
 			{
 				Config: providerConfig() + fmt.Sprintf(`
@@ -1363,12 +1364,138 @@ resource "fleetdm_policy" "test" {
 	})
 }
 
+func TestAccPolicyResource_patchDeadlineValidators(t *testing.T) {
+	policyName := "tf-acc-test-" + acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  query                          = "SELECT 1;"
+  team_id                        = 1
+  continuous_automations_enabled = true
+  patch_deadline                 = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)patch_deadline\s+is\s+only\s+supported\s+when\s+type`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                    = %[1]q
+  team_id                 = 1
+  type                    = "patch"
+  patch_software_title_id = 999
+  patch_deadline          = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)continuous_automations_enabled\s+must\s+be\s+true\s+when\s+patch_deadline`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  team_id                        = 1
+  type                           = "patch"
+  patch_software_title_id        = 999
+  continuous_automations_enabled = true
+  notify_before_patching         = true
+  patch_deadline                 = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`(?s)Only\s+one\s+of\s+patch_when_closed,\s+notify_before_patching\s+or\s+patch_deadline`),
+			},
+			{
+				Config: providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name           = %[1]q
+  query          = "SELECT 1;"
+  patch_deadline = true
+}
+`, policyName),
+				ExpectError: regexp.MustCompile(`team_id\s+required`),
+			},
+		},
+	})
+}
+
+// TestAccPolicyResource_patchDeadline exercises patch_deadline against a live
+// Fleet 4.95+, switching between all three patch options in single applies.
+// Fleet does not clear the other options itself, so each switch has to clear
+// one flag and set the other in the same request.
+func TestAccPolicyResource_patchDeadline(t *testing.T) {
+	policyName := "tf-acc-test-pd-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+	teamName := "tf-acc-team-" + acctest.RandStringFromCharSet(8, acctest.CharSetAlphaNum)
+
+	// Out-of-band installer and early gates for the same reasons as
+	// TestAccPolicyResource_patchWhenClosed.
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("TF_ACC must be set for live acceptance tests")
+	}
+	testAccPreCheck(t)
+	fleetID, titleID := addFleetMaintainedAppOutOfBand(t, teamName, "1Password", "darwin")
+
+	cfg := func(patchWhenClosed, notify, deadline bool) string {
+		return providerConfig() + fmt.Sprintf(`
+resource "fleetdm_policy" "test" {
+  name                           = %[1]q
+  team_id                        = %[2]d
+  type                           = "patch"
+  patch_software_title_id        = %[3]d
+  continuous_automations_enabled = true
+  patch_when_closed              = %[4]t
+  notify_before_patching         = %[5]t
+  patch_deadline                 = %[6]t
+}
+`, policyName, fleetID, titleID, patchWhenClosed, notify, deadline)
+	}
+	flags := func(patchWhenClosed, notify, deadline string) resource.TestCheckFunc {
+		return resource.ComposeAggregateTestCheckFunc(
+			resource.TestCheckResourceAttr("fleetdm_policy.test", "patch_when_closed", patchWhenClosed),
+			resource.TestCheckResourceAttr("fleetdm_policy.test", "notify_before_patching", notify),
+			resource.TestCheckResourceAttr("fleetdm_policy.test", "patch_deadline", deadline),
+		)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg(false, false, true), Check: flags("false", "false", "true")},
+			{Config: cfg(false, false, true), PlanOnly: true},
+			{Config: cfg(false, true, false), Check: flags("false", "true", "false")},
+			{Config: cfg(true, false, false), Check: flags("true", "false", "false")},
+			{Config: cfg(false, false, true), Check: flags("false", "false", "true")},
+			{
+				ResourceName:      "fleetdm_policy.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				// Fleet touches the policy row just after the update returns,
+				// moving updated_at by a second.
+				ImportStateVerifyIgnore: []string{"updated_at"},
+				ImportStateIdFunc: func(s *terraform.State) (string, error) {
+					rs, ok := s.RootModule().Resources["fleetdm_policy.test"]
+					if !ok {
+						return "", fmt.Errorf("fleetdm_policy.test not found in state")
+					}
+					return rs.Primary.Attributes["team_id"] + ":" + rs.Primary.Attributes["id"], nil
+				},
+			},
+			{Config: cfg(false, false, false), Check: flags("false", "false", "false")},
+		},
+	})
+}
+
 // TestBuildPolicyUpdateRequest_premiumFlags pins what reaches the wire for the
 // premium-only switches. Fleet Free answers "option X requires a premium
 // license" to any of them being present, even as false, so a switch that is
 // off and was off must be left out entirely.
 func TestBuildPolicyUpdateRequest_premiumFlags(t *testing.T) {
-	keys := []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching", "hidden"}
+	keys := []string{"continuous_automations_enabled", "patch_when_closed", "notify_before_patching", "patch_deadline", "hidden"}
 	tests := []struct {
 		name    string
 		planned bool
@@ -1391,12 +1518,14 @@ func TestBuildPolicyUpdateRequest_premiumFlags(t *testing.T) {
 				ContinuousAutomationsEnabled: types.BoolValue(tt.planned),
 				PatchWhenClosed:              types.BoolValue(tt.planned),
 				NotifyBeforePatching:         types.BoolValue(tt.planned),
+				PatchDeadline:                types.BoolValue(tt.planned),
 				Hidden:                       types.BoolValue(tt.planned),
 			}
 			prior := policyPriorAutomations{
 				ContinuousAutomationsEnabled: tt.prior,
 				PatchWhenClosed:              tt.prior,
 				NotifyBeforePatching:         tt.prior,
+				PatchDeadline:                tt.prior,
 				Hidden:                       tt.prior,
 			}
 			var diags diag.Diagnostics
@@ -1943,15 +2072,20 @@ resource "fleetdm_policy" "test" {
 // where ValidateConfig could not apply the rules.
 func TestCheckPatchOptionsAtApply(t *testing.T) {
 	tests := []struct {
-		name                    string
-		continuous, pwc, notify bool
-		wantErr                 bool
+		name                              string
+		continuous, pwc, notify, deadline bool
+		wantErr                           bool
 	}{
 		{name: "nothing on"},
 		{name: "notify with continuous", continuous: true, notify: true},
 		{name: "notify without continuous", notify: true, wantErr: true},
 		{name: "patch_when_closed without continuous", pwc: true, wantErr: true},
-		{name: "both on", continuous: true, pwc: true, notify: true, wantErr: true},
+		{name: "deadline with continuous", continuous: true, deadline: true},
+		{name: "deadline without continuous", deadline: true, wantErr: true},
+		{name: "pwc and notify", continuous: true, pwc: true, notify: true, wantErr: true},
+		{name: "pwc and deadline", continuous: true, pwc: true, deadline: true, wantErr: true},
+		{name: "notify and deadline", continuous: true, notify: true, deadline: true, wantErr: true},
+		{name: "all three", continuous: true, pwc: true, notify: true, deadline: true, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1960,11 +2094,163 @@ func TestCheckPatchOptionsAtApply(t *testing.T) {
 				ContinuousAutomationsEnabled: types.BoolValue(tt.continuous),
 				PatchWhenClosed:              types.BoolValue(tt.pwc),
 				NotifyBeforePatching:         types.BoolValue(tt.notify),
+				PatchDeadline:                types.BoolValue(tt.deadline),
 			}, &diags)
 			if diags.HasError() != tt.wantErr {
 				t.Errorf("HasError() = %v, want %v: %v", diags.HasError(), tt.wantErr, diags)
 			}
 		})
+	}
+}
+
+// TestCheckPatchOptionsExclusive covers Fleet 4.95's rule that at most one of
+// the three patch options is true. Unknown values defer to the API.
+func TestCheckPatchOptionsExclusive(t *testing.T) {
+	on, off, unknown := types.BoolValue(true), types.BoolValue(false), types.BoolUnknown()
+	tests := []struct {
+		name                    string
+		pwc, notify, deadline   types.Bool
+		wantErr                 bool
+		wantPath, wantInMessage string
+	}{
+		{name: "none", pwc: off, notify: off, deadline: off},
+		{name: "pwc only", pwc: on, notify: off, deadline: off},
+		{name: "notify only", pwc: off, notify: on, deadline: off},
+		{name: "deadline only", pwc: off, notify: off, deadline: on},
+		{name: "null deadline", pwc: on, notify: off, deadline: types.BoolNull()},
+		{name: "deadline with unknown other", pwc: unknown, notify: unknown, deadline: on},
+		{name: "pwc and notify", pwc: on, notify: on, deadline: off, wantErr: true, wantPath: "notify_before_patching", wantInMessage: "patch_when_closed, notify_before_patching)"},
+		{name: "pwc and deadline", pwc: on, notify: off, deadline: on, wantErr: true, wantPath: "patch_deadline", wantInMessage: "patch_when_closed, patch_deadline)"},
+		{name: "notify and deadline", pwc: off, notify: on, deadline: on, wantErr: true, wantPath: "patch_deadline", wantInMessage: "notify_before_patching, patch_deadline)"},
+		{name: "all three", pwc: on, notify: on, deadline: on, wantErr: true, wantPath: "patch_deadline", wantInMessage: "patch_when_closed, notify_before_patching, patch_deadline)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var diags diag.Diagnostics
+			checkPatchOptionsExclusive(PolicyResourceModel{
+				PatchWhenClosed:      tt.pwc,
+				NotifyBeforePatching: tt.notify,
+				PatchDeadline:        tt.deadline,
+			}, &diags)
+			if diags.HasError() != tt.wantErr {
+				t.Fatalf("HasError() = %v, want %v: %v", diags.HasError(), tt.wantErr, diags)
+			}
+			if !tt.wantErr {
+				return
+			}
+			if diags.ErrorsCount() != 1 {
+				t.Fatalf("expected one error, got %v", diags)
+			}
+			d, ok := diags.Errors()[0].(diag.DiagnosticWithPath)
+			if !ok || !d.Path().Equal(path.Root(tt.wantPath)) {
+				t.Errorf("expected the error on %s, got %v", tt.wantPath, diags.Errors()[0])
+			}
+			if !strings.Contains(diags.Errors()[0].Detail(), tt.wantInMessage) {
+				t.Errorf("expected detail to contain %q, got %q", tt.wantInMessage, diags.Errors()[0].Detail())
+			}
+		})
+	}
+}
+
+// TestCheckPolicyAutomationsEchoed_patchDeadline covers a Fleet before 4.95,
+// which drops patch_deadline and echoes it as false.
+func TestCheckPolicyAutomationsEchoed_patchDeadline(t *testing.T) {
+	planned := policyPriorAutomations{PatchDeadline: types.BoolValue(true)}
+
+	var diags diag.Diagnostics
+	checkPolicyAutomationsEchoed(planned, PolicyResourceModel{PatchDeadline: types.BoolValue(false)}, &diags)
+	if !diags.HasError() || !strings.Contains(diags.Errors()[0].Detail(), "Fleet 4.95.0") {
+		t.Errorf("expected a patch_deadline error naming Fleet 4.95.0, got %v", diags)
+	}
+
+	diags = nil
+	checkPolicyAutomationsEchoed(planned, PolicyResourceModel{PatchDeadline: types.BoolValue(true)}, &diags)
+	if diags.HasError() {
+		t.Errorf("expected no error when Fleet echoes patch_deadline, got %v", diags)
+	}
+
+	diags = nil
+	checkPolicyAutomationsEchoed(policyPriorAutomations{PatchDeadline: types.BoolValue(false)}, PolicyResourceModel{PatchDeadline: types.BoolValue(false)}, &diags)
+	if diags.HasError() {
+		t.Errorf("expected no error when patch_deadline is off, got %v", diags)
+	}
+}
+
+// TestAccPolicyResource_patchDeadlineNotEchoedMock creates a patch policy with
+// patch_deadline against a fake Fleet that drops the field, as Fleet before
+// 4.95 does. The create must send it, fail with the named error, and delete
+// the policy it made.
+func TestAccPolicyResource_patchDeadlineNotEchoedMock(t *testing.T) {
+	const base = "/api/v1/fleet/fleets/7/policies"
+	var (
+		mu      sync.Mutex
+		bodies  []map[string]json.RawMessage
+		deleted int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == base && r.Method == http.MethodPost:
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode request body: %v", err)
+			}
+			bodies = append(bodies, body)
+			_, _ = w.Write([]byte(`{"policy":{"id":42,"name":"tf-mock-policy","team_id":7,"type":"patch",` +
+				`"patch_software":{"name":"Mock App","software_title_id":12},"continuous_automations_enabled":true}}`))
+		case r.URL.Path == base+"/delete" && r.Method == http.MethodPost:
+			deleted++
+			_, _ = w.Write([]byte(`{"deleted":[42]}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fmt.Sprintf(`
+provider "fleetdm" {
+  server_address = %q
+  api_key        = "test-token"
+}
+
+resource "fleetdm_policy" "test" {
+  name                           = "tf-mock-policy"
+  team_id                        = 7
+  type                           = "patch"
+  patch_software_title_id        = 12
+  continuous_automations_enabled = true
+  patch_deadline                 = true
+}
+`, srv.URL),
+				ExpectError: regexp.MustCompile(`(?s)Patch\s+deadline\s+was\s+not\s+applied.*Fleet\s+4\.95\.0`),
+			},
+		},
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("expected one create request, got %d", len(bodies))
+	}
+	for key, want := range map[string]string{"patch_deadline": "true", "continuous_automations_enabled": "true"} {
+		if got := string(bodies[0][key]); got != want {
+			t.Errorf("expected %s=%s in the create body, got %q", key, want, got)
+		}
+	}
+	for _, key := range []string{"patch_when_closed", "notify_before_patching"} {
+		if raw, ok := bodies[0][key]; ok {
+			t.Errorf("expected %s to be absent from the create body, got %s", key, raw)
+		}
+	}
+	if deleted != 1 {
+		t.Errorf("expected the failed create to delete the policy, got %d delete requests", deleted)
 	}
 }
 
@@ -1976,7 +2262,7 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 	premiumKeys := []string{
 		"critical", "hidden", "calendar_events_enabled", "conditional_access_enabled", "software_title_id", "script_id", "labels_include_any", "labels_exclude_any",
 		"labels_include_all", "labels_exclude_all", "continuous_automations_enabled", "patch_when_closed",
-		"notify_before_patching", "software_package_id", "profile_uuid",
+		"notify_before_patching", "patch_deadline", "software_package_id", "profile_uuid",
 	}
 	nullSet := types.SetNull(types.StringType)
 	plain := PolicyResourceModel{
@@ -1995,6 +2281,7 @@ func TestBuildPolicyUpdateRequest_freeTier(t *testing.T) {
 		ContinuousAutomationsEnabled: types.BoolValue(false),
 		PatchWhenClosed:              types.BoolValue(false),
 		NotifyBeforePatching:         types.BoolValue(false),
+		PatchDeadline:                types.BoolValue(false),
 		LabelsIncludeAny:             nullSet,
 		LabelsExcludeAny:             nullSet,
 		LabelsIncludeAll:             nullSet,

@@ -14,6 +14,8 @@ const (
 	CATypeCustomESTProxy  = "custom_est_proxy"
 	CATypeHydrant         = "hydrant"
 	CATypeSmallstep       = "smallstep"
+	CATypeEJBCA           = "ejbca"
+	CATypeGoogleCAS       = "google_cas"
 )
 
 // MaskedCASecret is the placeholder Fleet substitutes for stored certificate
@@ -33,6 +35,8 @@ type CertificateAuthoritySummary struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
 	Type string `json:"type"`
+	// MTLSCertExpiresAt is when an EJBCA CA's client certificate expires (Fleet 4.95+).
+	MTLSCertExpiresAt string `json:"mtls_cert_expires_at,omitempty"`
 }
 
 // CertificateAuthority is a certificate authority as returned by
@@ -70,6 +74,20 @@ type CertificateAuthority struct {
 
 	// Smallstep.
 	ChallengeURL string `json:"challenge_url,omitempty"`
+
+	// EJBCA. Fleet never returns the client PKCS#12 or its password.
+	TrustCABundle            string `json:"trust_ca_bundle,omitempty"`
+	CertificateAuthorityName string `json:"certificate_authority_name,omitempty"`
+	CertificateProfileName   string `json:"certificate_profile_name,omitempty"`
+	EndEntityProfileName     string `json:"end_entity_profile_name,omitempty"`
+	UsernameTemplate         string `json:"username_template,omitempty"`
+	MTLSCertExpiresAt        string `json:"mtls_cert_expires_at,omitempty"`
+
+	// Google CAS.
+	Project    string `json:"project,omitempty"`
+	Location   string `json:"location,omitempty"`
+	CAPool     string `json:"ca_pool,omitempty"`
+	APIKeyJSON string `json:"api_key_json,omitempty"`
 
 	CreatedAt string `json:"created_at,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
@@ -131,6 +149,34 @@ type SmallstepSCEPProxyCA struct {
 	Password     string  `json:"password"`
 }
 
+// EJBCACA is the EJBCA certificate authority configuration (Fleet 4.95+).
+// Fleet reads the mTLS client certificate and key out of ClientP12.
+type EJBCACA struct {
+	Name                     *string `json:"name,omitempty"`
+	URL                      string  `json:"url"`
+	ClientP12                string  `json:"client_p12"`
+	Password                 string  `json:"password"`
+	TrustCABundle            string  `json:"trust_ca_bundle"`
+	CertificateAuthorityName string  `json:"certificate_authority_name"`
+	CertificateProfileName   string  `json:"certificate_profile_name"`
+	EndEntityProfileName     string  `json:"end_entity_profile_name"`
+	CertificateCommonName    string  `json:"certificate_common_name"`
+	UsernameTemplate         string  `json:"username_template"`
+	// A pointer so an empty list is sent as `[]` and clears the stored list.
+	CertificateUserPrincipalNames *[]string `json:"certificate_user_principal_names"`
+}
+
+// GoogleCASCA is the Google Cloud Certificate Authority Service configuration
+// (Fleet 4.95+). It has no URL: the CA pool is addressed by project, location
+// and pool name.
+type GoogleCASCA struct {
+	Name       *string `json:"name,omitempty"`
+	Project    string  `json:"project"`
+	Location   string  `json:"location"`
+	CAPool     string  `json:"ca_pool"`
+	APIKeyJSON string  `json:"api_key_json"`
+}
+
 // CertificateAuthorityPayload is the request body for creating and updating a
 // certificate authority. Exactly one field must be set; Fleet rejects zero or
 // more than one.
@@ -147,6 +193,8 @@ type CertificateAuthorityPayload struct {
 	CustomESTProxy  *CustomESTProxyCA     `json:"custom_est_proxy,omitempty"`
 	Hydrant         *HydrantCA            `json:"hydrant,omitempty"`
 	Smallstep       *SmallstepSCEPProxyCA `json:"smallstep,omitempty"`
+	EJBCA           *EJBCACA              `json:"ejbca,omitempty"`
+	GoogleCAS       *GoogleCASCA          `json:"google_cas,omitempty"`
 }
 
 // ClearName drops the name from the payload's block.
@@ -168,6 +216,10 @@ func (p *CertificateAuthorityPayload) ClearName() {
 		p.Hydrant.Name = nil
 	case p.Smallstep != nil:
 		p.Smallstep.Name = nil
+	case p.EJBCA != nil:
+		p.EJBCA.Name = nil
+	case p.GoogleCAS != nil:
+		p.GoogleCAS.Name = nil
 	}
 }
 
@@ -186,6 +238,10 @@ func (p *CertificateAuthorityPayload) Name() (string, bool) {
 		name = p.Hydrant.Name
 	case p.Smallstep != nil:
 		name = p.Smallstep.Name
+	case p.EJBCA != nil:
+		name = p.EJBCA.Name
+	case p.GoogleCAS != nil:
+		name = p.GoogleCAS.Name
 	}
 	if name == nil {
 		return "", false
@@ -209,6 +265,10 @@ func (p *CertificateAuthorityPayload) Type() string {
 		return CATypeHydrant
 	case p.Smallstep != nil:
 		return CATypeSmallstep
+	case p.EJBCA != nil:
+		return CATypeEJBCA
+	case p.GoogleCAS != nil:
+		return CATypeGoogleCAS
 	default:
 		return ""
 	}

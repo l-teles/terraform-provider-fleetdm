@@ -48,6 +48,38 @@ data "fleetdm_certificate_authorities" "all" {}
 	})
 }
 
+// TestCertificateAuthoritiesDataSource_fleet495Types covers the EJBCA and Google
+// CAS summaries, including the EJBCA-only mtls_cert_expires_at.
+func TestCertificateAuthoritiesDataSource_fleet495Types(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"certificate_authorities":[
+			{"id":1,"name":"EJBCA_TEST","type":"ejbca","mtls_cert_expires_at":"2030-01-01T00:00:00Z"},
+			{"id":2,"name":"GCAS_TEST","type":"google_cas"}
+		]}`))
+	}))
+	defer server.Close()
+
+	config := testCAProviderBlock(server.URL) + `
+data "fleetdm_certificate_authorities" "all" {}
+`
+	const ds = "data.fleetdm_certificate_authorities.all"
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(ds, "certificate_authorities.0.type", "ejbca"),
+					resource.TestCheckResourceAttr(ds, "certificate_authorities.0.mtls_cert_expires_at", "2030-01-01T00:00:00Z"),
+					resource.TestCheckResourceAttr(ds, "certificate_authorities.1.type", "google_cas"),
+					resource.TestCheckNoResourceAttr(ds, "certificate_authorities.1.mtls_cert_expires_at"),
+				),
+			},
+		},
+	})
+}
+
 func TestCertificateAuthoritiesDataSource_empty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

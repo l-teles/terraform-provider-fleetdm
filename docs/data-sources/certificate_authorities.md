@@ -4,14 +4,14 @@ page_title: "fleetdm_certificate_authorities Data Source - fleetdm"
 subcategory: ""
 description: |-
   Retrieves every certificate authority configured in FleetDM. This is a Fleet Premium feature.
-  ~> Note: Fleet's list endpoint returns identity only, so this data source exposes id, name and type and no configuration. Fleet never returns certificate authority secrets through any endpoint.
+  ~> Note: Fleet's list endpoint returns identity only, so this data source exposes id, name, type and, for EJBCA, the client certificate expiry, and no configuration. Fleet never returns certificate authority secrets through any endpoint.
 ---
 
 # fleetdm_certificate_authorities (Data Source)
 
 Retrieves every certificate authority configured in FleetDM. This is a Fleet Premium feature.
 
-~> **Note:** Fleet's list endpoint returns identity only, so this data source exposes `id`, `name` and `type` and no configuration. Fleet never returns certificate authority secrets through any endpoint.
+~> **Note:** Fleet's list endpoint returns identity only, so this data source exposes `id`, `name`, `type` and, for EJBCA, the client certificate expiry, and no configuration. Fleet never returns certificate authority secrets through any endpoint.
 
 ## Example Usage
 
@@ -47,5 +47,6 @@ output "scep_wifi_id" {
 Read-Only:
 
 - `id` (Number) Identifier of the certificate authority.
+- `mtls_cert_expires_at` (String) When the client certificate Fleet authenticates to EJBCA with expires, as an RFC 3339 timestamp. Set for `ejbca` certificate authorities only (Fleet 4.95 or later); null for every other type.
 - `name` (String) Name of the certificate authority.
-- `type` (String) Type of the certificate authority. One of `digicert`, `ndes_scep_proxy`, `custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`.
+- `type` (String) Type of the certificate authority. One of `digicert`, `ndes_scep_proxy`, `custom_scep_proxy`, `custom_est_proxy`, `hydrant`, `smallstep`, `ejbca`, `google_cas`.
