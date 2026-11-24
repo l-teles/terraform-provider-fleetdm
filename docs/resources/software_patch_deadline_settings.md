@@ -6,6 +6,7 @@ description: |-
   Manages a fleet's software patch deadline settings: the weekdays and host-local time when patch deadlines fall.
   Requires Fleet Premium and Fleet >= 4.95.
   ~> Every fleet always has patch deadline settings. Destroying this resource resets them to Fleet's default (tuesday at 17:00) rather than removing them. If the fleet itself has already been deleted, destroy succeeds without doing anything.
+  -> On a Fleet older than 4.95, refreshing this resource fails, and so does a plain terraform destroy. Run terraform destroy -refresh=false to remove it.
 ---
 
 # fleetdm_software_patch_deadline_settings (Resource)
@@ -15,6 +16,8 @@ Manages a fleet's software patch deadline settings: the weekdays and host-local 
 Requires Fleet Premium and Fleet >= 4.95.
 
 ~> Every fleet always has patch deadline settings. Destroying this resource resets them to Fleet's default (`tuesday` at `17:00`) rather than removing them. If the fleet itself has already been deleted, destroy succeeds without doing anything.
+
+-> On a Fleet older than 4.95, refreshing this resource fails, and so does a plain `terraform destroy`. Run `terraform destroy -refresh=false` to remove it.
 
 ## Example Usage
 

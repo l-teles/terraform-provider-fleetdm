@@ -456,7 +456,13 @@ func (r *softwareFleetMaintainedAppResource) Read(ctx context.Context, req resou
 	// plan, which is the same destroy/recreate diff the backfill exists to
 	// prevent.
 	if state.FleetMaintainedAppID.IsNull() {
-		apps, err := r.client.ListFleetMaintainedApps(ctx, teamID)
+		// Fleet links catalog entries to titles only for a named fleet, so
+		// "no team" must be sent as Unassigned (team_id=0).
+		scope := 0
+		if teamID != nil {
+			scope = *teamID
+		}
+		apps, err := r.client.ListFleetMaintainedApps(ctx, &scope)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"Could not resolve fleet_maintained_app_id from catalog",

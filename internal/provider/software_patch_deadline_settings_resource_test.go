@@ -336,6 +336,7 @@ func TestAccSoftwarePatchDeadlineSettingsResource_mockFleetIDRequiresReplace(t *
 // deleted between refresh and destroy still destroys cleanly.
 func TestAccSoftwarePatchDeadlineSettingsResource_mockFleetDeleted(t *testing.T) {
 	mock := newPatchDeadlineMock(5, 6)
+	mock.version = "4.95.0"
 	server := httptest.NewServer(mock.handler(t))
 	defer server.Close()
 
@@ -394,8 +395,10 @@ func TestAccSoftwarePatchDeadlineSettingsResource_mockOlderFleet(t *testing.T) {
 	server := httptest.NewServer(mock.handler(t))
 	defer server.Close()
 	cfg := testAccPatchDeadlineMockConfig(server.URL, 5, []string{"monday"}, "10:00")
-	wantErr := regexp.MustCompile(`requires\s+Fleet\s+Premium\s+4\.95\.0\s+or\s+later`)
+	wantErr := regexp.MustCompile(`(?s)requires\s+Fleet\s+Premium\s+4\.95\.0\s+or\s+later.*terraform\s+destroy\s+-refresh=false`)
 
+	// The test framework's cleanup destroys without refreshing, so it also
+	// exercises the recovery command the error names.
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
@@ -405,6 +408,39 @@ func TestAccSoftwarePatchDeadlineSettingsResource_mockOlderFleet(t *testing.T) {
 					mock.mu.Lock()
 					defer mock.mu.Unlock()
 					mock.version, mock.noRoute = "4.94.1", true
+				},
+				RefreshState: true,
+				ExpectError:  wantErr,
+			},
+			{
+				// Still in state: the plan errors on refresh rather than planning a create.
+				Config:      cfg,
+				PlanOnly:    true,
+				ExpectError: wantErr,
+			},
+		},
+	})
+}
+
+// A 404 with an unreadable version could be a deleted fleet or an older Fleet,
+// so Read must keep the resource in state and error rather than drop it.
+func TestAccSoftwarePatchDeadlineSettingsResource_mockUnknownVersion(t *testing.T) {
+	mock := newPatchDeadlineMock(5)
+	mock.version = "4.95.0"
+	server := httptest.NewServer(mock.handler(t))
+	defer server.Close()
+	cfg := testAccPatchDeadlineMockConfig(server.URL, 5, []string{"monday"}, "10:00")
+	wantErr := regexp.MustCompile(`Could Not Check the Fleet Version`)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: cfg},
+			{
+				PreConfig: func() {
+					mock.mu.Lock()
+					defer mock.mu.Unlock()
+					mock.version, mock.noRoute = "", true
 				},
 				RefreshState: true,
 				ExpectError:  wantErr,

@@ -57,7 +57,8 @@ func (r *SoftwarePatchDeadlineSettingsResource) Schema(_ context.Context, _ reso
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages a fleet's software patch deadline settings: the weekdays and host-local time when patch deadlines fall.\n\n" +
 			"Requires Fleet Premium and Fleet >= 4.95.\n\n" +
-			"~> Every fleet always has patch deadline settings. Destroying this resource resets them to Fleet's default (`tuesday` at `17:00`) rather than removing them. If the fleet itself has already been deleted, destroy succeeds without doing anything.",
+			"~> Every fleet always has patch deadline settings. Destroying this resource resets them to Fleet's default (`tuesday` at `17:00`) rather than removing them. If the fleet itself has already been deleted, destroy succeeds without doing anything.\n\n" +
+			"-> On a Fleet older than 4.95, refreshing this resource fails, and so does a plain `terraform destroy`. Run `terraform destroy -refresh=false` to remove it.",
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -121,13 +122,20 @@ func (r *SoftwarePatchDeadlineSettingsResource) Read(ctx context.Context, req re
 
 	settings, err := r.client.GetPatchDeadlineSettings(ctx, data.FleetID.ValueInt64())
 	if err != nil {
-		if patchDeadlineSettingsUnsupported(ctx, r.client, err) {
-			resp.Diagnostics.AddError("Patch Deadline Settings Need Fleet 4.95", patchDeadlineSettingsUnsupportedDetail)
-			return
-		}
-		// The fleet was deleted, taking its settings with it.
+		// A 404 means a deleted fleet only on Fleet 4.95+; older Fleet has no such endpoint.
 		if isNotFound(err) {
-			resp.State.RemoveResource(ctx)
+			before, known := fleetServerVersionBefore(ctx, r.client, 4, 95)
+			switch {
+			case !known:
+				resp.Diagnostics.AddError("Could Not Check the Fleet Version",
+					"Fleet answered 404 for the patch deadline settings, and its version could not be read to tell a deleted fleet from a Fleet older than 4.95. "+
+						"The resource was kept in state. "+patchDeadlineSettingsRecovery)
+			case before:
+				resp.Diagnostics.AddError("Patch Deadline Settings Need Fleet 4.95", patchDeadlineSettingsUnsupportedDetail+" "+patchDeadlineSettingsRecovery)
+			default:
+				// The fleet was deleted, taking its settings with it.
+				resp.State.RemoveResource(ctx)
+			}
 			return
 		}
 		resp.Diagnostics.AddError("Error Reading FleetDM Patch Deadline Settings", err.Error())
@@ -226,9 +234,13 @@ func (r *SoftwarePatchDeadlineSettingsResource) apply(ctx context.Context, data 
 const patchDeadlineSettingsUnsupportedDetail = "This Fleet server has no patch deadline settings endpoint. " +
 	"fleetdm_software_patch_deadline_settings requires Fleet Premium 4.95.0 or later."
 
+// patchDeadlineSettingsRecovery tells users how to get past the refresh error,
+// which otherwise also blocks a plain `terraform destroy`.
+const patchDeadlineSettingsRecovery = "To remove the resource anyway, run `terraform destroy -refresh=false`, or `terraform state rm` on it."
+
 // patchDeadlineSettingsUnsupported reports whether a 404 came from a Fleet
 // older than 4.95, which has no such endpoint, rather than from a deleted
-// fleet. An unreadable version is treated as a deleted fleet.
+// fleet. An unreadable version counts as supported.
 func patchDeadlineSettingsUnsupported(ctx context.Context, client *fleetdm.Client, err error) bool {
 	if !isNotFound(err) {
 		return false
